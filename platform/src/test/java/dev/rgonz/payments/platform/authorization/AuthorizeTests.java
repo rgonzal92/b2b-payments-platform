@@ -13,6 +13,8 @@ import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import dev.rgonz.payments.platform.suppliers.SupplierOnInvoice;
+import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.NettyChannelBuilder;
@@ -52,7 +54,7 @@ class AuthorizeTests {
 
   private static final Currency USD = Currency.getInstance("USD");
   private static final long AMOUNT = 1_240_000;
-  private static final String ACCEPTOR_ID = "GLOBEX-ACCEPTOR";
+  private static final String ACCEPTOR_ID = "GLOBEX000000001";
 
   /** Every bearer token decodes as the Network's, so the test can call over gRPC. */
   @TestConfiguration(proxyBeanMethods = false)
@@ -74,6 +76,7 @@ class AuthorizeTests {
   @Autowired Cards cards;
   @Autowired Holds holds;
   @Autowired Vault vault;
+  @Autowired Suppliers suppliers;
 
   @LocalGrpcServerPort int port;
 
@@ -137,6 +140,55 @@ class AuthorizeTests {
   }
 
   @Test
+  void aChargeFromAnotherAcceptorIdIsDeclinedAndChangesNeitherTheCardNorItsHold() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var card = issuedCard(buyerId, ACCEPTOR_ID);
+    var creditBefore = availableCredit(buyerId);
+    var requestId = UUID.randomUUID().toString();
+
+    var response =
+        authorize(requestId, vault.cardDetails(card.cardToken()).pan(), "OTHER0000000002");
+
+    assertThat(response.getResponseCode()).isEqualTo("57");
+    assertThat(response.getAuthorizationCode()).isEmpty();
+    assertThat(cards.find(card.cardToken()))
+        .get()
+        .extracting(SingleUseCard::status)
+        .isEqualTo(SingleUseCard.Status.ACTIVE);
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(recorded(requestId))
+        .containsEntry("card_token", card.cardToken())
+        .containsEntry("acceptor_id", "OTHER0000000002")
+        .containsEntry("response_code", "57")
+        .containsEntry("authorization_code", null)
+        .containsEntry("status", "DECLINED");
+  }
+
+  @Test
+  void aCardWhoseSupplierHasNoAcceptorIdIsDeclinedAndChangesNeitherTheCardNorItsHold()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var card = issuedCard(buyerId, null);
+    var creditBefore = availableCredit(buyerId);
+    var requestId = UUID.randomUUID().toString();
+
+    var response = authorize(requestId, vault.cardDetails(card.cardToken()).pan());
+
+    assertThat(response.getResponseCode()).isEqualTo("57");
+    assertThat(response.getAuthorizationCode()).isEmpty();
+    assertThat(cards.find(card.cardToken()))
+        .get()
+        .extracting(SingleUseCard::status)
+        .isEqualTo(SingleUseCard.Status.ACTIVE);
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(recorded(requestId))
+        .containsEntry("card_token", card.cardToken())
+        .containsEntry("response_code", "57")
+        .containsEntry("authorization_code", null)
+        .containsEntry("status", "DECLINED");
+  }
+
+  @Test
   void aCancelledCardIsDeclinedAndStaysCancelled() {
     var card = issuedCard(buyerWithCreditLine(10_000_000));
     cards.cancel(card.cardToken());
@@ -158,6 +210,10 @@ class AuthorizeTests {
   }
 
   private AuthorizationResponse authorize(String requestId, String pan) {
+    return authorize(requestId, pan, ACCEPTOR_ID);
+  }
+
+  private AuthorizationResponse authorize(String requestId, String pan, String acceptorId) {
     return IssuerAuthorizationGrpc.newBlockingStub(channel)
         .withDeadlineAfter(5, TimeUnit.SECONDS)
         .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"))
@@ -167,17 +223,33 @@ class AuthorizeTests {
                 .setAmountMinor(AMOUNT)
                 .setCurrencyCode("USD")
                 .setRetrievalReferenceNumber(requestId)
-                .setCardAcceptorId(ACCEPTOR_ID)
+                .setCardAcceptorId(acceptorId)
                 .setCardAcceptorName("Globex, Springfield")
                 .build());
   }
 
-  // Issued as the Payment saga issues it: the Hold first, then the card, for the same Payment.
   private SingleUseCard issuedCard(BuyerId buyerId) {
+    return issuedCard(buyerId, ACCEPTOR_ID);
+  }
+
+  // Issued as the Payment saga issues it: the Hold first, then the card, for the same Payment, to a
+  // Supplier an Invoice named with this Acceptor ID (none when null).
+  private SingleUseCard issuedCard(BuyerId buyerId, String acceptorId) {
+    var supplier =
+        suppliers
+            .relate(
+                buyerId,
+                new SupplierOnInvoice(
+                    "TAX-" + UUID.randomUUID(),
+                    "Globex",
+                    "https://globex.example/remittance-advice",
+                    "GLOBEX-01",
+                    acceptorId))
+            .supplier();
     var paymentId = UUID.randomUUID();
     var amount = new Money(AMOUNT, USD);
     assertThat(holds.place(paymentId, buyerId, amount)).isEqualTo(Holds.Outcome.PLACED);
-    return cards.issueSingleUse(paymentId, buyerId, UUID.randomUUID(), amount, Instant.now());
+    return cards.issueSingleUse(paymentId, buyerId, supplier.id(), amount, Instant.now());
   }
 
   private Map<String, Object> recorded(String requestId) {

@@ -61,6 +61,8 @@ class CorePathTests {
   // Above the Approval Threshold, so the Invoice takes two different Approvers.
   private static final long AMOUNT = 1_240_000;
   private static final String GLOBEX = "https://globex.example/remittance-advice";
+  // Acme's ERP names it on the Invoice, and the Network carries it on Globex's Charge.
+  private static final String GLOBEX_ACCEPTOR_ID = "GLOBEX000000001";
 
   @DynamicPropertySource
   static void issuer(DynamicPropertyRegistry registry) {
@@ -218,14 +220,15 @@ class CorePathTests {
                     "name": "Globex",
                     "taxId": "12-3456789",
                     "buyerReference": "GLOBEX-01",
-                    "remittanceAddress": "%s"
+                    "remittanceAddress": "%s",
+                    "acceptorId": "%s"
                   },
                   "invoiceNumber": "%s",
                   "amount": {"minorUnits": %d, "currency": "USD"},
                   "dueDate": "2026-11-30"
                 }
                 """
-                    .formatted(GLOBEX, invoiceNumber, AMOUNT))
+                    .formatted(GLOBEX, GLOBEX_ACCEPTOR_ID, invoiceNumber, AMOUNT))
             .exchange();
     assertThat(submitted).hasStatus(201);
     return JsonPath.read(submitted.getResponse().getContentAsString(), "$.id");
@@ -287,7 +290,7 @@ class CorePathTests {
                   .setAmountMinor(AMOUNT)
                   .setCurrencyCode("USD")
                   .setRetrievalReferenceNumber(requestId)
-                  .setCardAcceptorId("GLOBEX-ACCEPTOR")
+                  .setCardAcceptorId(GLOBEX_ACCEPTOR_ID)
                   .setCardAcceptorName("Globex, Springfield")
                   .build());
     } finally {

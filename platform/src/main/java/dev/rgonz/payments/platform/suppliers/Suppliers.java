@@ -67,6 +67,17 @@ public class Suppliers {
     return find(buyerId, supplierId).orElseThrow();
   }
 
+  /**
+   * The Acceptor ID the Network carries on the Supplier's Charges; empty when no Invoice has given
+   * the Supplier one, or there is no such Supplier.
+   */
+  public Optional<String> acceptorId(UUID supplierId) {
+    return jdbc.sql("select acceptor_id from suppliers.supplier where id = :id")
+        .param("id", supplierId)
+        .query(String.class)
+        .optional();
+  }
+
   /** Where the Supplier receives Remittance Advice. */
   String remittanceAddressOf(UUID supplierId) {
     return jdbc.sql("select remittance_address from suppliers.supplier where id = :id")
