@@ -193,6 +193,75 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+  /v1/invoices/{invoiceId}/approval:
+    post:
+      tags: [Invoices]
+      operationId: approveInvoice
+      summary: Approve an Invoice
+      description: >-
+        An Approver of the Invoice's Buyer only (role `approver`); the Approver is the token's subject. An Invoice at
+        or under the Buyer's Approval Threshold is approved by one Approver; above it, by two different Approvers.
+        The same Approver approving again changes nothing and returns the Invoice, so retrying is safe. A rejected
+        Invoice, or one other Approvers have already fully approved, is `409`. An Invoice of any other Buyer
+        answers `404`.
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The Invoice, with this approval recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /v1/invoices/{invoiceId}/rejection:
+    post:
+      tags: [Invoices]
+      operationId: rejectInvoice
+      summary: Reject an Invoice
+      description: >-
+        An Approver of the Invoice's Buyer only (role `approver`); the Approver is the token's subject. An Approver
+        may reject an Invoice they approved while it still awaits a second approval. A rejection is final: any later
+        approval or rejection, the same Approver's included, is `409`. An approved Invoice can't be rejected
+        (`409`). An Invoice of any other Buyer answers `404`.
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The Invoice, rejected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
 components:
   securitySchemes:
     bearerAuth:
@@ -293,14 +362,17 @@ components:
           format: date
     Invoice:
       type: object
-      required: [id, status, supplierId, supplier, invoiceNumber, amount, dueDate]
+      required: [id, status, supplierId, supplier, invoiceNumber, amount, dueDate, decisions]
       properties:
         id:
           type: string
           format: uuid
         status:
           type: string
-          enum: [RECEIVED]
+          description: >-
+            `RECEIVED` until it is fully approved (`APPROVED`) or rejected (`REJECTED`); an Invoice above the
+            Approval Threshold stays `RECEIVED` after its first approval.
+          enum: [RECEIVED, APPROVED, REJECTED]
         supplierId:
           type: string
           format: uuid
@@ -313,6 +385,28 @@ components:
         dueDate:
           type: string
           format: date
+        decisions:
+          type: array
+          description: Every approval and rejection of the Invoice, oldest first.
+          items:
+            $ref: '#/components/schemas/Decision'
+    Decision:
+      type: object
+      description: One Approver's approval or rejection of an Invoice.
+      required: [decision, approverId, approverName, decidedAt]
+      properties:
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED]
+        approverId:
+          type: string
+          description: The Approver's user ID at the identity provider (the token's subject).
+        approverName:
+          type: string
+          description: The Approver's user name when they decided, for reading the record.
+        decidedAt:
+          type: string
+          format: date-time
     Problem:
       type: object
       properties:

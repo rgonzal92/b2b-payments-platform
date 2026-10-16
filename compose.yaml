@@ -27,6 +27,8 @@ services:
       # The realm file reads client secrets from these placeholders at import.
       SIMULATOR_ISSUER_ADMIN_SECRET: ${SIMULATOR_ISSUER_ADMIN_SECRET:?run scripts/init-env.sh first}
       ACME_ERP_SECRET: ${ACME_ERP_SECRET:?run scripts/init-env.sh first}
+      ACME_APPROVER_1_SECRET: ${ACME_APPROVER_1_SECRET:?run scripts/init-env.sh first}
+      ACME_APPROVER_2_SECRET: ${ACME_APPROVER_2_SECRET:?run scripts/init-env.sh first}
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:

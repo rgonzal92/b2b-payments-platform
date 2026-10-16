@@ -70,6 +70,10 @@ _Avoid_: Remittance, payment advice
 A Buyer's employee who is allowed to approve or reject Invoices.
 _Avoid_: Reviewer, checker, signer
 
+**Decision**:
+An Approver's approval or rejection of an Invoice, recorded with who made it and when.
+_Avoid_: Vote, sign-off
+
 **Approval Threshold**:
 The Invoice amount above which a Buyer requires two different Approvers.
 _Avoid_: Approval limit

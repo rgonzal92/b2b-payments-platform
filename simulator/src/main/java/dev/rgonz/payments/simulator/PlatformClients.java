@@ -42,6 +42,19 @@ class PlatformClients {
     return signedInAs("acme-erp", builder, clients, platformUrl).createClient(InvoicesApi.class);
   }
 
+  // Two more clients of the same API, kept inside AcmeApprovers so AcmeErp's stays the only bean.
+  @Bean
+  AcmeApprovers acmeApprovers(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl) {
+    return new AcmeApprovers(
+        signedInAs("acme-approver-1", builder.clone(), clients, platformUrl)
+            .createClient(InvoicesApi.class),
+        signedInAs("acme-approver-2", builder.clone(), clients, platformUrl)
+            .createClient(InvoicesApi.class));
+  }
+
   // The registration ID names one of the spring.security.oauth2.client.registration entries.
   private static HttpServiceProxyFactory signedInAs(
       String registrationId,

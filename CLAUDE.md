@@ -13,7 +13,7 @@ The first PR that brings in a technology also adds `docs/learning/<topic>.md`: o
 - **Architecture**: module boundaries, inter-module calls and events, and data access follow ADR-0003, ADR-0008 and ADR-0009. Payments run as the saga in ADR-0013.
 - **Card data**: PANs live only in the `vault` module; every other module handles Card Tokens (ADR-0004).
 - **Money**: integer minor units, always paired with a currency code.
-- **APIs**: paths start with `/v1`; errors are RFC 9457 Problem Details; every POST that creates an Invoice or moves money requires an `Idempotency-Key` header; lists page by cursor.
+- **APIs**: paths start with `/v1`; errors are RFC 9457 Problem Details; every POST that creates an Invoice or moves money requires an `Idempotency-Key` header, unless its own rule already makes repeats harmless (an Approver's approval counts once); lists page by cursor.
 - **Tests**: test-first via the `tdd` skill. Domain rules get unit tests, each module gets Testcontainers integration tests, one end-to-end test runs the core path through the simulator, and the Spring Modulith verification test stays green.
 
 ## Docs
