@@ -26,10 +26,16 @@ record Account(Kind kind, BuyerId buyerId) {
     return new Account(Kind.NETWORK_SETTLEMENT_PAYABLE, null);
   }
 
+  static Account clearingSuspense() {
+    return new Account(Kind.CLEARING_SUSPENSE, null);
+  }
+
   enum Kind {
     /** What one Buyer owes the Issuer for its cleared Charges. */
     BUYER_RECEIVABLE,
     /** What the Issuer owes the Network for cleared Charges not yet settled. */
-    NETWORK_SETTLEMENT_PAYABLE
+    NETWORK_SETTLEMENT_PAYABLE,
+    /** Cleared Charges no Buyer can be charged for yet, until a person resolves them. */
+    CLEARING_SUSPENSE
   }
 }

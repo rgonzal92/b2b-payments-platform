@@ -148,19 +148,17 @@ class SingleUseCards implements Cards {
         .update();
   }
 
-  // Only an AUTHORIZED card moves, so of two Clearings for one card exactly one clears it.
+  // Any status moves: a card the expiry job holds locked waits for it to commit, then clears.
   @Override
-  public boolean clear(String cardToken) {
-    return jdbc.sql(
-                """
-                update cards.card set status = :cleared
-                 where card_token = :cardToken and status = :authorized
-                """)
-            .param("cleared", SingleUseCard.Status.CLEARED.name())
-            .param("cardToken", cardToken)
-            .param("authorized", SingleUseCard.Status.AUTHORIZED.name())
-            .update()
-        == 1;
+  public void clear(String cardToken) {
+    jdbc.sql(
+            """
+            update cards.card set status = :cleared
+             where card_token = :cardToken and status <> :cleared
+            """)
+        .param("cleared", SingleUseCard.Status.CLEARED.name())
+        .param("cardToken", cardToken)
+        .update();
   }
 
   /**

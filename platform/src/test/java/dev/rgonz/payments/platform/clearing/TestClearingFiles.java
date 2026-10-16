@@ -25,14 +25,34 @@ public final class TestClearingFiles {
 
   private TestClearingFiles() {}
 
-  /** One detail record's fields, in USD. */
+  /** One detail record's fields. */
   public record Detail(
       String networkRecordId,
       String pan,
       long amountMinor,
+      String currency,
       String retrievalReferenceNumber,
       String authorizationCode,
-      String acceptorId) {}
+      String acceptorId) {
+
+    /** A detail record in USD. */
+    public Detail(
+        String networkRecordId,
+        String pan,
+        long amountMinor,
+        String retrievalReferenceNumber,
+        String authorizationCode,
+        String acceptorId) {
+      this(
+          networkRecordId,
+          pan,
+          amountMinor,
+          "USD",
+          retrievalReferenceNumber,
+          authorizationCode,
+          acceptorId);
+    }
+  }
 
   /**
    * Writes a file of these Clearings, with its header (a new file ID, the sequence number, Business
@@ -64,20 +84,23 @@ public final class TestClearingFiles {
 
   public static String detail(Detail detail) {
     return record(
-        "05%-20s%-19s%012dUSD%-12s%-6s%-15s%s"
+        "05%-20s%-19s%012d%s%-12s%-6s%-15s%s"
             .formatted(
                 detail.networkRecordId(),
                 detail.pan(),
                 detail.amountMinor(),
+                detail.currency(),
                 detail.retrievalReferenceNumber(),
                 detail.authorizationCode(),
                 detail.acceptorId(),
                 DATE.format(BUSINESS_DATE.minusDays(1))));
   }
 
+  /** The trailer, in the first detail record's currency (USD for none). */
   public static String trailer(List<Detail> details) {
     var total = details.stream().mapToLong(Detail::amountMinor).sum();
-    return record("92%08d%015d%015dUSD".formatted(details.size(), total, total));
+    var currency = details.isEmpty() ? "USD" : details.getFirst().currency();
+    return record("92%08d%015d%015d%s".formatted(details.size(), total, total, currency));
   }
 
   /** A new ID of letters and digits, as the Network gives files, records and requests. */

@@ -14,4 +14,12 @@ public interface Journal {
    * the Buyer and amount. Joins the caller's transaction.
    */
   UUID postClearing(String networkRecordId, BuyerId buyerId, Money amount);
+
+  /**
+   * Posts the Journal Entry of a Clearing no Buyer can be charged for yet: debits Clearing Suspense
+   * and credits the Network Settlement Payable by the cleared amount, and returns the entry's ID,
+   * so the Issuer's books still show what it owes the Network until a person resolves it. Keyed by
+   * the Network record ID like {@link #postClearing}, and joins the caller's transaction.
+   */
+  UUID postClearingToSuspense(String networkRecordId, Money amount);
 }

@@ -3,7 +3,9 @@ package dev.rgonz.payments.platform.clearing;
 import dev.rgonz.payments.contracts.server.ClearingFilesApi;
 import dev.rgonz.payments.contracts.server.model.ClearingFileDto;
 import dev.rgonz.payments.contracts.server.model.ClearingFileImportDto;
+import dev.rgonz.payments.contracts.server.model.ClearingOutcomeCountsDto;
 import dev.rgonz.payments.platform.clearing.ClearingFileImports.ImportResult;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -60,7 +62,20 @@ class ClearingFilesController implements ClearingFilesApi {
         .sequenceNumber(file.sequenceNumber())
         .businessDate(file.businessDate())
         .status(ClearingFileDto.StatusEnum.fromValue(file.status().name()))
-        .recordCount(file.recordCount());
+        .recordCount(file.recordCount())
+        .outcomes(toDto(file.outcomes()));
+  }
+
+  private static ClearingOutcomeCountsDto toDto(Map<ClearingOutcome, Long> outcomes) {
+    return new ClearingOutcomeCountsDto()
+        .matched(outcomes.get(ClearingOutcome.MATCHED))
+        .aboveAuthorizedAmount(outcomes.get(ClearingOutcome.ABOVE_AUTHORIZED_AMOUNT))
+        .noAuthorization(outcomes.get(ClearingOutcome.NO_AUTHORIZATION))
+        .unknownCard(outcomes.get(ClearingOutcome.UNKNOWN_CARD))
+        .otherCurrency(outcomes.get(ClearingOutcome.OTHER_CURRENCY))
+        .againstReversedAuthorization(outcomes.get(ClearingOutcome.AGAINST_REVERSED_AUTHORIZATION))
+        .afterHoldExpired(outcomes.get(ClearingOutcome.AFTER_HOLD_EXPIRED))
+        .authorizationAlreadyCleared(outcomes.get(ClearingOutcome.AUTHORIZATION_ALREADY_CLEARED));
   }
 
   private static ErrorResponseException problem(HttpStatus status, String detail) {

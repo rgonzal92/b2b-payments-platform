@@ -1,6 +1,8 @@
 package dev.rgonz.payments.platform.clearing;
 
 import java.time.LocalDate;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -63,7 +65,29 @@ class ClearingFiles {
                     row.getLong("sequence_number"),
                     row.getObject("business_date", LocalDate.class),
                     ClearingFileSummary.Status.valueOf(row.getString("status")),
-                    row.getLong("record_count")))
+                    row.getLong("record_count"),
+                    outcomes(fileId)))
         .optional();
+  }
+
+  // How many of the file's Clearings ended with each outcome; zero for an outcome none had.
+  private Map<ClearingOutcome, Long> outcomes(String fileId) {
+    var outcomes = new EnumMap<ClearingOutcome, Long>(ClearingOutcome.class);
+    for (var outcome : ClearingOutcome.values()) {
+      outcomes.put(outcome, 0L);
+    }
+    jdbc.sql(
+            """
+            select outcome, count(*) as clearings
+              from clearing.clearing
+             where file_id = :fileId
+             group by outcome
+            """)
+        .param("fileId", fileId)
+        .query(
+            row ->
+                outcomes.put(
+                    ClearingOutcome.valueOf(row.getString("outcome")), row.getLong("clearings")));
+    return outcomes;
   }
 }

@@ -105,7 +105,8 @@ class CreditLines implements Holds {
     return Outcome.PLACED;
   }
 
-  // The row stays, marked released; releasing it again finds no placed Hold and changes nothing.
+  // The row stays, marked released; releasing it again, or a cleared one, finds no placed Hold and
+  // changes nothing.
   @Override
   public void release(UUID holdId) {
     jdbc.sql(
@@ -131,6 +132,15 @@ class CreditLines implements Holds {
             """)
         .param("id", holdId)
         .update();
+  }
+
+  @Override
+  public boolean isReleased(UUID holdId) {
+    return jdbc.sql("select status = 'RELEASED' from ledger.hold where id = :id for update")
+        .param("id", holdId)
+        .query(Boolean.class)
+        .optional()
+        .orElse(false);
   }
 
   // A statement of its own: after place's lock, it sees what other transactions committed while

@@ -47,9 +47,10 @@ public interface Cards {
   void reverse(String cardToken);
 
   /**
-   * Moves the card from {@code AUTHORIZED} to {@code CLEARED} when the Network's Clearing File
-   * gives its Charge's final amount, in one conditional update, and says whether it did: false when
-   * the card isn't {@code AUTHORIZED}, or doesn't exist. Joins the caller's transaction.
+   * Moves the card to {@code CLEARED} when the Network's Clearing File gives a Charge on it a final
+   * amount, whatever its status: the Issuer pays what clears, so even a card that expired, was
+   * cancelled or had its Authorization reversed ends {@code CLEARED}. Clearing it again, or a card
+   * that doesn't exist, changes nothing. Joins the caller's transaction.
    */
-  boolean clear(String cardToken);
+  void clear(String cardToken);
 }

@@ -36,6 +36,18 @@ class JournalEntries implements Journal {
                 new Line(Account.networkSettlementPayable(), Side.CREDIT, amount))));
   }
 
+  @Override
+  @Transactional
+  public UUID postClearingToSuspense(String networkRecordId, Money amount) {
+    return post(
+        new JournalEntry(
+            JournalEntry.Kind.CLEARING,
+            networkRecordId,
+            List.of(
+                new Line(Account.clearingSuspense(), Side.DEBIT, amount),
+                new Line(Account.networkSettlementPayable(), Side.CREDIT, amount))));
+  }
+
   // Posts the entry and returns its ID; an entry of the same kind and idempotency key posted before
   // returns that entry's ID instead, and nothing is posted. Runs in the caller's transaction, so
   // the entry and its lines commit together.
