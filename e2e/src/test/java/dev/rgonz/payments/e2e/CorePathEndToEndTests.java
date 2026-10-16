@@ -6,6 +6,9 @@ import com.jayway.jsonpath.JsonPath;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
 import dev.rgonz.payments.platform.PlatformApplication;
 import dev.rgonz.payments.simulator.SimulatorApplication;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -13,6 +16,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.test.json.JsonContent;
@@ -29,7 +33,8 @@ import org.testcontainers.utility.DockerImageName;
  * has Acme's ERP submit an Invoice from Globex, two of Acme's Approvers approve it, the platform's
  * worker pays it with a Single-Use Card, Globex opens the card through its Remittance Advice link,
  * and Globex charges it: the simulator's Acquirer and Network ask the platform over gRPC, signed in
- * as the network client, and the platform approves the Charge.
+ * as the network client, and the platform approves the Charge. Then the demo's second call has the
+ * Network write its Clearing File into the platform's drop folder and Issuer staff import it.
  */
 @Testcontainers
 class CorePathEndToEndTests {
@@ -52,6 +57,10 @@ class CorePathEndToEndTests {
           .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
+
+  // The Issuer's drop folder: the simulator's Network writes its Clearing Files here and the
+  // platform imports them from here.
+  @TempDir static Path dropFolder;
 
   private static ConfigurableApplicationContext platform;
   private static ConfigurableApplicationContext simulator;
@@ -80,8 +89,9 @@ class CorePathEndToEndTests {
             "vault.encryption-key=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
             "vault.hash-key=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
             "remittance.link-key=AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
-            // Its drop folder defaults to the repository's var/clearing, where a developer's own
-            // Clearing Files may wait: this run doesn't check it.
+            // Not the repository's var/clearing, where a developer's own Clearing Files may wait.
+            "clearing.drop-folder=" + dropFolder,
+            // The demo has Issuer staff import its file at once.
             "clearing.drop-folder-check.enabled=false");
     // Returns once AcmeSeeder has created Acme and its Credit Line through the platform.
     simulator =
@@ -103,6 +113,10 @@ class CorePathEndToEndTests {
             "spring.security.oauth2.client.registration.acme-approver-2.client-secret="
                 + CLIENT_SECRET,
             "spring.security.oauth2.client.registration.network.client-secret=" + CLIENT_SECRET,
+            // The Network writes its Clearing File into the platform's drop folder, only when the
+            // demo asks: not at midnight.
+            "simulator.network.drop-folder=" + dropFolder,
+            "simulator.network.clearing-file-cron=-",
             // The platform's dependencies are on this classpath too: the simulator has no database.
             "spring.autoconfigure.exclude="
                 + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
@@ -156,7 +170,8 @@ class CorePathEndToEndTests {
   @Test
   // The demo itself waits up to 30 seconds for the worker to pay the Invoice.
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
-  void theDemoInvoiceIsApprovedTwicePaidAndGlobexsChargeOnItsCardIsApproved() {
+  void theDemoInvoiceIsPaidGlobexsChargeApprovedAndItsClearingImportedFromTheNetworksFile()
+      throws IOException {
     var summary =
         RestClient.create()
             .post()
@@ -180,5 +195,22 @@ class CorePathEndToEndTests {
     assertThat(json).extractingPath("$.globexReceived.invoiceNumber").isEqualTo(invoiceNumber);
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
     assertThat(json).extractingPath("$.authorization.authorizationCode").asString().hasSize(6);
+
+    var imported =
+        RestClient.create()
+            .post()
+            .uri("http://localhost:{port}/demo/clearing-file", simulatorPort)
+            .retrieve()
+            .body(String.class);
+
+    assertThat(new JsonContent(imported))
+        .isLenientlyEqualTo(
+            """
+            {"status": "IMPORTED", "recordCount": 1}
+            """);
+    // The platform deletes a file once it has imported it: the shared drop folder is empty again.
+    try (var left = Files.walk(dropFolder)) {
+      assertThat(left.filter(Files::isRegularFile)).isEmpty();
+    }
   }
 }
