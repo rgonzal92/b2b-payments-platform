@@ -5,9 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -26,6 +29,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -37,7 +41,8 @@ import org.springframework.web.client.RestClient;
  * Approvers approve it, the demo waits for its Payment, and Globex charges the card it received,
  * against a stub Keycloak, platform and {@code IssuerAuthorization} gRPC server. Like the platform,
  * the stub delivers the Remittance Advice to Globex before the Payment shows {@code COMPLETED}, and
- * serves the card link.
+ * serves the card link. A second call has the Network write its Clearing File and Issuer staff
+ * import it.
  */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -57,24 +62,33 @@ class AcmeDemoTests {
   static final List<Recorded> platformRequests = new CopyOnWriteArrayList<>();
   static final StubPlatform platform = new StubPlatform();
   static final StubIssuer issuer = new StubIssuer();
+  static final Path dropFolder = createTempDirectory();
 
   @DynamicPropertySource
   static void pointAtStub(DynamicPropertyRegistry registry) {
     var base = "http://localhost:" + platform.server.getAddress().getPort();
     registry.add(
         "spring.security.oauth2.client.provider.keycloak.token-uri", () -> base + "/token");
-    for (var client : List.of("acme-erp", "acme-approver-1", "acme-approver-2", "network")) {
+    for (var client :
+        List.of("issuer-admin", "acme-erp", "acme-approver-1", "acme-approver-2", "network")) {
       registry.add(
           "spring.security.oauth2.client.registration." + client + ".client-secret", () -> "test");
     }
     registry.add("simulator.platform-url", () -> base);
     registry.add("simulator.platform-grpc-address", issuer::address);
+    registry.add("simulator.network.drop-folder", dropFolder::toString);
   }
 
   @AfterAll
-  static void stopStub() {
+  static void stopStub() throws IOException {
     platform.server.stop(0);
     issuer.stop();
+    try (var files = Files.list(dropFolder)) {
+      for (var file : files.toList()) {
+        Files.delete(file);
+      }
+    }
+    Files.delete(dropFolder);
   }
 
   @LocalServerPort int port;
@@ -171,16 +185,70 @@ class AcmeDemoTests {
     assertThat(platformRequests).filteredOn(request -> request.method().equals("GET")).hasSize(2);
   }
 
+  @Test
+  void theClearingFileDemoHasTheNetworkWriteItsFileAndIssuerStaffImportIt(CapturedOutput output)
+      throws IOException {
+    issuer.answerWith("00", "CL34EF");
+    assertThat(mvc.post().uri("/demo/invoices").exchange()).hasStatusOk();
+    var charge = issuer.received.getLast().request().getRetrievalReferenceNumber();
+
+    var demo = mvc.post().uri("/demo/clearing-file").exchange();
+
+    assertThat(demo).hasStatusOk();
+    // The platform's summary, as the stub answers it.
+    assertThat(demo)
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"id": "NET-STUB-0001", "sequenceNumber": 7, "businessDate": "2026-10-16",
+             "status": "IMPORTED", "recordCount": 1}
+            """);
+    assertThat(platformRequests)
+        .last()
+        .isEqualTo(
+            new Recorded("POST", "/v1/clearing-files", "Bearer token-for-simulator-issuer-admin"));
+    // The file the import named is the Network's, in the drop folder, with the demo's Charge in it.
+    var lines =
+        Files.readAllLines(
+            dropFolder.resolve(platform.importedFileName), StandardCharsets.US_ASCII);
+    assertThat(lines.getFirst()).startsWith("90");
+    assertThat(lines)
+        .anySatisfy(line -> assertThat(line).startsWith("05").contains(PAN, charge, "CL34EF"));
+    assertThat(demo).bodyText().doesNotContain(PAN);
+    assertThat(output).doesNotContain(PAN);
+  }
+
+  @Test
+  void withNothingToClearTheDemoWritesNoFileAndImportsNothing() throws IOException {
+    // Sends whatever earlier tests' Charges left, if anything.
+    assertThat(mvc.post().uri("/demo/clearing-file").exchange()).hasStatus2xxSuccessful();
+    platformRequests.clear();
+    long filesBefore;
+    try (var files = Files.list(dropFolder)) {
+      filesBefore = files.count();
+    }
+
+    var demo = mvc.post().uri("/demo/clearing-file").exchange();
+
+    assertThat(demo).hasStatus(HttpStatus.NO_CONTENT);
+    assertThat(platformRequests).isEmpty();
+    try (var files = Files.list(dropFolder)) {
+      assertThat(files.count()).isEqualTo(filesBefore);
+    }
+  }
+
   /**
    * Plays the platform for one demo Invoice at a time: takes the Invoice, applies Acme's approval
    * rule, and shows its Payment {@code STARTED} on the first read and {@code COMPLETED} on the
    * next, after delivering the Remittance Advice to the simulator's Globex; or {@code FAILED},
-   * delivering nothing, when told to fail it.
+   * delivering nothing, when told to fail it. Answers every Clearing File import with the same
+   * summary.
    */
   static final class StubPlatform {
 
     private static final Pattern INVOICE_NUMBER = Pattern.compile("\"invoiceNumber\":\"([^\"]+)\"");
     private static final Pattern MINOR_UNITS = Pattern.compile("\"minorUnits\":(\\d+)");
+    private static final Pattern FILE_NAME = Pattern.compile("\"fileName\":\"([^\"]+)\"");
 
     final HttpServer server;
     volatile int simulatorPort;
@@ -188,6 +256,7 @@ class AcmeDemoTests {
     volatile String invoiceNumber;
     volatile long minorUnits;
     volatile String failureReason;
+    volatile String importedFileName;
     final List<String> approvers = new CopyOnWriteArrayList<>();
     final AtomicInteger reads = new AtomicInteger();
 
@@ -202,6 +271,7 @@ class AcmeDemoTests {
       server.createContext("/token", this::token);
       server.createContext("/v1/invoices", this::invoices);
       server.createContext("/v1/remittance-links/" + LINK_TOKEN, this::cardLink);
+      server.createContext("/v1/clearing-files", this::importClearingFile);
       server.start();
     }
 
@@ -303,6 +373,25 @@ class AcmeDemoTests {
           .toBodilessEntity();
     }
 
+    private void importClearingFile(HttpExchange exchange) throws IOException {
+      platformRequests.add(
+          new Recorded(
+              exchange.getRequestMethod(),
+              exchange.getRequestURI().getPath(),
+              exchange.getRequestHeaders().getFirst("Authorization")));
+      importedFileName =
+          find(
+              FILE_NAME,
+              new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+      respond(
+          exchange,
+          201,
+          """
+          {"id": "NET-STUB-0001", "sequenceNumber": 7, "businessDate": "2026-10-16",
+           "status": "IMPORTED", "recordCount": 1}
+          """);
+    }
+
     private void cardLink(HttpExchange exchange) throws IOException {
       respond(
           exchange,
@@ -370,6 +459,14 @@ class AcmeDemoTests {
       exchange.sendResponseHeaders(status, bytes.length);
       exchange.getResponseBody().write(bytes);
       exchange.close();
+    }
+  }
+
+  private static Path createTempDirectory() {
+    try {
+      return Files.createTempDirectory("acme-demo-drop-folder");
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
   }
 }
