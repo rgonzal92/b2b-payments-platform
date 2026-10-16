@@ -1,0 +1,72 @@
+// The Network link (ADR-0006): the Network asks the Issuer to approve or decline a Charge, and
+// cancels an earlier Authorization with a Reversal. Fields are named after the ISO 8583 data elements
+// (DE) they stand for, so a later move to real ISO 8583 is a mapping, not a redesign.
+syntax = "proto3";
+
+package payments.network.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_package = "dev.rgonz.payments.contracts.network";
+option java_outer_classname = "IssuerAuthorizationProto";
+
+// Served by the platform; only the Network may call it (a Keycloak token with the realm role
+// `network`, sent as `authorization: Bearer <token>` metadata).
+service IssuerAuthorization {
+  // Approve or decline a Charge, in real time.
+  rpc Authorize(AuthorizationRequest) returns (AuthorizationResponse);
+  // Cancel the Authorization with this retrieval reference number.
+  rpc Reverse(ReversalRequest) returns (ReversalResponse);
+}
+
+message AuthorizationRequest {
+  // DE 2: the card's PAN. Never stored or logged outside the vault (ADR-0004).
+  string primary_account_number = 1;
+  // DE 4: the Charge's amount in minor units of currency_code.
+  int64 amount_minor = 2;
+  // DE 49: ISO 4217 alphabetic code, such as "USD" (real ISO 8583 carries the numeric code).
+  string currency_code = 3;
+  // DE 7: when the Network sent the request.
+  google.protobuf.Timestamp transmitted_at = 4;
+  // DE 11: the Network's trace number for this message.
+  string system_trace_audit_number = 5;
+  // DE 14: the card's expiry as printed on it, "YYMM".
+  string expiration_date = 6;
+  // DE 18: the Supplier's merchant category code.
+  string merchant_category_code = 7;
+  // DE 37: the request ID; the same value names this Authorization in a Reversal.
+  string retrieval_reference_number = 8;
+  // DE 42: the Acceptor ID the Supplier's Acquirer gave it.
+  string card_acceptor_id = 9;
+  // DE 43: the Supplier's name and location as the Acquirer knows them.
+  string card_acceptor_name = 10;
+  // The card's security code. Real Networks carry it in a private-use data element. Never stored or
+  // logged outside the vault (ADR-0004).
+  string security_code = 11;
+}
+
+message AuthorizationResponse {
+  // DE 37: echoes the request's.
+  string retrieval_reference_number = 1;
+  // DE 39: "00" approved; anything else declines, such as "14" invalid card.
+  string response_code = 2;
+  // DE 38: six characters on an approval; empty on a decline.
+  string authorization_code = 3;
+}
+
+message ReversalRequest {
+  // DE 37: the retrieval reference number of the Authorization to cancel.
+  string retrieval_reference_number = 1;
+  // DE 7: when the Network sent the Reversal.
+  google.protobuf.Timestamp transmitted_at = 2;
+  // DE 11: the Network's trace number for this message.
+  string system_trace_audit_number = 3;
+}
+
+message ReversalResponse {
+  // DE 37: echoes the request's.
+  string retrieval_reference_number = 1;
+  // DE 39: "00" acknowledged.
+  string response_code = 2;
+}

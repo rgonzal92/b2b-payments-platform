@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>contracts</artifactId>
 	<name>contracts</name>
-	<description>The platform's API contracts, and the code generated from them.</description>
+	<description>The platform's API contracts (OpenAPI and protobuf), and the code generated from them.</description>
 
 	<dependencies>
 		<dependency>
@@ -32,10 +32,25 @@
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-annotations</artifactId>
 		</dependency>
+		<!-- What the code generated from src/main/proto needs: protobuf messages and grpc-java stubs. -->
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-protobuf</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-stub</artifactId>
+		</dependency>
 	</dependencies>
 
 	<build>
 		<plugins>
+			<!-- The Network link's contract (src/main/proto): Spring Boot's parent sets the protoc and
+			     grpc-java versions and the generate goal. -->
+			<plugin>
+				<groupId>io.github.ascopes</groupId>
+				<artifactId>protobuf-maven-plugin</artifactId>
+			</plugin>
 			<plugin>
 				<groupId>org.openapitools</groupId>
 				<artifactId>openapi-generator-maven-plugin</artifactId>
