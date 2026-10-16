@@ -773,8 +773,10 @@ components:
         refusalReason:
           type: string
           description: >-
-            Which check refused the file, by line and field, never a value; null unless `status` is `REFUSED`. See
-            `docs/runbooks/clearing-file-refused.md`.
+            Which check refused the file, by line and field, never a value; present only when `status` is `REFUSED`.
+            See `docs/runbooks/clearing-file-refused.md`.
+          # Left out of the JSON rather than null, so every other file's summary stays as it was.
+          x-field-extra-annotation: '@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)'
         recordCount:
           type: integer
           format: int64

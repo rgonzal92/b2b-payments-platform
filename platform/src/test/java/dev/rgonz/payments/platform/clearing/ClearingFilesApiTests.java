@@ -153,7 +153,7 @@ class ClearingFilesApiTests {
         .isEqualTo(
             """
             {"id": "%s", "sequenceNumber": 7, "businessDate": "2026-10-15", "status": "IMPORTED",
-             "recordCount": 0, "skippedCount": 0, "refusalReason": null,
+             "recordCount": 0, "skippedCount": 0,
              "outcomes": {"matched": 0, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
                           "unknownCard": 0, "otherCurrency": 0, "againstReversedAuthorization": 0,
                           "afterHoldExpired": 0, "authorizationAlreadyCleared": 0},

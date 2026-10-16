@@ -25,6 +25,6 @@ GET /v1/clearing-files?limit=2&cursor=…        → items [A], no nextCursor
 
 ## Gotchas we hit
 
-- **A null in JSON isn't "absent".** The platform's JSON writes a missing value as `null`, but the contract says `nextCursor` is absent on the last page. The OpenAPI document gives that one field `@JsonInclude(NON_NULL)` through the generator's `x-field-extra-annotation`, rather than changing how every other response is written.
+- **A null in JSON isn't "absent".** The platform's JSON writes a missing value as `null`, but the contract says `nextCursor` is absent on the last page. The OpenAPI document gives that one field `@JsonInclude(NON_NULL)` through the generator's `x-field-extra-annotation`, rather than changing how every other response is written. `ClearingFile.refusalReason` gets the same, so a file that wasn't refused carries no `"refusalReason": null`.
 - **The generated interfaces validate through a proxy.** They carry `@Validated`, so `limit=0` fails with a `ConstraintViolationException` from the method's proxy, not with Spring MVC's own validation error, and Spring's problem details didn't cover it: it answered `500`. `ApiProblems` now turns it into a `400`.
 - **A row that moves can be seen twice or not at all.** Keyset pages are stable for rows that don't change their ordering columns. A refused file whose ID arrives again, refused again or imported, takes a new `received_at` (#50), so it moves to the top of the list: someone paging at that moment may miss it, and finds it on the first page again.
