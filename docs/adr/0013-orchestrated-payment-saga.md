@@ -1,0 +1,3 @@
+# Payments run as an orchestrated saga in payables
+
+Paying an Invoice spans three modules (place the Hold in `ledger`, issue the card in `cards` and `vault`, send the Remittance Advice from `suppliers`), and any step can fail after earlier ones succeeded. `payables` orchestrates each Payment as a saga: it records the Payment's state, runs the steps in order, and runs compensating steps (cancel the card, release the Hold) when a later step fails for good. We chose orchestration over choreography so that one place shows every Payment's state and its undo path; choreography stays for side effects such as notifications.
