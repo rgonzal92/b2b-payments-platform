@@ -1,0 +1,29 @@
+# One grouped pull request per ecosystem per week. Security updates arrive on their own, as soon as published.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      maven:
+        patterns: ["*"]
+    ignore:
+      # Its version must match the OpenTelemetry API that Spring Boot manages: bump it by hand, with Boot.
+      - dependency-name: "io.opentelemetry.instrumentation:opentelemetry-logback-appender-1.0"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker-compose:
+        patterns: ["*"]
