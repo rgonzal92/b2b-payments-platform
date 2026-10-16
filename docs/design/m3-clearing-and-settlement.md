@@ -86,6 +86,11 @@ The settle step totals the file's posted Clearings (Clearing Suspense included) 
 
 `cards` records when a card became `AUTHORIZED`. The expiry job from #34 also expires an `AUTHORIZED` card 7 days after that, through the same `CardExpired` event, so its Hold is released and its Payment ends `EXPIRED`. A Clearing that arrives later is still posted, as "after Hold expired".
 
+- Decided during #54:
+  - `cards.card.authorized_at` (`cards` migration V3) is set by `Cards.authorize`, to the time the platform approved the Charge, and cleared by `Cards.reverse`, so a reversed card waits for its own expiry. A card already `AUTHORIZED` when V3 runs gets the migration's time: its 7 days can't start before its Charge.
+  - The 7 days are `CardExpiry.CLEARING_WINDOW`, and the job expires an `AUTHORIZED` card whose `authorized_at` is 7 days or more before its run. Each of its transactions expires up to 100 `ACTIVE` cards past their expiry and up to 100 `AUTHORIZED` cards past their 7 days, the latter found through a partial index on `authorized_at` covering `AUTHORIZED` cards, as V2's does for `ACTIVE` ones.
+  - `payables` only changes wording: an expired card is no longer always an uncharged one.
+
 ### What people read (Q16)
 
 Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with sequence gaps shown) and `GET /v1/clearing-files/{id}` (status, Business Date, counts per outcome, the Settlement and whether it matched). The credit endpoint adds the Buyer Receivable balance next to open Holds and Available Credit. Browsing the journal waits for the M9 UI.
