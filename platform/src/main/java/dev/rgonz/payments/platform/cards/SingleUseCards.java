@@ -102,11 +102,17 @@ class SingleUseCards implements Cards {
         .optional();
   }
 
+  // Only an ACTIVE card moves, so a card charged, expired or cleared meanwhile keeps its status.
   @Override
   public void cancel(String cardToken) {
-    jdbc.sql("update cards.card set status = :status where card_token = :cardToken")
-        .param("status", SingleUseCard.Status.CANCELLED.name())
+    jdbc.sql(
+            """
+            update cards.card set status = :cancelled
+             where card_token = :cardToken and status = :active
+            """)
+        .param("cancelled", SingleUseCard.Status.CANCELLED.name())
         .param("cardToken", cardToken)
+        .param("active", SingleUseCard.Status.ACTIVE.name())
         .update();
   }
 

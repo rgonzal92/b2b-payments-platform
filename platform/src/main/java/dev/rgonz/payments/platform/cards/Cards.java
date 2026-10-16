@@ -25,9 +25,9 @@ public interface Cards {
   Optional<SingleUseCard> find(String cardToken);
 
   /**
-   * Cancels the card for good, so it accepts no Charge and its details are shown to no one.
-   * Cancelling it again, or a card that doesn't exist, changes nothing. Joins the caller's
-   * transaction.
+   * Cancels an {@code ACTIVE} card for good, in one conditional update, so it accepts no Charge and
+   * its details are shown to no one. A card in any other status is left as it is, so cancelling it
+   * again, or a card that doesn't exist, changes nothing. Joins the caller's transaction.
    */
   void cancel(String cardToken);
 
