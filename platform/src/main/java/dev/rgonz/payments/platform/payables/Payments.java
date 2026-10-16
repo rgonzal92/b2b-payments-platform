@@ -103,6 +103,17 @@ class Payments {
         == 1;
   }
 
+  /**
+   * Locks the Payment until the transaction ends, waiting while another transaction (a worker
+   * running its step) holds it; empty when there is no such Payment.
+   */
+  Optional<Payment> lock(UUID id) {
+    return jdbc.sql("select " + COLUMNS + " from payables.payment where id = :id for update")
+        .param("id", id)
+        .query(Payments::toPayment)
+        .optional();
+  }
+
   Optional<Payment> findForInvoice(UUID invoiceId) {
     return jdbc.sql("select " + COLUMNS + " from payables.payment where invoice_id = :invoiceId")
         .param("invoiceId", invoiceId)

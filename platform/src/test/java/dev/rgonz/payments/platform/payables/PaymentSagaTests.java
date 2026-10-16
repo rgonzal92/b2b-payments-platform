@@ -20,6 +20,8 @@ import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.cards.CardExpired;
+import dev.rgonz.payments.platform.cards.CardExpiry;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
@@ -70,10 +72,11 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * An approved Invoice's Payment runs through the saga: over HTTP with mocked tokens, with the
- * worker driven by hand instead of on its schedule.
+ * worker and the card expiry job driven by hand instead of on their schedules.
  */
 @Import(TestcontainersConfiguration.class)
-@SpringBootTest(properties = "payables.payment-worker.enabled=false")
+@SpringBootTest(
+    properties = {"payables.payment-worker.enabled=false", "cards.expiry-job.enabled=false"})
 @AutoConfigureMockMvc
 @AutoConfigureMockRestServiceServer
 class PaymentSagaTests {
@@ -90,6 +93,7 @@ class PaymentSagaTests {
   @Autowired CompletedEventPublications completedEvents;
   @Autowired JdbcClient jdbc;
   @Autowired MockRestServiceServer supplier;
+  @Autowired CardExpiry cardExpiry;
   @MockitoSpyBean Holds holds;
   @MockitoSpyBean Cards cards;
   @MockitoSpyBean RemittanceAdvices remittanceAdvices;
@@ -176,6 +180,54 @@ class PaymentSagaTests {
     assertThat(card.amount()).isEqualTo(amount);
     assertThat(card.status()).isEqualTo(SingleUseCard.Status.ACTIVE);
     assertThat(again).isEqualTo(card);
+  }
+
+  @Test
+  void aCardNobodyChargedBeforeItsExpiryEndsItsPaymentExpiredAndReturnsTheCredit()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
+    saga.runDueSteps(Instant.now());
+    var creditWhilePaid = availableCredit(acme);
+    var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
+
+    cardExpiry.expireDue(card.expiresAt().plusSeconds(1));
+
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> "EXPIRED".equals(paymentState(acme, invoiceId)));
+    assertThat(creditWhilePaid).isEqualTo(8_760_000);
+    assertThat(availableCredit(acme)).isEqualTo(10_000_000);
+  }
+
+  @Test
+  void anExpiryRunTwiceAndDeliveredTwiceReleasesTheHoldOnceAndLeavesThePaymentExpired()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
+    saga.runDueSteps(Instant.now());
+    // Another of the Buyer's Holds, which no release of this card's Hold may touch.
+    holds.place(
+        UUID.randomUUID(), new BuyerId(acme), new Money(1_000_000, Currency.getInstance("USD")));
+    var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
+
+    cardExpiry.expireDue(card.expiresAt());
+    cardExpiry.expireDue(card.expiresAt());
+    await().atMost(Duration.ofSeconds(10)).until(() -> completedExpiriesOf(card.cardToken()) == 1);
+    // The same event again, as the registry redelivers one whose listener's completion was lost.
+    transactions.executeWithoutResult(
+        status ->
+            events.publishEvent(
+                new CardExpired(
+                    card.cardToken(), card.paymentId(), card.buyerId(), card.amount())));
+    await().atMost(Duration.ofSeconds(10)).until(() -> completedExpiriesOf(card.cardToken()) == 2);
+
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("EXPIRED");
+    assertThat(availableCredit(acme)).isEqualTo(9_000_000);
+    assertThat(cards.find(card.cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.EXPIRED);
   }
 
   @Test
@@ -548,7 +600,8 @@ class PaymentSagaTests {
           stopAfterTheRealCall
               .when(remittanceAdvices)
               .deliver(argThat(advice -> advice.invoiceId().equals(invoiceId)), any());
-      case COMPLETED, FAILED -> throw new IllegalArgumentException("No step follows " + state);
+      case COMPLETED, FAILED, EXPIRED ->
+          throw new IllegalArgumentException("No step follows " + state);
     }
   }
 
@@ -692,6 +745,14 @@ class PaymentSagaTests {
         .filter(
             event ->
                 event instanceof InvoiceApproved approved && approved.invoiceId().equals(invoiceId))
+        .count();
+  }
+
+  private long completedExpiriesOf(String cardToken) {
+    return completedEvents.findAll().stream()
+        .map(EventPublication::getEvent)
+        .filter(
+            event -> event instanceof CardExpired expired && expired.cardToken().equals(cardToken))
         .count();
   }
 
