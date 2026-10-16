@@ -4,6 +4,7 @@ import dev.rgonz.payments.contracts.server.BuyersApi;
 import dev.rgonz.payments.contracts.server.model.BuyerDto;
 import dev.rgonz.payments.contracts.server.model.BuyerRequestDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
+import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.util.Currency;
 import java.util.UUID;
@@ -26,11 +27,12 @@ class BuyersController implements BuyersApi {
   @Override
   @PreAuthorize("hasRole('issuer-admin')")
   public ResponseEntity<BuyerDto> putBuyer(UUID buyerId, BuyerRequestDto request) {
-    var buyer = new Buyer(buyerId, request.getName(), toMoney(request.getApprovalThreshold()));
+    var buyer =
+        new Buyer(new BuyerId(buyerId), request.getName(), toMoney(request.getApprovalThreshold()));
     if (buyers.insertIfAbsent(buyer)) {
       return ResponseEntity.status(HttpStatus.CREATED).body(toDto(buyer));
     }
-    var existing = buyers.find(buyerId).orElseThrow();
+    var existing = buyers.find(buyer.id()).orElseThrow();
     if (!existing.equals(buyer)) {
       throw new ErrorResponseException(
           HttpStatus.CONFLICT,
@@ -48,7 +50,7 @@ class BuyersController implements BuyersApi {
   private static BuyerDto toDto(Buyer buyer) {
     var threshold = buyer.approvalThreshold();
     return new BuyerDto()
-        .id(buyer.id())
+        .id(buyer.id().value())
         .name(buyer.name())
         .approvalThreshold(
             new MoneyDto()
