@@ -14,5 +14,5 @@ The project pins exact versions everywhere: Spring Boot, Maven plugins, the SHAs
 ## Gotchas we hit
 
 - **Some pins are invisible to it.** It can't see the PostgreSQL tag inside `TestcontainersConfiguration`, the google-java-format version inside the Spotless configuration, or the gitleaks version in the workflow. When it bumps PostgreSQL in `compose.yaml`, change the test's tag in the same pull request; bump google-java-format by hand, and gitleaks as `gitleaks.md` describes.
-- **One pin is deliberately ignored.** The OpenTelemetry Logback appender must match the OpenTelemetry API version Spring Boot manages, so Dependabot skips it; bump it by hand when Boot upgrades (see `opentelemetry.md`).
+- **One pin is deliberately ignored.** The OpenTelemetry Logback appender must match the OpenTelemetry API version Spring Boot manages, so Dependabot skips it, including any future security updates; bump it by hand when Boot upgrades (see `opentelemetry.md`).
 - **Actions pinned by SHA still get updates.** Dependabot rewrites the SHA and its `# vX.Y.Z` comment together.
