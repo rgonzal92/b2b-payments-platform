@@ -1,6 +1,10 @@
 package dev.rgonz.payments.platform.clearing;
 
+import dev.rgonz.payments.platform.shared.Money;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.LocalDate;
+import java.util.Currency;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -48,12 +52,15 @@ class ClearingFiles {
         .update();
   }
 
+  /** The file with its Settlement, once it has one. */
   Optional<ClearingFileSummary> find(String fileId) {
     return jdbc.sql(
             """
-            select id, sequence_number, business_date, status, record_count
-              from clearing.clearing_file
-             where id = :id
+            select f.id, f.sequence_number, f.business_date, f.status, f.record_count,
+                   s.amount_minor, s.imported_total_minor, s.currency, s.matched
+              from clearing.clearing_file f
+              left join clearing.settlement s on s.file_id = f.id
+             where f.id = :id
             """)
         .param("id", fileId)
         .query(
@@ -63,7 +70,19 @@ class ClearingFiles {
                     row.getLong("sequence_number"),
                     row.getObject("business_date", LocalDate.class),
                     ClearingFileSummary.Status.valueOf(row.getString("status")),
-                    row.getLong("record_count")))
+                    row.getLong("record_count"),
+                    settlement(row)))
         .optional();
+  }
+
+  private static ClearingFileSummary.Settlement settlement(ResultSet row) throws SQLException {
+    var currency = row.getString("currency");
+    if (currency == null) {
+      return null;
+    }
+    return new ClearingFileSummary.Settlement(
+        new Money(row.getLong("amount_minor"), Currency.getInstance(currency)),
+        new Money(row.getLong("imported_total_minor"), Currency.getInstance(currency)),
+        row.getBoolean("matched"));
   }
 }
