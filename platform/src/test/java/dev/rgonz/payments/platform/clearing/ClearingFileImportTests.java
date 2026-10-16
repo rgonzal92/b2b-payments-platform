@@ -163,6 +163,8 @@ class ClearingFileImportTests {
 
     assertThat(restarted).hasStatus(201);
     assertThat(restarted).bodyJson().extractingPath("$.recordCount").isEqualTo(250);
+    // The restart read on after the first chunk: replayed, its 100 would be skipped.
+    assertThat(restarted).bodyJson().extractingPath("$.skippedCount").isEqualTo(0);
     assertThat(postedCount(clearings)).isEqualTo(250);
     assertThat(matchedCount(clearings)).isEqualTo(250);
     // Each Clearing debited the Buyer Receivable once, and cleared its card's Hold.
