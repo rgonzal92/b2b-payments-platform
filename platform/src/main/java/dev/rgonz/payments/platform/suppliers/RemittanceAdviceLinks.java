@@ -10,6 +10,8 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.Currency;
+import java.util.EnumSet;
+import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Propagation;
@@ -18,6 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
 /** Remittance Advice and their one-time links, stored by the hash of each link's token. */
 @Repository
 class RemittanceAdviceLinks {
+
+  // An allow-list, so a status added later refuses the link until someone decides otherwise.
+  private static final Set<SingleUseCard.Status> SHOWABLE =
+      EnumSet.of(SingleUseCard.Status.ACTIVE, SingleUseCard.Status.AUTHORIZED);
 
   private final JdbcClient jdbc;
   private final LinkTokens tokens;
@@ -70,8 +76,8 @@ class RemittanceAdviceLinks {
 
   /**
    * Uses up the link with this token and returns its card's details, fetched from the vault now and
-   * never stored here. A link that shows nothing (unknown, used, expired, or its card cancelled)
-   * isn't marked used.
+   * never stored here. A link that shows nothing (unknown, used, expired, or its card neither
+   * {@code ACTIVE} nor {@code AUTHORIZED}) isn't marked used.
    */
   @Transactional
   public Opening open(String token) {
@@ -85,7 +91,7 @@ class RemittanceAdviceLinks {
       return new Opening.Unknown();
     }
     var card = cards.find(cardToken.get()).orElseThrow();
-    if (card.status() == SingleUseCard.Status.CANCELLED) {
+    if (!SHOWABLE.contains(card.status())) {
       return new Opening.Gone();
     }
     // Reads the link and marks it used in one statement: of two opens at once, one updates the row
@@ -125,7 +131,10 @@ class RemittanceAdviceLinks {
     record Opened(String invoiceNumber, Money amount, SingleUseCard card, CardDetails details)
         implements Opening {}
 
-    /** The link was opened before, has expired, or its card was cancelled. */
+    /**
+     * The link was opened before or has expired, or its card is neither {@code ACTIVE} nor {@code
+     * AUTHORIZED}.
+     */
     record Gone() implements Opening {}
 
     /** No link has this token. */

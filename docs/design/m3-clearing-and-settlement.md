@@ -103,7 +103,7 @@ Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with seq
 
 ### M2 follow-ups (Q18)
 
-In the ticket that adds `CLEARED`: `Cards.cancel` leaves a card that isn't `ACTIVE` alone, and a Remittance Advice link answers `410` for a card that isn't `ACTIVE` or `AUTHORIZED`.
+In the ticket that adds `CLEARED`: `Cards.cancel` leaves a card that isn't `ACTIVE` alone, and a Remittance Advice link answers `410` for a card that isn't `ACTIVE` or `AUTHORIZED`. (Changed during #48: in a ticket of its own, ahead of the one that adds `CLEARED` (#49). The link checks an allow-list of `ACTIVE` and `AUTHORIZED`, so `CLEARED` is refused without another change.)
 
 ## Deferred
 

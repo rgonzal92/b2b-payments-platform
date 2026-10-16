@@ -188,7 +188,8 @@ class PaymentSaga {
         cards.findForPayment(failed.id()).ifPresent(card -> cards.cancel(card.cardToken()));
         holds.release(failed.id());
         log.info(
-            "Payment {} failed for good; cancelled its card and released its Hold", failed.id());
+            "Payment {} failed for good; cancelled its card if still ACTIVE and released its Hold",
+            failed.id());
       }
       case STARTED, COMPLETED, FAILED, EXPIRED -> {
         // Placing the Hold is the first step: nothing came before it to undo.
