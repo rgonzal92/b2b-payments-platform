@@ -22,10 +22,16 @@ public record SingleUseCard(
 
   public enum Status {
     ACTIVE,
-    /** A Charge on it was approved; Clearing (M3) or a Reversal comes next. */
+    /**
+     * A Charge on it was approved; Clearing (M3) or a Reversal comes next, and it expires if no
+     * Clearing comes within 7 days.
+     */
     AUTHORIZED,
     CANCELLED,
-    /** Its expiry came before anyone charged it; its Hold is released. */
+    /**
+     * Its expiry came before anyone charged it, or its approved Charge didn't clear within 7 days;
+     * its Hold is released.
+     */
     EXPIRED
   }
 }

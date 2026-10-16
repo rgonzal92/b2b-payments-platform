@@ -112,13 +112,14 @@ class SingleUseCards implements Cards {
 
   // Only an ACTIVE card moves, so of two Charges at once exactly one finds it ACTIVE.
   @Override
-  public boolean authorize(String cardToken) {
+  public boolean authorize(String cardToken, Instant now) {
     return jdbc.sql(
                 """
-                update cards.card set status = :authorized
+                update cards.card set status = :authorized, authorized_at = :now
                  where card_token = :cardToken and status = :active
                 """)
             .param("authorized", SingleUseCard.Status.AUTHORIZED.name())
+            .param("now", now.atOffset(ZoneOffset.UTC))
             .param("cardToken", cardToken)
             .param("active", SingleUseCard.Status.ACTIVE.name())
             .update()
@@ -130,7 +131,7 @@ class SingleUseCards implements Cards {
   public void reverse(String cardToken) {
     jdbc.sql(
             """
-            update cards.card set status = :active
+            update cards.card set status = :active, authorized_at = null
              where card_token = :cardToken and status = :authorized
             """)
         .param("active", SingleUseCard.Status.ACTIVE.name())
@@ -162,6 +163,33 @@ class SingleUseCards implements Cards {
             """
                 + COLUMNS)
         .param("now", now.atOffset(ZoneOffset.UTC))
+        .param("batchSize", batchSize)
+        .query(SingleUseCards::toCard)
+        .list();
+  }
+
+  /**
+   * Marks up to {@code batchSize} {@code AUTHORIZED} cards authorized at or before {@code
+   * authorizedBefore} {@code EXPIRED} and returns them, skipping cards other transactions have
+   * locked. Joins the caller's transaction, which keeps them locked until it ends.
+   */
+  List<SingleUseCard> expireAuthorizedBefore(Instant authorizedBefore, int batchSize) {
+    // The literal 'AUTHORIZED' matches card_authorized_at_idx's predicate, as in expireDue.
+    return jdbc.sql(
+            """
+            update cards.card
+               set status = 'EXPIRED'
+             where card_token in (select card_token
+                                    from cards.card
+                                   where status = 'AUTHORIZED'
+                                     and authorized_at <= :authorizedBefore
+                                   order by authorized_at
+                                   limit :batchSize
+                                     for update skip locked)
+            returning
+            """
+                + COLUMNS)
+        .param("authorizedBefore", authorizedBefore.atOffset(ZoneOffset.UTC))
         .param("batchSize", batchSize)
         .query(SingleUseCards::toCard)
         .list();

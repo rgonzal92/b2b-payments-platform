@@ -57,10 +57,11 @@ class PaymentSaga {
   }
 
   /**
-   * Ends the Payment of a card that expired uncharged, and releases its Hold, in one transaction.
-   * The Payment is locked first, as the worker does, so a step under way finishes before this reads
-   * its state. The registry redelivers the event until this completes (ADR-0008); a second delivery
-   * finds the Payment already ended and the Hold already released, and changes nothing.
+   * Ends the Payment of a card that expired, uncharged or uncleared, and releases its Hold, in one
+   * transaction. The Payment is locked first, as the worker does, so a step under way finishes
+   * before this reads its state. The registry redelivers the event until this completes (ADR-0008);
+   * a second delivery finds the Payment already ended and the Hold already released, and changes
+   * nothing.
    */
   @ApplicationModuleListener
   void expire(CardExpired expired) {
@@ -71,8 +72,7 @@ class PaymentSaga {
               var next = payment.cardExpired();
               if (!next.equals(payment)) {
                 payments.update(payment, next);
-                log.info(
-                    "Payment {} is {}: its card expired uncharged", payment.id(), next.state());
+                log.info("Payment {} is {}: its card expired", payment.id(), next.state());
               }
             });
     // The Hold's ID is the Payment's.

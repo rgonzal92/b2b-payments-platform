@@ -67,7 +67,8 @@ class Authorizations {
           stored.responseCode().code());
       return stored;
     }
-    if (authorization.status() == Authorization.Status.APPROVED && !cards.authorize(cardToken)) {
+    if (authorization.status() == Authorization.Status.APPROVED
+        && !cards.authorize(cardToken, now)) {
       // A Charge with another request ID moved the card first, after this one read it ACTIVE.
       authorization = Authorization.declined(ResponseCode.NOT_PERMITTED);
       replaceAnswer(charge.requestId(), authorization);
