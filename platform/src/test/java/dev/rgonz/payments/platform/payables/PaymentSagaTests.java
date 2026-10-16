@@ -391,6 +391,27 @@ class PaymentSagaTests {
   }
 
   @Test
+  void aRetriedDeliverySendsTheSameLinkAgainAndCompletesThePaymentOnce() throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    // The Supplier fails the first delivery, accepts the second, and would fail the test on a
+    // third.
+    var deliveries = supplierAnswers(withServerError(), withSuccess());
+    var failedAt = Instant.now();
+
+    saga.runDueSteps(failedAt);
+    var stateAfterFailure = paymentState(acme, invoiceId);
+    saga.runDueSteps(failedAt.plusSeconds(10));
+    saga.runDueSteps(failedAt.plus(Duration.ofMinutes(5)));
+
+    assertThat(stateAfterFailure).isEqualTo("CARD_ISSUED");
+    // The same Idempotency-Key, link and expiry: the Supplier can keep either and drop the other.
+    assertThat(deliveries).hasSize(2);
+    assertThat(deliveries.get(1)).isEqualTo(deliveries.getFirst());
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
+  }
+
+  @Test
   void anAdviceTheSupplierNeverAcceptsCancelsTheCardReleasesTheHoldAndFailsThePayment()
       throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
