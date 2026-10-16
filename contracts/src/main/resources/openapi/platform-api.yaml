@@ -272,10 +272,11 @@ paths:
         Issuer staff only (role `issuer-admin`). Imports the named file from the platform's drop folder at once,
         instead of waiting for the next check of the folder (every 30 seconds), and answers when the import is done.
         Every Clearing is posted to the journal and recorded with how it matched its card's Authorization (the
-        summary counts each outcome); its card becomes `CLEARED`, and so does the card's Hold if it is still open. The
-        file is deleted after a successful import. The file's own ID makes a repeat harmless, so
-        there is no `Idempotency-Key`: a file already imported answers `409`. An import that stopped partway keeps
-        what it committed and answers `500`; importing the same file name again restarts it where it stopped.
+        summary counts each outcome); its card becomes `CLEARED`, and so does the card's Hold if it is still open.
+        Then the file is settled at its trailer's net settlement amount, and deleted. The file's own ID makes a repeat
+        harmless, so there is no `Idempotency-Key`: a file already imported answers `409`. An import that stopped
+        partway keeps what it committed and answers `500`; importing the same file name again restarts it where it
+        stopped.
       requestBody:
         required: true
         content:
@@ -619,6 +620,8 @@ components:
           description: The number of Clearings in the file.
         outcomes:
           $ref: '#/components/schemas/ClearingOutcomeCounts'
+        settlement:
+          $ref: '#/components/schemas/Settlement'
     ClearingOutcomeCounts:
       type: object
       description: >-
@@ -666,6 +669,22 @@ components:
           type: integer
           format: int64
           description: Another Clearing already cleared its Authorization.
+    Settlement:
+      type: object
+      description: >-
+        The file's Settlement: the Issuer pays the Network the file's net settlement amount (`amount`, the Network's
+        figure from the file's trailer), whatever the platform imported (`importedTotal`, the total of the file's posted
+        Clearings). Present once the file is settled, which an imported file always is. When the two differ the
+        Settlement isn't `matched`, and the Network Settlement Payable keeps the gap until M4's Reconciliation resolves
+        it: see `docs/runbooks/settlement-mismatched.md`.
+      required: [amount, importedTotal, matched]
+      properties:
+        amount:
+          $ref: '#/components/schemas/Money'
+        importedTotal:
+          $ref: '#/components/schemas/Money'
+        matched:
+          type: boolean
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.

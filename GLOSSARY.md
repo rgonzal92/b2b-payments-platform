@@ -109,7 +109,7 @@ The Network's daily batch of Clearings for the Issuer.
 _Avoid_: Settlement file
 
 **Settlement**:
-The Issuer's payment to the Network of the net total of a day's cleared Charges.
+The Issuer's payment to the Network of the net total of one Clearing File's cleared Charges, at the Network's figure.
 _Avoid_: Funding, payout
 
 **Reconciliation**:

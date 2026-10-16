@@ -26,6 +26,10 @@ record Account(Kind kind, BuyerId buyerId) {
     return new Account(Kind.NETWORK_SETTLEMENT_PAYABLE, null);
   }
 
+  static Account issuerCash() {
+    return new Account(Kind.ISSUER_CASH, null);
+  }
+
   static Account clearingSuspense() {
     return new Account(Kind.CLEARING_SUSPENSE, null);
   }
@@ -35,6 +39,8 @@ record Account(Kind kind, BuyerId buyerId) {
     BUYER_RECEIVABLE,
     /** What the Issuer owes the Network for cleared Charges not yet settled. */
     NETWORK_SETTLEMENT_PAYABLE,
+    /** The Issuer's bank account, which Settlements are paid from and Repayments arrive in. */
+    ISSUER_CASH,
     /** Cleared Charges no Buyer can be charged for yet, until a person resolves them. */
     CLEARING_SUSPENSE
   }

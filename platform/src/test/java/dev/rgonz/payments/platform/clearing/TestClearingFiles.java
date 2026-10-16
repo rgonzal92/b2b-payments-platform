@@ -96,11 +96,19 @@ public final class TestClearingFiles {
                 DATE.format(BUSINESS_DATE.minusDays(1))));
   }
 
-  /** The trailer, in the first detail record's currency (USD for none). */
+  /** A trailer that totals the Clearings, whose net settlement amount is their total. */
   public static String trailer(List<Detail> details) {
-    var total = details.stream().mapToLong(Detail::amountMinor).sum();
-    var currency = details.isEmpty() ? "USD" : details.getFirst().currency();
-    return record("92%08d%015d%015d%s".formatted(details.size(), total, total, currency));
+    return trailer(details, total(details));
+  }
+
+  /** A trailer that totals the Clearings, with the Network's own net settlement amount. */
+  public static String trailer(List<Detail> details, long netSettlementMinor) {
+    return record(
+        "92%08d%015d%015dUSD".formatted(details.size(), total(details), netSettlementMinor));
+  }
+
+  private static long total(List<Detail> details) {
+    return details.stream().mapToLong(Detail::amountMinor).sum();
   }
 
   /** A new ID of letters and digits, as the Network gives files, records and requests. */

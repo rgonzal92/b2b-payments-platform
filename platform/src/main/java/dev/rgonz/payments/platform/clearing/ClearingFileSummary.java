@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform.clearing;
 
+import dev.rgonz.payments.platform.shared.Money;
 import java.time.LocalDate;
 import java.util.Map;
 
@@ -8,6 +9,7 @@ import java.util.Map;
  *
  * @param recordCount the number of Clearings in the file
  * @param outcomes how many of its recorded Clearings ended with each outcome, zero included
+ * @param settlement the file's Settlement; null until the file is settled
  */
 record ClearingFileSummary(
     String id,
@@ -15,7 +17,8 @@ record ClearingFileSummary(
     LocalDate businessDate,
     Status status,
     long recordCount,
-    Map<ClearingOutcome, Long> outcomes) {
+    Map<ClearingOutcome, Long> outcomes,
+    Settlement settlement) {
 
   ClearingFileSummary {
     outcomes = Map.copyOf(outcomes);
@@ -27,4 +30,14 @@ record ClearingFileSummary(
     /** Every Clearing in it is recorded. */
     IMPORTED
   }
+
+  /**
+   * The file's Settlement with the Network.
+   *
+   * @param amount what the Network settles for the file, its trailer's net settlement amount, and
+   *     what the Settlement posted
+   * @param importedTotal the total of the file's posted Clearings
+   * @param matched whether the two agree
+   */
+  record Settlement(Money amount, Money importedTotal, boolean matched) {}
 }
