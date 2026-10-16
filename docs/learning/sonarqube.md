@@ -15,4 +15,4 @@ Agents write the code and you review it, but some problems are easy to miss in a
 
 - **Automatic analysis had to be turned off.** SonarQube Cloud can analyse a repository on its own, but that conflicts with analysis from CI; only one may run.
 - **The analysis needs the full history.** CI checks out every commit (`fetch-depth: 0`) so SonarQube can use blame data to tell new code from old.
-- **Pull requests from forks skip the analysis.** They receive no secrets, so the step runs only for pushes and for pull requests from this repository.
+- **Pull requests from forks and from Dependabot skip the analysis.** Neither receives the repository's secrets, so the step would fail without a token and turn `build` red. Dependabot's changes are analysed after merging, on the push to `main`.

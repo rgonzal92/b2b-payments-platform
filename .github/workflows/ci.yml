@@ -36,8 +36,12 @@ jobs:
       - name: Verify
         run: ./mvnw -B verify
       - name: Analyze with SonarQube Cloud
-        # Pull requests from forks receive no secrets, so they skip the analysis.
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        # Pull requests from forks and from Dependabot receive no secrets, so they skip the analysis.
+        # Dependabot's changes are analysed once merged, on the push to main.
+        if: >-
+          github.event_name == 'push' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+           github.event.pull_request.user.login != 'dependabot[bot]')
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         # Fails the job when the quality gate fails.
