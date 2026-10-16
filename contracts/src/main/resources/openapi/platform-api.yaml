@@ -263,6 +263,45 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+  /v1/clearing-files:
+    post:
+      tags: [ClearingFiles]
+      operationId: importClearingFile
+      summary: Import a Clearing File from the drop folder now
+      description: >-
+        Issuer staff only (role `issuer-admin`). Imports the named file from the platform's drop folder at once,
+        instead of waiting for the next check of the folder (every 30 seconds), and answers when the import is done.
+        Each Clearing that matches its approved Authorization is posted to the journal, and its Hold and its card
+        become `CLEARED`; the file is deleted after a successful import. The file's own ID makes a repeat harmless, so
+        there is no `Idempotency-Key`: a file already imported answers `409`. An import that stopped partway keeps
+        what it committed and answers `500`; importing the same file name again restarts it where it stopped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClearingFileImport'
+      responses:
+        '201':
+          description: The file was imported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearingFile'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '500':
+          $ref: '#/components/responses/Problem'
   /v1/remittance-links/{token}:
     get:
       tags: [RemittanceLinks]
@@ -360,9 +399,9 @@ components:
     Credit:
       type: object
       description: >-
-        A Buyer's Credit Line, and its Available Credit: the Credit Line minus open Holds and posted spend.
-        Available Credit is negative when the Credit Line was lowered below the open Holds; a new Hold is placed only
-        when Available Credit covers its amount.
+        A Buyer's Credit Line, and its Available Credit: the Credit Line minus the Buyer Receivable (what the Buyer
+        owes for cleared Charges) and minus open Holds. Available Credit is negative when the Credit Line was lowered
+        below what is owed and held; a new Hold is placed only when Available Credit covers its amount.
       required: [creditLine, availableCredit]
       properties:
         creditLine:
@@ -540,6 +579,43 @@ components:
         invoiceNumber:
           type: string
           description: The Supplier's number for the Invoice the card pays.
+    ClearingFileImport:
+      type: object
+      required: [fileName]
+      properties:
+        fileName:
+          type: string
+          description: >-
+            The file's name in the platform's drop folder, or in its `processing/` folder when an import of it
+            stopped partway. A name only, no path.
+          maxLength: 255
+          pattern: '^[A-Za-z0-9_-][A-Za-z0-9._-]*$'
+    ClearingFile:
+      type: object
+      description: A Clearing File the platform imported, as its header and its Clearings describe it.
+      required: [id, sequenceNumber, businessDate, status, recordCount]
+      properties:
+        id:
+          type: string
+          description: The Network's ID for the file, from its header.
+        sequenceNumber:
+          type: integer
+          format: int64
+          description: The Network's count of files sent to the Issuer, from its header.
+        businessDate:
+          type: string
+          format: date
+          description: The day the file covers, by the Network's calendar in UTC.
+        status:
+          type: string
+          description: >-
+            `IMPORTING` while its Clearings are being posted, or when an import of it stopped partway (importing it
+            again restarts it); `IMPORTED` once every Clearing in it is recorded.
+          enum: [IMPORTING, IMPORTED]
+        recordCount:
+          type: integer
+          format: int64
+          description: The number of Clearings in the file.
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.

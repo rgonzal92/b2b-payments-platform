@@ -26,6 +26,8 @@ public record SingleUseCard(
     AUTHORIZED,
     CANCELLED,
     /** Its expiry came before anyone charged it; its Hold is released. */
-    EXPIRED
+    EXPIRED,
+    /** The Network's Clearing File gave its Charge's final amount, now posted spend. */
+    CLEARED
   }
 }

@@ -23,6 +23,14 @@ public interface Holds {
    */
   void release(UUID holdId);
 
+  /**
+   * Marks the Hold cleared: its Charge cleared, and the Buyer Receivable carries the cleared amount
+   * instead. The whole Hold stops counting against Available Credit, so a Clearing below it frees
+   * the rest; its record stays, marked cleared. A Hold that isn't placed (released, cleared, or
+   * never placed) is left as it is. Joins the caller's transaction.
+   */
+  void clear(UUID holdId);
+
   enum Outcome {
     PLACED,
     /** The amount is more than the Buyer's Available Credit, so nothing was placed. */

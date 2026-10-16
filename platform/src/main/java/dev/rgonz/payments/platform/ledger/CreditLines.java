@@ -119,6 +119,20 @@ class CreditLines implements Holds {
         .update();
   }
 
+  // The row stays, marked cleared; only a placed Hold clears, so a released one stays released.
+  @Override
+  public void clear(UUID holdId) {
+    jdbc.sql(
+            """
+            update ledger.hold
+               set status = 'CLEARED', cleared_at = now()
+             where id = :id
+               and status = 'PLACED'
+            """)
+        .param("id", holdId)
+        .update();
+  }
+
   // A statement of its own: after place's lock, it sees what other transactions committed while
   // that one waited (READ COMMITTED); a subquery inside the locking statement would not. One
   // statement for both sums: a Clearing that commits between two statements would clear its Hold

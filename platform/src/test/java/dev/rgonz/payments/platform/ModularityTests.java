@@ -16,18 +16,19 @@ class ModularityTests {
   }
 
   // PANs stay in as few places as possible (ADR-0004): only cards, which stores a PAN with each new
-  // card, suppliers, which shows a Supplier its card once through the Remittance Advice link, and
-  // authorization, which finds the card for the PAN in the Network's request, may ask the vault for
-  // anything. Spring Modulith's allowedDependencies limits what a module uses, not who uses it, so
-  // this checks the vault's users directly.
+  // card, suppliers, which shows a Supplier its card once through the Remittance Advice link,
+  // authorization, which finds the card for the PAN in the Network's request, and clearing, which
+  // finds the card for the PAN in each Clearing File record, may ask the vault for anything. Spring
+  // Modulith's allowedDependencies limits what a module uses, not who uses it, so this checks the
+  // vault's users directly.
   @Test
-  void onlyCardsSuppliersAndAuthorizationUseTheVault() {
+  void onlyCardsSuppliersAuthorizationAndClearingUseTheVault() {
     assertThat(
             modules.stream()
                 .filter(
                     module -> module.getDirectDependencies(modules).containsModuleNamed("vault"))
                 .map(ApplicationModule::getIdentifier)
                 .map(Object::toString))
-        .containsExactlyInAnyOrder("cards", "suppliers", "authorization");
+        .containsExactlyInAnyOrder("cards", "suppliers", "authorization", "clearing");
   }
 }

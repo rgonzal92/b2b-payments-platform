@@ -1,0 +1,164 @@
+package dev.rgonz.payments.platform.clearing;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.job.Job;
+import org.springframework.batch.core.job.JobExecution;
+import org.springframework.batch.core.job.parameters.InvalidJobParametersException;
+import org.springframework.batch.core.job.parameters.JobParametersBuilder;
+import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
+import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.JobRestartException;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+/**
+ * Imports Clearing Files from the drop folder, where the Network delivers them. A file is moved
+ * into the folder's {@code processing/} folder before its import starts, in one atomic rename, so
+ * of two importers only one gets it; it waits there until its import completes, then is deleted.
+ * Logs name a file by its name or ID, never its contents.
+ */
+@Component
+class ClearingFileImports {
+
+  private static final Logger log = LoggerFactory.getLogger(ClearingFileImports.class);
+
+  private final Path dropFolder;
+  private final Path processingFolder;
+  private final JobOperator jobOperator;
+  private final Job clearingFileImport;
+  private final ClearingFiles files;
+
+  ClearingFileImports(
+      @Value("${clearing.drop-folder}") Path dropFolder,
+      JobOperator jobOperator,
+      Job clearingFileImport,
+      ClearingFiles files) {
+    this.dropFolder = dropFolder.toAbsolutePath().normalize();
+    this.processingFolder = this.dropFolder.resolve("processing");
+    this.jobOperator = jobOperator;
+    this.clearingFileImport = clearingFileImport;
+    this.files = files;
+  }
+
+  /**
+   * Imports the file with this name from the drop folder, or restarts the import of the file with
+   * this name in {@code processing/}, where an import that stopped left it; returns when the import
+   * is done. Not transactional: each of the job's steps and chunks commits on its own.
+   */
+  ImportResult importFile(String fileName) {
+    try {
+      var source = dropFolder.resolve(fileName).normalize();
+      if (!dropFolder.equals(source.getParent())) {
+        return new ImportResult.NotFound();
+      }
+      var file = processingFolder.resolve(fileName);
+      if (Files.notExists(file) && !claim(source, file)) {
+        return new ImportResult.NotFound();
+      }
+      FileHeader header;
+      try (var lines = Files.newBufferedReader(file, StandardCharsets.US_ASCII)) {
+        header = ClearingFileLayout.readHeader(lines);
+      } catch (MalformedClearingFileException malformed) {
+        log.warn("Refused Clearing File {}: {}", fileName, malformed.getMessage());
+        return new ImportResult.Refused(malformed.getMessage());
+      }
+      return run(header.fileId(), file);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
+
+  // Moves the file into processing/, unless another import got there first.
+  private boolean claim(Path source, Path file) throws IOException {
+    Files.createDirectories(processingFolder);
+    try {
+      Files.move(source, file, StandardCopyOption.ATOMIC_MOVE);
+      return true;
+    } catch (NoSuchFileException gone) {
+      // Gone from the drop folder: it never was there, or another import moved it a moment ago.
+      return Files.exists(file);
+    }
+  }
+
+  private ImportResult run(String fileId, Path file) throws IOException {
+    var parameters =
+        new JobParametersBuilder()
+            .addString(ClearingFileImportJob.FILE_ID, fileId)
+            .addString(ClearingFileImportJob.FILE, file.toString(), false)
+            .toJobParameters();
+    JobExecution execution;
+    try {
+      execution = jobOperator.start(clearingFileImport, parameters);
+    } catch (JobInstanceAlreadyCompleteException alreadyImported) {
+      log.warn("Clearing File {} was already imported", fileId);
+      return new ImportResult.AlreadyImported(fileId);
+    } catch (JobExecutionAlreadyRunningException running) {
+      log.warn("Clearing File {} is being imported, or its import stopped abruptly", fileId);
+      return new ImportResult.Running(fileId);
+    } catch (JobRestartException | InvalidJobParametersException e) {
+      throw new IllegalStateException("Couldn't start the import of Clearing File " + fileId, e);
+    }
+    if (execution.getStatus() == BatchStatus.COMPLETED) {
+      Files.delete(file);
+      var imported = files.find(fileId).orElseThrow();
+      log.info(
+          "Clearing File {} (sequence {}, Business Date {}) imported: {} Clearings",
+          imported.id(),
+          imported.sequenceNumber(),
+          imported.businessDate(),
+          imported.recordCount());
+      return new ImportResult.Imported(imported);
+    }
+    return stopped(fileId, execution);
+  }
+
+  // A failed validate step posted nothing: the file is refused. A failure after it stopped the
+  // import partway, keeping the chunks it committed.
+  private static ImportResult stopped(String fileId, JobExecution execution) {
+    for (var step : execution.getStepExecutions()) {
+      if (step.getStatus() == BatchStatus.FAILED && "validate".equals(step.getStepName())) {
+        var reason =
+            step.getFailureExceptions().stream()
+                .filter(MalformedClearingFileException.class::isInstance)
+                .map(Throwable::getMessage)
+                .findFirst()
+                .orElse("it couldn't be read.");
+        log.warn("Refused Clearing File {}: {}", fileId, reason);
+        return new ImportResult.Refused(reason);
+      }
+    }
+    log.error(
+        "The import of Clearing File {} stopped partway; importing it again restarts it", fileId);
+    return new ImportResult.Stopped(fileId);
+  }
+
+  /** How an import ended. */
+  sealed interface ImportResult {
+
+    record Imported(ClearingFileSummary file) implements ImportResult {}
+
+    /** No file has the name in the drop folder or in {@code processing/}. */
+    record NotFound() implements ImportResult {}
+
+    /** The file doesn't follow the layout, so nothing was posted; the reason names the line. */
+    record Refused(String reason) implements ImportResult {}
+
+    record AlreadyImported(String fileId) implements ImportResult {}
+
+    /** An import of the file is running, or stopped without its end being recorded. */
+    record Running(String fileId) implements ImportResult {}
+
+    /** The import stopped partway; what it committed stays, and importing again restarts it. */
+    record Stopped(String fileId) implements ImportResult {}
+  }
+}
