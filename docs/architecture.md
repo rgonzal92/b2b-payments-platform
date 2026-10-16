@@ -242,6 +242,7 @@ sequenceDiagram
 - **A crash at each Payment state** (`PaymentSagaTests`): the platform stops mid-step after `STARTED`, `HOLD_PLACED` and `CARD_ISSUED`, and the next pass completes the Payment with one Hold and one card.
 - **Module boundaries:** `ModularityTests` (Spring Modulith's verification, and only `cards` and `suppliers` using `vault`).
 - **The simulator's roles and the demo** against stub Keycloak and platform servers.
+- **The core path through both apps** (`e2e`, `CorePathEndToEndTests`): the platform and the simulator run in one JVM against real PostgreSQL and Keycloak, and the simulator's demo endpoint takes an Invoice through two approvals to a completed Payment whose card Globex opens through its link. `docs/learning/testcontainers.md` explains how two apps share one JVM.
 
 ## Quality targets
 

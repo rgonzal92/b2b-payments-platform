@@ -73,6 +73,12 @@ A scheduled job in `cards` finds `ACTIVE` Single-Use Cards past their expiry, ma
 
 A new `e2e` Maven module starts both Spring Boot apps in one JVM against Testcontainers' PostgreSQL and Keycloak (the repository's realm file) and runs the core path through the simulator's demo endpoint, from Invoice to approved Charge. No container images to build, and CI runs it like any other test.
 
+- Decided during #35:
+  - The test runs M1's path first, up to Globex opening its card through the link; the Globex-charges ticket extends it to the approved Charge.
+  - `CorePathEndToEndTests` starts the platform, then the simulator, with `SpringApplicationBuilder`, each on a free port picked beforehand and with its settings as command-line arguments: Keycloak's and PostgreSQL's addresses, test-only secrets, the simulator's platform URL. The simulator's start returns once its seeder has set up Acme.
+  - The test works around one shared classpath in its own configuration, without changing either app: each app reads the `application.properties` in its own jar, the simulator leaves out the platform's DataSource and Spring Modulith event auto-configurations, and OTLP metrics export is off.
+  - The apps' executable jars carry the `exec` classifier, so the plain jars that `e2e` depends on stay the main artifacts.
+
 ## Deferred
 
 The 100 ms latency target is measured in M4 with Gatling; the 7-day no-Clearing rule and Clearing itself are M3; multi-use cards, stand-in processing and real ISO 8583 over TCP are bonus milestones; mutual TLS is M7.
@@ -88,5 +94,5 @@ The 100 ms latency target is measured in M4 with Gatling; the 7-day no-Clearing 
 ## Risks
 
 - **gRPC and Spring Security together are new here.** The bearer-token check on gRPC is proven first, in the first ticket.
-- **Two Spring Boot apps in one JVM** may clash on shared static state (logging, metrics, OpenTelemetry). If they do, the fallback is the simulator in-process and the platform as a Testcontainers-built image.
+- **Two Spring Boot apps in one JVM** may clash on shared static state (logging, metrics, OpenTelemetry). If they do, the fallback is the simulator in-process and the platform as a Testcontainers-built image. (Settled during #35: they share static state and one classpath, but the test's own properties cover every clash, so no fallback is needed. `docs/learning/testcontainers.md` lists them.)
 - **The Acceptor ID changes the Invoice contract** that M1 shipped; it's an optional field, so existing callers keep working.
