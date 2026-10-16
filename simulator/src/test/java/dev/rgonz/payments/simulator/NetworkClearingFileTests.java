@@ -5,10 +5,10 @@ import static org.awaitility.Awaitility.await;
 
 import com.sun.net.httpserver.HttpServer;
 import dev.rgonz.payments.contracts.client.model.Money;
+import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.simulator.GlobexSupplier.ReceivedCard;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -30,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -45,11 +47,13 @@ import org.springframework.test.context.DynamicPropertySource;
 class NetworkClearingFileTests {
 
   private static final String PAN = "9900001234567899";
-  private static final LocalDate BUSINESS_DATE = LocalDate.of(2026, 10, 16);
+  private static final DateTimeFormatter LAYOUT_DATE = DateTimeFormatter.BASIC_ISO_DATE;
+  // No Charge in these tests is dated after it, so a file for it sends everything.
+  private static final LocalDate AFTER_EVERY_CHARGE = LocalDate.of(9999, 12, 31);
 
   static final StubIssuer issuer = new StubIssuer();
   static final HttpServer keycloak = startStubKeycloak();
-  static final Path dropFolder = createTempDirectory();
+  @TempDir static Path dropFolder;
 
   @DynamicPropertySource
   static void pointAtStubs(DynamicPropertyRegistry registry) {
@@ -58,15 +62,13 @@ class NetworkClearingFileTests {
         () -> "http://localhost:" + keycloak.getAddress().getPort() + "/token");
     registry.add("spring.security.oauth2.client.registration.network.client-secret", () -> "test");
     registry.add("simulator.platform-grpc-address", issuer::address);
-    registry.add("simulator.network.drop-folder", dropFolder::toString);
+    registry.add("simulator.network.drop-folder", () -> dropFolder.toString());
   }
 
   @AfterAll
-  static void stopStubs() throws IOException {
+  static void stopStubs() {
     issuer.stop();
     keycloak.stop(0);
-    deleteFiles();
-    Files.delete(dropFolder);
   }
 
   @Autowired GlobexAcquirer acquirer;
@@ -76,8 +78,14 @@ class NetworkClearingFileTests {
   @BeforeEach
   void startEmpty() throws IOException {
     issuer.reset();
-    clearingFiles.write(BUSINESS_DATE);
-    deleteFiles();
+    clearingFiles.write(AFTER_EVERY_CHARGE);
+    try (var files = Files.walk(dropFolder)) {
+      for (var file : files.sorted(Comparator.reverseOrder()).toList()) {
+        if (!file.equals(dropFolder)) {
+          Files.delete(file);
+        }
+      }
+    }
   }
 
   @Test
@@ -85,8 +93,9 @@ class NetworkClearingFileTests {
     issuer.answerWith("00", "AB12CD");
     acquirer.charge(card(1_240_000));
     var charge = issuer.received.getFirst().request();
+    var businessDate = chargeDate(charge);
 
-    clearingFiles.write(BUSINESS_DATE);
+    clearingFiles.write(businessDate);
 
     var lines = Files.readAllLines(onlyFile(), StandardCharsets.US_ASCII);
     assertThat(lines).hasSize(3);
@@ -94,9 +103,8 @@ class NetworkClearingFileTests {
     assertThat(header.get("recordType")).isEqualTo("90");
     assertThat(header.get("fileId")).matches("[A-Za-z0-9-]{1,20}");
     assertThat(header.get("sequenceNumber")).matches("\\d{8}");
-    assertThat(header.get("businessDate")).isEqualTo("20261016");
+    assertThat(header.get("businessDate")).isEqualTo(businessDate.format(LAYOUT_DATE));
     var clearing = Layout.read(lines.get(1));
-    var chargedAt = Instant.ofEpochSecond(charge.getTransmittedAt().getSeconds());
     assertThat(clearing)
         .containsEntry("recordType", "05")
         .containsEntry("pan", PAN)
@@ -105,9 +113,7 @@ class NetworkClearingFileTests {
         .containsEntry("retrievalReferenceNumber", charge.getRetrievalReferenceNumber())
         .containsEntry("authorizationCode", "AB12CD")
         .containsEntry("acceptorId", "GLOBEX000000001")
-        .containsEntry(
-            "chargeDate",
-            LocalDate.ofInstant(chargedAt, ZoneOffset.UTC).toString().replace("-", ""));
+        .containsEntry("chargeDate", chargeDate(charge).format(LAYOUT_DATE));
     assertThat(clearing.get("networkRecordId")).matches("[A-Za-z0-9-]{1,20}");
     assertThat(Layout.read(lines.getLast()))
         .containsEntry("recordType", "92")
@@ -135,7 +141,7 @@ class NetworkClearingFileTests {
             .map(received -> received.request().getRetrievalReferenceNumber())
             .toList();
 
-    clearingFiles.write(BUSINESS_DATE);
+    clearingFiles.write(AFTER_EVERY_CHARGE);
 
     var lines = Files.readAllLines(onlyFile(), StandardCharsets.US_ASCII);
     var clearings = lines.subList(1, lines.size() - 1).stream().map(Layout::read).toList();
@@ -157,11 +163,12 @@ class NetworkClearingFileTests {
   @Test
   void theNextFileCarriesTheNextSequenceNumberAndOnlyClearingsNotSentYet() throws IOException {
     acquirer.charge(card(1_240_000));
-    var first = dropFolder.resolve(clearingFiles.write(BUSINESS_DATE).orElseThrow());
+    var businessDate = chargeDate(issuer.received.getFirst().request());
+    var first = dropFolder.resolve(clearingFiles.write(businessDate).orElseThrow());
     acquirer.charge(card(500_000));
-    var secondCharge = issuer.received.getLast().request().getRetrievalReferenceNumber();
+    var secondRequestId = issuer.received.getLast().request().getRetrievalReferenceNumber();
 
-    var second = dropFolder.resolve(clearingFiles.write(BUSINESS_DATE.plusDays(1)).orElseThrow());
+    var second = dropFolder.resolve(clearingFiles.write(businessDate.plusDays(1)).orElseThrow());
 
     var firstLines = Files.readAllLines(first, StandardCharsets.US_ASCII);
     var secondLines = Files.readAllLines(second, StandardCharsets.US_ASCII);
@@ -170,12 +177,30 @@ class NetworkClearingFileTests {
     assertThat(Long.parseLong(secondHeader.get("sequenceNumber")))
         .isEqualTo(Long.parseLong(firstHeader.get("sequenceNumber")) + 1);
     assertThat(secondHeader.get("fileId")).isNotEqualTo(firstHeader.get("fileId"));
-    assertThat(secondHeader.get("businessDate")).isEqualTo("20261017");
+    assertThat(secondHeader.get("businessDate"))
+        .isEqualTo(businessDate.plusDays(1).format(LAYOUT_DATE));
     assertThat(secondLines).hasSize(3);
     assertThat(Layout.read(secondLines.get(1)))
-        .containsEntry("retrievalReferenceNumber", secondCharge)
+        .containsEntry("retrievalReferenceNumber", secondRequestId)
         .doesNotContainEntry(
             "networkRecordId", Layout.read(firstLines.get(1)).get("networkRecordId"));
+  }
+
+  // A file covers its Business Date: the file written just after midnight for the day that ended
+  // leaves a Charge made since then for the next one.
+  @Test
+  void aClearingDatedAfterTheBusinessDateWaitsForALaterFile() throws IOException {
+    acquirer.charge(card(1_240_000));
+    var charge = issuer.received.getFirst().request();
+
+    var dayBefore = clearingFiles.write(chargeDate(charge).minusDays(1));
+    var chargeDay = clearingFiles.write(chargeDate(charge));
+
+    assertThat(dayBefore).isEmpty();
+    var lines =
+        Files.readAllLines(dropFolder.resolve(chargeDay.orElseThrow()), StandardCharsets.US_ASCII);
+    assertThat(Layout.read(lines.get(1)))
+        .containsEntry("retrievalReferenceNumber", charge.getRetrievalReferenceNumber());
   }
 
   // The platform ignores names starting with '.', so it never reads a file still being written.
@@ -189,7 +214,7 @@ class NetworkClearingFileTests {
     try (var watcher = dropFolder.getFileSystem().newWatchService()) {
       dropFolder.register(
           watcher, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY);
-      fileName = clearingFiles.write(BUSINESS_DATE).orElseThrow();
+      fileName = clearingFiles.write(AFTER_EVERY_CHARGE).orElseThrow();
       WatchKey key;
       while ((key = watcher.poll(500, TimeUnit.MILLISECONDS)) != null) {
         key.pollEvents().forEach(event -> events.add(event.kind().name() + " " + event.context()));
@@ -204,15 +229,6 @@ class NetworkClearingFileTests {
         .containsExactly("ENTRY_CREATE " + fileName);
     try (var files = Files.list(dropFolder)) {
       assertThat(files).containsExactly(dropFolder.resolve(fileName));
-    }
-  }
-
-  @Test
-  void withNothingToSendTheNetworkWritesNoFile() throws IOException {
-    assertThat(clearingFiles.write(BUSINESS_DATE)).isEmpty();
-
-    try (var files = Files.list(dropFolder)) {
-      assertThat(files).isEmpty();
     }
   }
 
@@ -256,14 +272,10 @@ class NetworkClearingFileTests {
     }
   }
 
-  private static void deleteFiles() throws IOException {
-    try (var files = Files.walk(dropFolder)) {
-      for (var file : files.sorted(Comparator.reverseOrder()).toList()) {
-        if (!file.equals(dropFolder)) {
-          Files.delete(file);
-        }
-      }
-    }
+  // The day of the Charge, in UTC, from the time the Acquirer sent it.
+  private static LocalDate chargeDate(AuthorizationRequest charge) {
+    var sentAt = Instant.ofEpochSecond(charge.getTransmittedAt().getSeconds());
+    return LocalDate.ofInstant(sentAt, ZoneOffset.UTC);
   }
 
   private static ReceivedCard card(long minorUnits) {
@@ -335,14 +347,6 @@ class NetworkClearingFileTests {
 
     private static Field n(String name, int from, int to) {
       return new Field(name, from, to, true);
-    }
-  }
-
-  private static Path createTempDirectory() {
-    try {
-      return Files.createTempDirectory("network-clearing-files");
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
     }
   }
 

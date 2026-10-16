@@ -1,5 +1,6 @@
 package dev.rgonz.payments.simulator;
 
+import dev.rgonz.payments.contracts.client.model.Money;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -34,7 +35,7 @@ class NetworkClearingFiles {
 
   private final Path dropFolder;
   private final SecureRandom random = new SecureRandom();
-  private final List<Clearing> unsent = new ArrayList<>();
+  private final List<Unsent> unsent = new ArrayList<>();
   private long sequenceNumber;
 
   // A String, not a Path: Spring converts a Path setting through its resource loader, which
@@ -52,64 +53,82 @@ class NetworkClearingFiles {
     write(LocalDate.now(ZoneOffset.UTC).minusDays(1));
   }
 
-  /** Takes a Clearing an Acquirer submitted, for the next file. */
+  /**
+   * Takes a Clearing an Acquirer submitted, for the next file, under a Network record ID of its
+   * own. Its detail record is written now, so a Clearing that doesn't fit the layout is refused
+   * here ({@link IllegalArgumentException}) rather than holding up every file after it.
+   */
   synchronized void submit(Clearing clearing) {
-    unsent.add(clearing);
+    var detailRecord =
+        record(
+            "05",
+            an("NR-" + randomId(12), 20),
+            an(clearing.pan(), 19),
+            n(clearing.amount().getMinorUnits(), 12),
+            an(clearing.amount().getCurrency().getValue(), 3),
+            an(clearing.retrievalReferenceNumber(), 12),
+            an(clearing.authorizationCode(), 6),
+            an(clearing.acceptorId(), 15),
+            clearing.chargeDate().format(DATE));
+    unsent.add(new Unsent(detailRecord, clearing.amount(), clearing.chargeDate()));
   }
 
   /**
    * Writes the Clearing File for this Business Date with every Clearing not yet sent, and returns
-   * its name in the drop folder; writes nothing and returns empty when there is nothing to send.
+   * its name in the drop folder. A Clearing dated after the Business Date waits for a later file.
+   * Writes nothing and returns empty when there is nothing to send.
    */
   synchronized Optional<String> write(LocalDate businessDate) {
-    if (unsent.isEmpty()) {
+    var sending =
+        unsent.stream().filter(clearing -> !clearing.chargeDate().isAfter(businessDate)).toList();
+    if (sending.isEmpty()) {
       return Optional.empty();
     }
     var fileId = "NET-" + businessDate.format(DATE) + "-" + randomId(7);
-    var currency = unsent.getFirst().currency();
-    var total = unsent.stream().mapToLong(Clearing::amountMinor).sum();
-    var lines = new StringBuilder();
-    line(lines, "90", an(fileId, 20), n(sequenceNumber + 1, 8), businessDate.format(DATE));
-    for (var clearing : unsent) {
-      line(
-          lines,
-          "05",
-          an("NR-" + randomId(12), 20),
-          an(clearing.pan(), 19),
-          n(clearing.amountMinor(), 12),
-          an(clearing.currency(), 3),
-          an(clearing.retrievalReferenceNumber(), 12),
-          an(clearing.authorizationCode(), 6),
-          an(clearing.acceptorId(), 15),
-          clearing.chargeDate().format(DATE));
-    }
-    line(lines, "92", n(unsent.size(), 8), n(total, 15), n(total, 15), an(currency, 3));
+    // One currency, USD, the only one the contract's Money has.
+    var currency = sending.getFirst().amount().getCurrency().getValue();
+    var total = sending.stream().mapToLong(clearing -> clearing.amount().getMinorUnits()).sum();
+    var file = new StringBuilder();
+    file.append(record("90", an(fileId, 20), n(sequenceNumber + 1, 8), businessDate.format(DATE)));
+    sending.forEach(clearing -> file.append(clearing.detailRecord()));
+    file.append(record("92", n(sending.size(), 8), n(total, 15), n(total, 15), an(currency, 3)));
     var fileName = fileId + ".txt";
     // Written under a name starting with '.', which the platform ignores, then renamed in one step:
     // the platform never reads half a file (the layout's delivery rule).
     var partial = dropFolder.resolve("." + fileName);
     try {
       Files.createDirectories(dropFolder);
-      Files.writeString(partial, lines, StandardCharsets.US_ASCII);
+      Files.writeString(partial, file, StandardCharsets.US_ASCII);
       Files.move(partial, dropFolder.resolve(fileName), StandardCopyOption.ATOMIC_MOVE);
     } catch (IOException e) {
+      deleteHalfWritten(partial, e);
       throw new UncheckedIOException(e);
     }
     sequenceNumber++;
+    unsent.removeAll(sending);
     log.info(
         "The Network wrote Clearing File {} for {}: {} Clearings, {} {} minor units",
         fileName,
         businessDate,
-        unsent.size(),
+        sending.size(),
         currency,
         total);
-    unsent.clear();
     return Optional.of(fileName);
   }
 
-  // One record: its fields, then filler spaces up to the layout's 120 characters.
-  private static void line(StringBuilder lines, String... fields) {
-    lines.append("%-120s".formatted(String.join("", fields))).append('\n');
+  // The half-written file holds PANs: it mustn't stay behind. The Clearings stay unsent, for the
+  // next file.
+  private static void deleteHalfWritten(Path partial, IOException cause) {
+    try {
+      Files.deleteIfExists(partial);
+    } catch (IOException notDeleted) {
+      cause.addSuppressed(notDeleted);
+    }
+  }
+
+  // One record: its fields, then filler spaces up to the layout's 120 characters, then a line feed.
+  private static String record(String... fields) {
+    return "%-120s\n".formatted(String.join("", fields));
   }
 
   // An alphanumeric field: left-justified, padded with spaces. The message never quotes the value,
@@ -122,9 +141,14 @@ class NetworkClearingFiles {
     return ("%-" + length + "s").formatted(value);
   }
 
-  // A numeric field: right-justified, padded with zeros.
+  // A numeric field: right-justified, padded with zeros, never negative.
   private static String n(long value, int length) {
-    return ("%0" + length + "d").formatted(value);
+    var digits = Long.toString(value);
+    if (value < 0 || digits.length() > length) {
+      throw new IllegalArgumentException(
+          "A negative number, or one of more than " + length + " digits, doesn't fit its field");
+    }
+    return "0".repeat(length - digits.length()) + digits;
   }
 
   private String randomId(int length) {
@@ -136,12 +160,11 @@ class NetworkClearingFiles {
   }
 
   /**
-   * One Clearing as an Acquirer submits it: what the Issuer's file needs to carry. Held in memory
-   * only, until the file is written; {@code toString} leaves out the PAN.
+   * One Clearing as an Acquirer submits it: what the Issuer's file needs to carry. {@code toString}
+   * leaves out the PAN.
    *
    * @param pan the card's PAN (DE 2)
-   * @param amountMinor the Charge's final amount in minor units (DE 4)
-   * @param currency its ISO 4217 alphabetic code (DE 49)
+   * @param amount the Charge's final amount (DE 4) and its currency (DE 49)
    * @param retrievalReferenceNumber the request ID of the Charge's Authorization (DE 37)
    * @param authorizationCode the code the Issuer gave when it approved it (DE 38)
    * @param acceptorId the Supplier's Acceptor ID (DE 42)
@@ -149,8 +172,7 @@ class NetworkClearingFiles {
    */
   record Clearing(
       String pan,
-      long amountMinor,
-      String currency,
+      Money amount,
       String retrievalReferenceNumber,
       String authorizationCode,
       String acceptorId,
@@ -158,8 +180,18 @@ class NetworkClearingFiles {
 
     @Override
     public String toString() {
-      return "Clearing[retrievalReferenceNumber=%s, amountMinor=%d, currency=%s]"
-          .formatted(retrievalReferenceNumber, amountMinor, currency);
+      return "Clearing[retrievalReferenceNumber=%s, amount=%s]"
+          .formatted(retrievalReferenceNumber, amount);
+    }
+  }
+
+  // A Clearing waiting for its file, as its detail record. toString leaves the record out: it holds
+  // the PAN.
+  private record Unsent(String detailRecord, Money amount, LocalDate chargeDate) {
+
+    @Override
+    public String toString() {
+      return "Unsent[amount=%s, chargeDate=%s]".formatted(amount, chargeDate);
     }
   }
 }

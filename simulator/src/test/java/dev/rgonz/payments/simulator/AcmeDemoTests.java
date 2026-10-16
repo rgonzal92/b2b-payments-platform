@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +22,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -62,7 +62,7 @@ class AcmeDemoTests {
   static final List<Recorded> platformRequests = new CopyOnWriteArrayList<>();
   static final StubPlatform platform = new StubPlatform();
   static final StubIssuer issuer = new StubIssuer();
-  static final Path dropFolder = createTempDirectory();
+  @TempDir static Path dropFolder;
 
   @DynamicPropertySource
   static void pointAtStub(DynamicPropertyRegistry registry) {
@@ -76,19 +76,13 @@ class AcmeDemoTests {
     }
     registry.add("simulator.platform-url", () -> base);
     registry.add("simulator.platform-grpc-address", issuer::address);
-    registry.add("simulator.network.drop-folder", dropFolder::toString);
+    registry.add("simulator.network.drop-folder", () -> dropFolder.toString());
   }
 
   @AfterAll
-  static void stopStub() throws IOException {
+  static void stopStub() {
     platform.server.stop(0);
     issuer.stop();
-    try (var files = Files.list(dropFolder)) {
-      for (var file : files.toList()) {
-        Files.delete(file);
-      }
-    }
-    Files.delete(dropFolder);
   }
 
   @LocalServerPort int port;
@@ -190,7 +184,7 @@ class AcmeDemoTests {
       throws IOException {
     issuer.answerWith("00", "CL34EF");
     assertThat(mvc.post().uri("/demo/invoices").exchange()).hasStatusOk();
-    var charge = issuer.received.getLast().request().getRetrievalReferenceNumber();
+    var requestId = issuer.received.getLast().request().getRetrievalReferenceNumber();
 
     var demo = mvc.post().uri("/demo/clearing-file").exchange();
 
@@ -213,7 +207,7 @@ class AcmeDemoTests {
             dropFolder.resolve(platform.importedFileName), StandardCharsets.US_ASCII);
     assertThat(lines.getFirst()).startsWith("90");
     assertThat(lines)
-        .anySatisfy(line -> assertThat(line).startsWith("05").contains(PAN, charge, "CL34EF"));
+        .anySatisfy(line -> assertThat(line).startsWith("05").contains(PAN, requestId, "CL34EF"));
     assertThat(demo).bodyText().doesNotContain(PAN);
     assertThat(output).doesNotContain(PAN);
   }
@@ -459,14 +453,6 @@ class AcmeDemoTests {
       exchange.sendResponseHeaders(status, bytes.length);
       exchange.getResponseBody().write(bytes);
       exchange.close();
-    }
-  }
-
-  private static Path createTempDirectory() {
-    try {
-      return Files.createTempDirectory("acme-demo-drop-folder");
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
     }
   }
 }

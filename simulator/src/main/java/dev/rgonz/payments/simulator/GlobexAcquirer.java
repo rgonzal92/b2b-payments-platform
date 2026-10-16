@@ -74,8 +74,7 @@ class GlobexAcquirer {
       clearingFiles.submit(
           new Clearing(
               card.pan(),
-              request.getAmountMinor(),
-              request.getCurrencyCode(),
+              card.amount(),
               request.getRetrievalReferenceNumber(),
               authorization.authorizationCode(),
               acceptorId,

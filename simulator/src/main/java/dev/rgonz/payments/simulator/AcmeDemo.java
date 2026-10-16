@@ -1,8 +1,5 @@
 package dev.rgonz.payments.simulator;
 
-import dev.rgonz.payments.contracts.client.ClearingFilesApi;
-import dev.rgonz.payments.contracts.client.model.ClearingFile;
-import dev.rgonz.payments.contracts.client.model.ClearingFileImport;
 import dev.rgonz.payments.contracts.client.model.Decision;
 import dev.rgonz.payments.contracts.client.model.Invoice;
 import dev.rgonz.payments.contracts.client.model.Money;
@@ -11,30 +8,25 @@ import dev.rgonz.payments.simulator.GlobexAcquirer.Authorization;
 import dev.rgonz.payments.simulator.GlobexSupplier.ReceivedCard;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Runs the core path in two calls, for demos. The first: Acme's ERP submits an Invoice from Globex,
- * Acme's Approvers approve it, the demo waits for the platform to pay it, and Globex charges the
- * card it received; then it shows what Globex received and the Issuer's answer to the Charge. The
- * second: the Network writes its Clearing File and Issuer staff import it. Never shows a PAN or
- * security code.
+ * Runs the core path in one call, for demos: Acme's ERP submits an Invoice from Globex, Acme's
+ * Approvers approve it, the demo waits for the platform to pay it, and Globex charges the card it
+ * received; then it shows what Globex received and the Issuer's answer to the Charge. Never shows a
+ * PAN or security code.
  */
 @RestController
 class AcmeDemo {
 
   static final String DEMO_PATH = "/demo/invoices";
-  static final String CLEARING_FILE_PATH = "/demo/clearing-file";
 
   private static final Logger log = LoggerFactory.getLogger(AcmeDemo.class);
   private static final Duration PAYMENT_WAIT = Duration.ofSeconds(30);
@@ -43,39 +35,11 @@ class AcmeDemo {
   private final AcmeErp erp;
   private final AcmeApprovers approvers;
   private final GlobexSupplier globex;
-  private final NetworkClearingFiles clearingFiles;
-  private final ClearingFilesApi issuerStaff;
 
-  AcmeDemo(
-      AcmeErp erp,
-      AcmeApprovers approvers,
-      GlobexSupplier globex,
-      NetworkClearingFiles clearingFiles,
-      ClearingFilesApi issuerStaff) {
+  AcmeDemo(AcmeErp erp, AcmeApprovers approvers, GlobexSupplier globex) {
     this.erp = erp;
     this.approvers = approvers;
     this.globex = globex;
-    this.clearingFiles = clearingFiles;
-    this.issuerStaff = issuerStaff;
-  }
-
-  /**
-   * Has the Network write today's Clearing File (UTC) with every Clearing it hasn't sent yet, and
-   * Issuer staff import it at once rather than wait for the platform's next check of its drop
-   * folder; answers with the platform's summary of the import. With nothing to clear it writes no
-   * file and answers {@code 204}.
-   */
-  @PostMapping(CLEARING_FILE_PATH)
-  ResponseEntity<ClearingFile> clearingFile() {
-    var fileName = clearingFiles.write(LocalDate.now(ZoneOffset.UTC));
-    if (fileName.isEmpty()) {
-      log.info("The demo found no Clearings to send");
-      return ResponseEntity.noContent().build();
-    }
-    var imported =
-        issuerStaff.importClearingFile(new ClearingFileImport().fileName(fileName.get()));
-    log.info("The platform imported Clearing File {}", fileName.get());
-    return ResponseEntity.ok(imported.getBody());
   }
 
   /**
