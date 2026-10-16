@@ -5,6 +5,7 @@ import dev.rgonz.payments.platform.shared.BuyerId;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.stereotype.Service;
@@ -18,11 +19,17 @@ class Approvals {
   private final Invoices invoices;
   private final Decisions decisions;
   private final BuyerDirectory buyers;
+  private final ApplicationEventPublisher events;
 
-  Approvals(Invoices invoices, Decisions decisions, BuyerDirectory buyers) {
+  Approvals(
+      Invoices invoices,
+      Decisions decisions,
+      BuyerDirectory buyers,
+      ApplicationEventPublisher events) {
     this.invoices = invoices;
     this.decisions = decisions;
     this.buyers = buyers;
+    this.events = events;
   }
 
   @Transactional
@@ -44,6 +51,10 @@ class Approvals {
     if (invoice.isApprovedBy(
         Stream.concat(approverIds.stream(), Stream.of(approver.id())).toList(), threshold)) {
       invoices.setStatus(invoiceId, Invoice.Status.APPROVED);
+      // Stored by the event publication registry in this transaction, so the status change and
+      // the event commit or roll back together (ADR-0008).
+      events.publishEvent(
+          new InvoiceApproved(invoiceId, buyerId, invoice.supplierId(), invoice.amount()));
     }
   }
 

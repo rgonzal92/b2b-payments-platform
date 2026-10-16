@@ -5,29 +5,44 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.shared.BuyerId;
+import dev.rgonz.payments.platform.shared.Money;
 import java.io.UnsupportedEncodingException;
+import java.util.Currency;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.modulith.events.CompletedEventPublications;
+import org.springframework.modulith.events.EventPublication;
+import org.springframework.modulith.test.PublishedEvents;
+import org.springframework.modulith.test.PublishedEventsExtension;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.JwtRequestPostProcessor;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
+import org.springframework.transaction.event.TransactionalEventListener;
 
-/** Approvers approve and reject Invoices over HTTP, with mocked tokens. */
+/**
+ * Approvers approve and reject Invoices over HTTP, with mocked tokens, and the final approval
+ * publishes InvoiceApproved.
+ */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
 @AutoConfigureMockMvc
+@ExtendWith(PublishedEventsExtension.class)
 class ApprovalsApiTests {
 
   private static final long THRESHOLD = 1_000_000;
 
   @Autowired MockMvcTester mvc;
+  @Autowired CompletedEventPublications completedEvents;
 
   @Test
   void oneApprovalCompletesAnInvoiceAtTheApprovalThreshold() throws Exception {
@@ -166,6 +181,63 @@ class ApprovalsApiTests {
     }
   }
 
+  @Test
+  void onlyTheFinalApprovalPublishesInvoiceApproved(PublishedEvents events) throws Exception {
+    var acme = newBuyer();
+    var invoice = submitInvoiceJson(acme, THRESHOLD + 1);
+    String invoiceId = JsonPath.read(invoice, "$.id");
+    String supplierId = JsonPath.read(invoice, "$.supplierId");
+
+    decide(approverOf(acme, "ann"), invoiceId, "approval");
+    assertThat(events.ofType(InvoiceApproved.class)).isEmpty();
+    decide(approverOf(acme, "bob"), invoiceId, "approval");
+    decide(approverOf(acme, "bob"), invoiceId, "approval");
+
+    assertThat(events.ofType(InvoiceApproved.class))
+        .containsExactly(
+            new InvoiceApproved(
+                UUID.fromString(invoiceId),
+                new BuyerId(acme),
+                UUID.fromString(supplierId),
+                new Money(THRESHOLD + 1, Currency.getInstance("USD"))));
+  }
+
+  @Test
+  void aRejectionPublishesNoInvoiceApproved(PublishedEvents events) throws Exception {
+    var acme = newBuyer();
+    var invoiceId = submitInvoice(acme, THRESHOLD);
+
+    decide(approverOf(acme, "ann"), invoiceId, "rejection");
+
+    assertThat(events.ofType(InvoiceApproved.class)).isEmpty();
+  }
+
+  @Test
+  void invoiceApprovedGoesThroughTheEventPublicationRegistry() throws Exception {
+    var acme = newBuyer();
+    var invoiceId = UUID.fromString(submitInvoice(acme, THRESHOLD));
+
+    decide(approverOf(acme, "ann"), invoiceId.toString(), "approval");
+
+    assertThat(completedEvents.findAll())
+        .extracting(EventPublication::getEvent)
+        .filteredOn(
+            event ->
+                event instanceof InvoiceApproved approved && approved.invoiceId().equals(invoiceId))
+        .hasSize(1);
+  }
+
+  // Stands in for the Payment saga (#17): the registry stores a publication only for an event
+  // that a transactional listener receives.
+  @TestConfiguration(proxyBeanMethods = false)
+  static class PaymentSagaStandIn {
+
+    @TransactionalEventListener
+    void on(InvoiceApproved event) {
+      // Receiving the event is enough: the registry records its publication as completed.
+    }
+  }
+
   private UUID newBuyer() {
     var buyerId = UUID.randomUUID();
     var response =
@@ -184,6 +256,11 @@ class ApprovalsApiTests {
   }
 
   private String submitInvoice(UUID buyerId, long minorUnits) throws UnsupportedEncodingException {
+    return JsonPath.read(submitInvoiceJson(buyerId, minorUnits), "$.id");
+  }
+
+  private String submitInvoiceJson(UUID buyerId, long minorUnits)
+      throws UnsupportedEncodingException {
     var response =
         mvc.post()
             .uri("/v1/invoices")
@@ -207,7 +284,7 @@ class ApprovalsApiTests {
                     .formatted(UUID.randomUUID(), minorUnits))
             .exchange();
     assertThat(response).hasStatus(201);
-    return JsonPath.read(response.getResponse().getContentAsString(), "$.id");
+    return response.getResponse().getContentAsString();
   }
 
   private MvcTestResult decide(JwtRequestPostProcessor token, String invoiceId, String decision) {
