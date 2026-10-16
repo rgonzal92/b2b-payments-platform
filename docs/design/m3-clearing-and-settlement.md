@@ -100,6 +100,10 @@ The settle step totals the file's posted Clearings (Clearing Suspense included) 
 
 Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with sequence gaps shown) and `GET /v1/clearing-files/{id}` (status, Business Date, counts per outcome, the Settlement and whether it matched). The credit endpoint adds the Buyer Receivable balance next to open Holds and Available Credit. Browsing the journal waits for the M9 UI. (Changed during #53: the credit endpoint didn't show open Holds yet, so it now shows both, `openHolds` and `buyerReceivable`.)
 
+- Decided during #55:
+  - The list is ordered by when the platform received each file, ties broken by file ID, and pages by keyset on those two columns, never `OFFSET`: an opaque `cursor` (the page's `nextCursor`, absent on the last page) and a `limit` of 1 to 100, 20 by default; anything else, or a cursor no page gave, is `400`. Each item is the summary the import answers. The repository's first list endpoint, so it sets the pattern for "lists page by cursor".
+  - The gaps are `missingSequenceNumbers` on every page: the sequence numbers between the lowest and the highest of the `IMPORTED` files' that no `IMPORTED` file has, lowest first, the first 100, computed in SQL. A file still `IMPORTING`, or refused (#50), doesn't fill its number, so the gap stays until the file, or a corrected one, is imported; the runbook [`clearing-file-missing.md`](../runbooks/clearing-file-missing.md) tells a person to look for such a file before asking the Network.
+
 ### Simulator and end-to-end test (Q3, Q17)
 
 - Globex submits each approved, unreversed Charge for Clearing through its Acquirer; the Network writes the Issuer's file for a Business Date with every Clearing not yet sent, just after midnight UTC and on demand.
