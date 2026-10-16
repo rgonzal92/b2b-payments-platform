@@ -46,9 +46,10 @@ jobs:
       # gitleaks-action scans only the commits in a push or pull request; the CLI scans everything.
       - name: Install gitleaks
         run: |
-          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+          tarball="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL -o "$tarball" \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          echo "${GITLEAKS_SHA256}  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP" gitleaks
       - name: Scan the full history
         run: '"$RUNNER_TEMP/gitleaks" git --redact --verbose .'

@@ -7,9 +7,9 @@ The repository is public, and agents commit on your behalf. A token or password 
 ## Mental model
 
 - **It scans history, not just files.** `gitleaks git .` walks every commit reachable in the clone, so CI checks out the full history (`fetch-depth: 0`).
-- **A finding fails the job.** gitleaks exits non-zero, the `secrets` check goes red, and the ruleset on `main` blocks the merge.
+- **A finding fails the job.** gitleaks exits non-zero and the `secrets` check goes red; once the `main` ruleset exists (#6), a red check blocks the merge.
 - **Two layers, different moments.** GitHub's push protection rejects a recognised token at `git push`; gitleaks in CI catches what push protection doesn't recognise, across the whole history.
-- **A real leak means rotating the secret.** Deleting it in a new commit leaves it in the history.
+- **A real leak means rotating the secret.** Deleting it in a new commit leaves it in the history. The steps are in `docs/runbooks/leaked-secret.md`.
 
 ## Gotchas we hit
 
