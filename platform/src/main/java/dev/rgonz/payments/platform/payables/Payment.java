@@ -54,6 +54,18 @@ record Payment(
   }
 
   /**
+   * Its Single-Use Card expired uncharged: the Payment ends {@code EXPIRED} with no step left, a
+   * delivery still being retried included. In any other state there is no live card to expire, so
+   * the Payment stays as it is.
+   */
+  Payment cardExpired() {
+    return switch (state) {
+      case CARD_ISSUED, COMPLETED -> moved(State.EXPIRED, null, 0, null);
+      case STARTED, HOLD_PLACED, FAILED, EXPIRED -> this;
+    };
+  }
+
+  /**
    * A business refusal, such as not enough credit: retrying wouldn't change it, so it fails now.
    */
   Payment refused(String reason) {
@@ -83,7 +95,7 @@ record Payment(
       case STARTED -> "Placing the Hold";
       case HOLD_PLACED -> "Issuing the Single-Use Card";
       case CARD_ISSUED -> "Delivering the Remittance Advice";
-      case COMPLETED, FAILED ->
+      case COMPLETED, FAILED, EXPIRED ->
           throw new IllegalStateException("A " + state + " Payment has no step to fail.");
     };
   }
@@ -98,6 +110,7 @@ record Payment(
     HOLD_PLACED,
     CARD_ISSUED,
     COMPLETED,
-    FAILED
+    FAILED,
+    EXPIRED
   }
 }

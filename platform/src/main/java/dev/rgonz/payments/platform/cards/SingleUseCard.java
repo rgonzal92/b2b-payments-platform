@@ -24,6 +24,8 @@ public record SingleUseCard(
     ACTIVE,
     /** A Charge on it was approved; Clearing (M3) or a Reversal comes next. */
     AUTHORIZED,
-    CANCELLED
+    CANCELLED,
+    /** Its expiry came before anyone charged it; its Hold is released. */
+    EXPIRED
   }
 }

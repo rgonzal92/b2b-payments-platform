@@ -106,6 +106,38 @@ class PaymentTests {
     assertThat(payment.nextAttemptAt()).isNull();
   }
 
+  @Test
+  void aCardThatExpiresUnchargedEndsACompletedPaymentExpired() {
+    var expired = started().holdPlaced(NOW).cardIssued(NOW).completed().cardExpired();
+
+    assertThat(expired.state()).isEqualTo(Payment.State.EXPIRED);
+    assertThat(expired.nextAttemptAt()).isNull();
+  }
+
+  @Test
+  void aCardThatExpiresWhileItsAdviceIsStillRetriedEndsThePaymentExpiredWithNoRetryLeft() {
+    var retrying = started().holdPlaced(NOW).cardIssued(NOW).stepFailed(NOW);
+
+    var expired = retrying.cardExpired();
+
+    assertThat(expired.state()).isEqualTo(Payment.State.EXPIRED);
+    assertThat(expired.attempts()).isZero();
+    assertThat(expired.failureReason()).isNull();
+    assertThat(expired.nextAttemptAt()).isNull();
+  }
+
+  @Test
+  void aCardExpiryLeavesAPaymentInAnyOtherStateAsItIs() {
+    var others =
+        List.of(
+            started(),
+            started().holdPlaced(NOW),
+            started().refused("Not enough Available Credit to place the Hold."),
+            started().holdPlaced(NOW).cardIssued(NOW).completed().cardExpired());
+
+    assertThat(others).allSatisfy(payment -> assertThat(payment.cardExpired()).isEqualTo(payment));
+  }
+
   private static Payment started() {
     return Payment.startFor(
         new InvoiceApproved(

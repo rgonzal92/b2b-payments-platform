@@ -51,7 +51,7 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 | `buyers` | Buyer profiles, Approval Thresholds | | M1 |
 | `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice and their one-time card links | `cards`, `vault` | M1 |
 | `payables` | Invoices and their Idempotency-Keys, approvals, Payments (runs the Payment saga) | `buyers`, `ledger`, `cards`, `suppliers` | M1 |
-| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel, authorize) | `vault` | M1 |
+| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel, authorize, expire after 30 days uncharged) | `vault` | M1 |
 | `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards`, `suppliers` and `authorization` may call it | | M1 |
 | `authorization` | The Network link over gRPC; Authorization rules and a record of every answer | `vault`, `cards` | M2 |
 | `ledger` | Credit Lines, Holds and Available Credit; postings and the journal from M3 (ADR-0005) | `buyers` | M1 |
@@ -62,7 +62,7 @@ How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card, or `ledger` asking `buyers` whether a Buyer exists before setting its Credit Line. The callee answers through a public type in its module's top-level package (`buyers.BuyerDirectory`); the rest of the module stays package-private.
 - **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places and releases Holds through `ledger.Holds` and issues cards through `cards.Cards`, inside the worker's transaction, so each step and the Payment's new state commit together. `cards` asks `vault.Vault` for a new PAN by Card Token, in that same transaction, and gets back only its last four digits. The saga delivers the Remittance Advice through `suppliers.RemittanceAdvices`, and when delivery fails for good it cancels the card through `cards.Cards`. When a Supplier opens its link, `suppliers` asks `cards.Cards` for the card (status, expiry) and `vault.Vault` for its PAN and security code. When the Network asks for an Authorization, `authorization` asks `vault.Vault` for the Card Token of the request's PAN and `cards.Cards` to move the card to `AUTHORIZED`, in one transaction with the recorded answer. `ModularityTests` fails if any module other than `cards`, `suppliers` and `authorization` uses `vault`.
-- **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008). The first is `payables.InvoiceApproved` (Invoice, Buyer, Supplier, amount), published by the approval that completes an Invoice; the Payment saga's listener starts a Payment from it. Publications whose listener didn't complete are delivered again when the platform starts, so a listener must cope with the same event twice.
+- **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008). The first is `payables.InvoiceApproved` (Invoice, Buyer, Supplier, amount), published by the approval that completes an Invoice; the Payment saga's listener starts a Payment from it. The second is `cards.CardExpired` (Card Token, Payment, Buyer, amount), published by the expiry job for each card nobody charged; `payables` ends the Payment and releases its Hold (see [Card expiry](#card-expiry)). Publications whose listener didn't complete are delivered again when the platform starts, so a listener must cope with the same event twice.
 - **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`. Spring Modulith's event publication registry keeps its one table, `event_publication`, in a `modulith` schema it creates at startup.
 
 ## Approvals
@@ -138,8 +138,11 @@ stateDiagram-v2
   CARD_ISSUED --> CARD_ISSUED: technical error (no 2xx in time), retried after 10, 20, 40, 80 s
   CARD_ISSUED --> COMPLETED: the Supplier answers the Remittance Advice with a 2xx
   CARD_ISSUED --> FAILED: the fifth technical error; the card is cancelled and the Hold released
+  CARD_ISSUED --> EXPIRED: CardExpired (delivery still retrying); the retries stop and the Hold is released
+  COMPLETED --> EXPIRED: CardExpired; the Hold is released
   COMPLETED --> [*]
   FAILED --> [*]
+  EXPIRED --> [*]
 ```
 
 - **The state row (ADR-0014):** each Payment is a row in `payables.payment` with its state, failure reason, failed attempts at the current step and the time its next step is due. `GET /v1/invoices/{invoiceId}` shows the state and any failure reason.
@@ -159,12 +162,34 @@ A Single-Use Card's data is split between two modules so the PAN lives in exactl
 | | `cards.card` | `vault.card_secret` |
 |---|---|---|
 | Key | Card Token: 16 random bytes, base64url | the same Card Token |
-| Stores | Payment (unique), Buyer, Supplier and amount the card is locked to, last four digits, issue and expiry times, status (`ACTIVE`; `AUTHORIZED` once a Charge on it is approved; `CANCELLED` when its Remittance Advice couldn't be delivered) | the PAN and the security code, each AES-256-GCM-encrypted under a fresh nonce with the Card Token as associated data; the PAN's HMAC-SHA-256 hash, unique |
+| Stores | Payment (unique), Buyer, Supplier and amount the card is locked to, last four digits, issue and expiry times, status (`ACTIVE`; `AUTHORIZED` once a Charge on it is approved; `CANCELLED` when its Remittance Advice couldn't be delivered; `EXPIRED` when nobody charged it within 30 days) | the PAN and the security code, each AES-256-GCM-encrypted under a fresh nonce with the Card Token as associated data; the PAN's HMAC-SHA-256 hash, unique |
 | Read by | `payables` (the Invoice shows Card Token, last four digits, expiry); `suppliers` (status and expiry, when a link is opened) | `suppliers`, when a Supplier opens its link: the PAN and security code, decrypted, never stored outside the vault; `authorization`: the Card Token for a PAN, found through its hash |
 
 - **PANs** are synthetic: 16 digits, `990000` followed by nine random digits and a Luhn check digit. A PAN whose hash another card already has is drawn again.
 - **Keys:** two separate 256-bit keys, one to encrypt and one to hash, come from `vault.encryption-key` and `vault.hash-key` (`VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` in `.env`, written by `scripts/init-env.sh`). The platform doesn't start when either is missing or isn't 32 bytes ([`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md)). M7 replaces them with envelope encryption.
 - **How it works and why:** [`learning/card-vault.md`](learning/card-vault.md).
+
+## Card expiry
+
+A Single-Use Card nobody charged before its expiry, 30 days after issuance, returns its credit to the Buyer (ADR-0011).
+
+```mermaid
+sequenceDiagram
+  participant JOB as cards: expiry job
+  participant PAY as payables
+  participant LED as ledger
+
+  Note over JOB: every minute, 100 cards per transaction
+  JOB->>JOB: ACTIVE cards past their expiry become EXPIRED (for update skip locked)
+  JOB-)PAY: CardExpired, one per card (event publication registry)
+  PAY->>PAY: lock the Payment; COMPLETED or CARD_ISSUED becomes EXPIRED
+  PAY->>LED: Holds.release(Payment ID)
+```
+
+- **The job (`cards.CardExpiry`):** `CardExpirySchedule` runs it every minute (`cards.expiry-job.enabled=false` turns it off for tests that run it by hand). Each batch claims up to 100 `ACTIVE` cards whose `expires_at` has come with one `update ... where card_token in (select ... for update skip locked) returning ...`, and publishes a `CardExpired` for each, in the same transaction: a stop mid-run leaves each card `ACTIVE` for the next run, or `EXPIRED` with its event in the registry. Cards in any other status are left alone; an index on `expires_at` covers only `ACTIVE` cards.
+- **The listener (`PaymentSaga.expire`):** in one transaction, it locks the Payment (waiting for a worker that is running its step), moves a `COMPLETED` Payment, or a `CARD_ISSUED` one still retrying its delivery, to `EXPIRED` with no step left, and releases the Hold through `ledger.Holds`. `payables`, not `cards`, releases the Hold because it owns the Hold's lifecycle in the saga, and `cards` needs no dependency on `ledger`. Another state stays as it is, but the Hold is still released.
+- **Exactly once:** the registry may deliver `CardExpired` again; a second delivery finds the Payment `EXPIRED` and the Hold `RELEASED`, and changes nothing. Re-paying the Invoice is out of scope; it stays `APPROVED`.
+- **When cards stay `ACTIVE` past their expiry:** [`runbooks/payment-stuck.md`](runbooks/payment-stuck.md#a-card-past-its-expiry-is-still-active).
 
 ## Remittance Advice
 
@@ -273,7 +298,7 @@ sequenceDiagram
 - **Module boundaries:** `ModularityTests` (Spring Modulith's verification, and only `cards`, `suppliers` and `authorization` using `vault`).
 - **The simulator's roles and the demo** against stub Keycloak and platform servers.
 
-## How M2 is proven so far
+## How the Network link is proven
 
 - **Only the Network signs in** (`NetworkAuthenticationTests`): real Keycloak tokens from the repository's realm file, over a real gRPC connection. No token or a forged one: `UNAUTHENTICATED`; `acme-erp`'s token: `PERMISSION_DENIED`; the `network` client's: answered.
 - **Authorize** (`AuthorizeTests`): over gRPC on PostgreSQL, with a mocked Network token. An issued `ACTIVE` card's PAN: `00` with a six-character authorization code, the card `AUTHORIZED`, Available Credit unchanged; an unknown PAN: `14`; a `CANCELLED` card: `54`. Each answer recorded.
