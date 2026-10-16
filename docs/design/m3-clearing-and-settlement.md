@@ -1,0 +1,123 @@
+# M3: Clearing and Settlement
+
+**Status:** approved 2026-10-16. Decisions from the M3 grilling (Round 1–3, Q1–Q23, 2026-10-16).
+
+## Problem
+
+M2 ends with an approved Authorization and a Hold that never turns into money: nothing posts spend, nothing pays the Network, and the Buyer's credit stays reserved until the card expires. M3 builds the next part of the core path (README, step 6): the Network's daily Clearing File arrives, the platform posts every Clearing to a double-entry journal and pays the Network the file's net total. It's the first batch workload and the first time money is booked rather than reserved, so the books have to balance and a file has to be safe to import twice, partly, or out of order.
+
+## Done when
+
+1. After the demo charges a card, `POST /demo/clearing-file` produces a Clearing File the platform imports: the card is `CLEARED`, the Buyer Receivable carries the cleared amount, Available Credit counts it instead of the Hold, and the file's Settlement is posted.
+2. Every Clearing is posted and its outcome recorded as the table below says, including an unknown card posted to Clearing Suspense; every Journal Entry balances.
+3. The same file sent twice (same file ID or same content) is refused and a repeated record is skipped: nothing is posted twice. A file whose record count or amount total doesn't match its trailer is refused whole.
+4. An import stopped mid-file restarts from its last committed chunk and posts every Clearing exactly once.
+5. A Settlement whose imported total differs from the trailer's net settlement amount is posted at the Network's figure and recorded as mismatched.
+6. Issuer staff record a Buyer's Repayment, which raises Available Credit; a Repayment above what the Buyer owes is refused.
+7. An `AUTHORIZED` card with no Clearing 7 days after its Authorization expires, its Hold is released and its Payment ends `EXPIRED`.
+8. The end-to-end test runs from Invoice through the approved Charge to an imported Clearing File and a posted Settlement.
+9. `docs/architecture.md`, explainers for Spring Batch and double-entry bookkeeping, and runbooks for a Clearing File arriving twice, a refused file, a missing file, an import that stopped, and a mismatched Settlement are written.
+
+## Approach
+
+### Modules in M3
+
+| Module | Builds |
+|---|---|
+| `clearing` | New. Clearing Files and their Clearings, the Spring Batch import job, the drop-folder poller, Settlement, and the Issuer-staff endpoints for files. |
+| `ledger` | The journal: Accounts and Journal Entries (ADR-0015); posting a Clearing, a Settlement and a Repayment; Holds marked `CLEARED`; Available Credit read from the Buyer Receivable; the Repayment endpoint. |
+| `cards` | Status `CLEARED`; the expiry job also expires `AUTHORIZED` cards 7 days after their Authorization; `cancel` only cancels an `ACTIVE` card. |
+| `authorization` | A lookup of a card's Authorization by authorization code, for matching. |
+| `vault` | Unchanged: `cardFor(pan)` finds the card. `clearing` joins the modules that may call it (ADR-0004, amended). |
+| `suppliers` | A Remittance Advice link answers `410` for any card that isn't `ACTIVE` or `AUTHORIZED`. |
+| `payables` | Unchanged: the 7-day rule reuses the `CardExpired` path from #34. |
+
+### The Clearing File (Q1, Q8)
+
+- **Fixed-width text, modelled loosely on Visa Base II:** a header (file ID, the Network's sequence number, Business Date), one detail record per Clearing, and a trailer (record count, amount total, net settlement amount). The trailer's control totals are how the platform knows the file arrived whole.
+- **A detail record carries** the Network record ID, the PAN (DE 2), amount and currency (DE 4, DE 49), retrieval reference number (DE 37), authorization code (DE 38), Acceptor ID (DE 42) and the Charge date.
+- **The layout is a contract, defined once in `contracts`** (a layout document plus a sample file both the simulator's writer and the platform's reader are tested against), like the OpenAPI document and the `.proto`.
+
+### Arrival and duplicates (Q2, Q4, Q11, Q19, Q20)
+
+- **A drop folder** stands in for an SFTP landing zone: the simulator's Network writes files there and the platform checks it every 30 seconds. Issuer staff can also import a named file at once. The folder sits in a gitignored directory.
+- **Duplicates are harmless at two levels:** a file whose file ID or SHA-256 was already imported is refused and moved aside; a record whose Network record ID was already imported is skipped (Q20 rule 1).
+- **After a successful import the file is deleted;** the platform keeps its hash, header and trailer figures and its counts per outcome. A refused or failed file waits in `failed/` until a person resolves it, then is deleted. The PAN never outlives the import outside the vault.
+- **Each file is settled on its own,** so a second file for the same Business Date is accepted. Files import in whatever order they arrive; a gap in the Network's sequence numbers is shown on the clearing-files list, and a runbook says what to do about a missing file.
+
+### The import job: Spring Batch (Q12, Q15)
+
+- `spring-boot-starter-batch-jdbc` (Spring Batch 6, managed by Boot 4.1.1) inside the platform, its job repository tables in their own `batch` schema. One job run per file, keyed by its file ID, so Spring Batch also refuses to run a file twice.
+- **Step 1, validate:** the file ID and hash are new, the header and trailer exist, and the record count and amount total match the trailer. Anything wrong refuses the whole file and posts nothing.
+- **Step 2, import:** chunks of 100 records, each chunk one transaction. For each Clearing the step finds the card and its Authorization, decides the outcome, and calls `ledger` (post the Journal Entry, mark the Hold `CLEARED`), `cards` (`CLEARED`) and `clearing` (record the Clearing) through their public APIs, synchronously, inside the chunk's transaction. A stopped run restarts from its last committed chunk; the Network record ID's unique constraint keeps a replayed record from posting twice.
+- **Step 3, settle:** below.
+
+### Matching and outcomes (Q6, Q7, Q9, Q21, Q22)
+
+The PAN finds the card through the vault; the authorization code finds that card's Authorization. The Issuer pays what clears (Q20), so every Clearing is posted except a repeated record:
+
+| Case | Posted | Outcome |
+|---|---|---|
+| An approved Authorization, at its amount or less | yes; the Hold's unused rest is freed with it | matched (both amounts kept, so M4 sees an undercharge) |
+| Above the authorized amount | yes, the full cleared amount | above authorized amount |
+| No Authorization found for the card | yes, to the card's Buyer | no Authorization |
+| A PAN the vault doesn't know | yes, to Clearing Suspense | unknown card |
+| The Authorization was `REVERSED` | yes | against a reversed Authorization |
+| The Hold was already released (7-day rule or expiry) | yes | after Hold expired |
+| The Authorization already has a Clearing (another record ID) | yes | Authorization already cleared |
+| The same Network record ID again | no | skipped |
+
+- A Clearing always moves its card to `CLEARED`, whatever its status, marks the card's Hold `CLEARED` if it is still open, and leaves the Payment alone: the Issuer's part ended when the Supplier received the card.
+- M3 records the outcome on each Clearing; M4's Reconciliation turns every outcome other than "matched" into a Break that a person resolves.
+
+### The journal (ADR-0015, Q5)
+
+Four kinds of Account: a Buyer Receivable per Buyer, Network Settlement Payable, Issuer Cash and Clearing Suspense. A Clearing debits the Buyer Receivable (or Clearing Suspense) and credits the Network Settlement Payable; a Settlement debits the Network Settlement Payable and credits Issuer Cash; a Repayment debits Issuer Cash and credits the Buyer Receivable. Journal Entries balance, are never changed or deleted, and carry an idempotency key. Available Credit becomes the Credit Line minus the Buyer Receivable balance minus open Holds; an above-authorized Clearing can push it below zero, which already happens when a Credit Line is lowered.
+
+### Settlement (Q13)
+
+The settle step totals the file's posted Clearings (Clearing Suspense included) and compares the total with the trailer's net settlement amount. It records a Settlement and posts the Network's figure either way, because the Issuer pays what the Network says; when the two differ the Settlement is recorded as mismatched for M4, and the Network Settlement Payable keeps a balance that shows the gap. No real money moves; a JMS settlement instruction is a bonus milestone.
+
+### Repayment (Q14, Q23)
+
+`POST /v1/buyers/{id}/repayments`, Issuer staff only, with an `Idempotency-Key` (it moves money). It posts the Repayment and raises Available Credit. An amount above the Buyer Receivable balance, or of zero or less, answers `422`. Statements and billing stay a bonus milestone.
+
+### The 7-day rule (Q10)
+
+`cards` records when a card became `AUTHORIZED`. The expiry job from #34 also expires an `AUTHORIZED` card 7 days after that, through the same `CardExpired` event, so its Hold is released and its Payment ends `EXPIRED`. A Clearing that arrives later is still posted, as "after Hold expired".
+
+### What people read (Q16)
+
+Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with sequence gaps shown) and `GET /v1/clearing-files/{id}` (status, Business Date, counts per outcome, the Settlement and whether it matched). The credit endpoint adds the Buyer Receivable balance next to open Holds and Available Credit. Browsing the journal waits for the M9 UI.
+
+### Simulator and end-to-end test (Q3, Q17)
+
+- Globex submits each approved, unreversed Charge for Clearing through its Acquirer; the Network writes the Issuer's file for a Business Date with every Clearing not yet sent, just after midnight UTC and on demand.
+- `POST /demo/clearing-file` writes the file and asks the platform, signed in as Issuer staff, to import it at once; it answers with the import summary. Switches inject each edge case on purpose: a duplicate record, an amount above the authorized one, a Clearing with no Authorization, an unknown PAN, a wrong trailer total, and the same file sent twice.
+- The end-to-end test continues from the approved Charge to the imported file: the card `CLEARED`, the Buyer Receivable posted, the Settlement posted.
+
+### M2 follow-ups (Q18)
+
+In the ticket that adds `CLEARED`: `Cards.cancel` leaves a card that isn't `ACTIVE` alone, and a Remittance Advice link answers `410` for a card that isn't `ACTIVE` or `AUTHORIZED`.
+
+## Deferred
+
+Breaks and Reconciliation (M4); SFTP delivery; the JMS settlement instruction (bonus); statements, billing, refunds and credit balances; disputes and chargebacks; an encrypted archive of Clearing Files; multiple currencies.
+
+## Rejected options
+
+- **CSV or JSON lines for the file:** easier to read, but no control totals and nothing like a real bank file.
+- **SFTP or an upload endpoint now:** SFTP adds a server and a client library before the file logic exists; networks don't upload files to issuers.
+- **Skipping bad records:** a file is the Network's statement of what it will settle; a partial import would settle a total nobody agreed.
+- **An event per Clearing:** the file would count as imported before the books caught up, and its totals couldn't be checked in one place.
+- **A "posted spend" column instead of a journal:** see ADR-0015.
+- **One Settlement per Business Date:** nothing tells the platform a day's last file has arrived.
+- **Allowing overpayment:** a credit balance needs refunds, which are out of scope.
+- **Creating Breaks in M3:** keeps M3 to file processing and money and M4 to matching and the people workflow.
+
+## Risks
+
+- **Spring Batch 6 is new here,** and its API moved since Spring Batch 5 (job launching and the job repository), so most blog posts are out of date: the first ticket proves a restartable two-chunk import before the matching rules arrive.
+- **A chunk spans four modules' writes in one transaction:** one failing record rolls back its chunk's other 99, so a record that always fails stops the file; the job reports it and the runbook covers it.
+- **The file holds PANs on disk until it's imported:** it's deleted after import and the folder is gitignored, but a failed file stays readable in `failed/` until someone resolves it.
+- **Several platform instances (M6) polling one folder** could pick the same file; the job run keyed by file ID and an atomic move into a processing folder keep it to one import.
