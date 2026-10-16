@@ -24,8 +24,10 @@ POST /v1/clearing-files {fileName}  or  the drop-folder check, every 30 s
             │             and the hash (or that row again, when a restart runs validate twice)
             ├─ import     chunks of 100, each one transaction:
             │               read 100 ─▶ for each: vault.cardFor(PAN), cards.find, authorizations.find
-            │                           record the Clearing; its Network record ID already recorded: skip it
-            │                           matched: cards.clear, journal.postClearing, holds.clear; MATCHED
+            │                           a known card: cards.clear, holds.isReleased, holds.clear
+            │                           the outcome; journal.postClearing (or …ToSuspense)
+            │                           record the Clearing with its outcome; its Network record ID
+            │                           already recorded: nothing recorded, skipped
             │               + the chunk's skipped count, and the reader's position into the step's
             │                 execution context, same commit
             ├─ settle     tasklet, one transaction: total the posted Clearings; post the trailer's figure;

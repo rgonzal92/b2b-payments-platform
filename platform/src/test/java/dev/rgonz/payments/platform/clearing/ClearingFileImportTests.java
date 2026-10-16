@@ -3,6 +3,7 @@ package dev.rgonz.payments.platform.clearing;
 import static dev.rgonz.payments.platform.clearing.TestClearingFiles.newId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -14,7 +15,10 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
+import dev.rgonz.payments.contracts.network.ReversalRequest;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.cards.CardExpired;
+import dev.rgonz.payments.platform.cards.CardExpiryJob;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.clearing.TestClearingFiles.Detail;
@@ -32,6 +36,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Date;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -41,10 +46,12 @@ import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Stream;
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,11 +65,14 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.grpc.client.interceptor.security.BearerTokenAuthenticationInterceptor;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.modulith.events.CompletedEventPublications;
+import org.springframework.modulith.events.EventPublication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -74,9 +84,9 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 
 /**
  * Issuer staff import a Clearing File from the drop folder through the endpoint, on PostgreSQL:
- * each Clearing that matches its approved Authorization is posted to the journal, and its Hold and
- * its card become {@code CLEARED}. The cards are issued and charged the way the Payment saga and
- * the Network do it, the Charge over gRPC with a mocked Network token.
+ * every Clearing is posted to the journal and recorded with its outcome, its card becomes {@code
+ * CLEARED}, and so does its Hold if still open. The cards are issued and charged the way the
+ * Payment saga and the Network do it, the Charge over gRPC with a mocked Network token.
  */
 @Import({TestcontainersConfiguration.class, ClearingFileImportTests.NetworkTokens.class})
 @SpringBootTest
@@ -86,6 +96,8 @@ class ClearingFileImportTests {
   private static final Currency USD = Currency.getInstance("USD");
   private static final long CARD_AMOUNT = 1_240_000;
   private static final String ACCEPTOR_ID = "GLOBEX000000001";
+  // In the platform's 990000 range, but 19 digits: the vault issues 16, so no card has it.
+  private static final String UNKNOWN_PAN = "9900000000000000000";
   private static final DateTimeFormatter EXPIRATION_DATE =
       DateTimeFormatter.ofPattern("yyMM").withZone(ZoneOffset.UTC);
   private static final Path DROP_FOLDER = newDropFolder();
@@ -112,10 +124,13 @@ class ClearingFileImportTests {
   @Autowired MockMvcTester mvc;
   @Autowired JdbcClient jdbc;
   @Autowired Cards cards;
-  @Autowired Holds holds;
+  // The real Holds, whose release the expiry race test holds back.
+  @MockitoSpyBean Holds holds;
   @Autowired Vault vault;
   @Autowired Suppliers suppliers;
   @Autowired ClearingFileImports imports;
+  @Autowired ApplicationContext context;
+  @Autowired CompletedEventPublications completedEvents;
 
   // The real journal and file records, which the restart tests make fail once.
   @MockitoSpyBean Journal journal;
@@ -198,6 +213,9 @@ class ClearingFileImportTests {
             """
             {"id": "%s", "sequenceNumber": 7, "businessDate": "2026-10-15", "status": "IMPORTED",
              "recordCount": 1, "skippedCount": 0,
+             "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
+                          "unknownCard": 0, "otherCurrency": 0, "againstReversedAuthorization": 0,
+                          "afterHoldExpired": 0, "authorizationAlreadyCleared": 0},
              "settlement": {"amount": {"minorUnits": 1000000, "currency": "USD"},
                             "importedTotal": {"minorUnits": 1000000, "currency": "USD"},
                             "matched": true}}
@@ -205,11 +223,6 @@ class ClearingFileImportTests {
                 .formatted(fileId));
     var entryId = journalEntryFor(networkRecordId);
     assertThat(linesOf(entryId))
-        .extracting(
-            line -> line.get("kind"),
-            line -> line.get("buyer_id"),
-            line -> line.get("side"),
-            line -> line.get("amount_minor"))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", 1_000_000L),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 1_000_000L));
@@ -259,11 +272,9 @@ class ClearingFileImportTests {
             """);
     // The Settlement pays the Network the trailer's figure from Issuer Cash...
     assertThat(linesOf(settlementEntryFor(fileId)))
-        .extracting(
-            line -> line.get("kind"), line -> line.get("side"), line -> line.get("amount_minor"))
         .containsExactly(
-            tuple("NETWORK_SETTLEMENT_PAYABLE", "DEBIT", 1_240_000L),
-            tuple("ISSUER_CASH", "CREDIT", 1_240_000L));
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "DEBIT", 1_240_000L),
+            tuple("ISSUER_CASH", null, "CREDIT", 1_240_000L));
     // ...so the Issuer owes the Network nothing more for this file.
     assertThat(networkSettlementPayableFor(fileId)).isZero();
   }
@@ -298,11 +309,9 @@ class ClearingFileImportTests {
             """);
     // The Issuer pays what the Network says...
     assertThat(linesOf(settlementEntryFor(fileId)))
-        .extracting(
-            line -> line.get("kind"), line -> line.get("side"), line -> line.get("amount_minor"))
         .containsExactly(
-            tuple("NETWORK_SETTLEMENT_PAYABLE", "DEBIT", 985_000L),
-            tuple("ISSUER_CASH", "CREDIT", 985_000L));
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "DEBIT", 985_000L),
+            tuple("ISSUER_CASH", null, "CREDIT", 985_000L));
     // ...and the gap stays on the Network Settlement Payable for M4's Reconciliation.
     assertThat(networkSettlementPayableFor(fileId)).isEqualTo(15_000);
     assertThat(output)
@@ -352,13 +361,13 @@ class ClearingFileImportTests {
              "settlement": {"amount": {"minorUnits": 240000, "currency": "USD"}, "matched": true}}
             """);
     assertThat(linesOf(settlementEntryFor(firstFileId)))
-        .extracting(line -> line.get("kind"), line -> line.get("amount_minor"))
         .containsExactly(
-            tuple("NETWORK_SETTLEMENT_PAYABLE", 1_000_000L), tuple("ISSUER_CASH", 1_000_000L));
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "DEBIT", 1_000_000L),
+            tuple("ISSUER_CASH", null, "CREDIT", 1_000_000L));
     assertThat(linesOf(settlementEntryFor(secondFileId)))
-        .extracting(line -> line.get("kind"), line -> line.get("amount_minor"))
         .containsExactly(
-            tuple("NETWORK_SETTLEMENT_PAYABLE", 240_000L), tuple("ISSUER_CASH", 240_000L));
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "DEBIT", 240_000L),
+            tuple("ISSUER_CASH", null, "CREDIT", 240_000L));
     assertThat(networkSettlementPayableFor(firstFileId)).isZero();
     assertThat(networkSettlementPayableFor(secondFileId)).isZero();
   }
@@ -512,11 +521,10 @@ class ClearingFileImportTests {
   }
 
   @Test
-  void aClearingWithoutAMatchingApprovedAuthorizationIsRecordedUnmatchedAndNotPosted()
+  void aClearingWithNoAuthorizationIsPostedToItsCardsBuyerAndClearsTheCardAndItsHold()
       throws Exception {
     var buyerId = buyerWithCreditLine(10_000_000);
     var charged = chargedCard(buyerId);
-    var creditBefore = availableCredit(buyerId);
     var networkRecordId = newId("R", 20);
     var wrongCode =
         new Detail(
@@ -527,17 +535,333 @@ class ClearingFileImportTests {
 
     assertThat(response).hasStatus(201);
     assertThat(response).bodyJson().extractingPath("$.status").isEqualTo("IMPORTED");
+    var entryId = journalEntryFor(networkRecordId);
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", 1_000_000L),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 1_000_000L));
     assertThat(clearingRecorded(networkRecordId))
         .containsEntry("card_token", charged.card().cardToken())
         .containsEntry("authorization_request_id", null)
         .containsEntry("authorized_amount_minor", null)
         .containsEntry("authorized_currency", null)
-        .containsEntry("outcome", "UNMATCHED")
-        .containsEntry("journal_entry_id", null);
-    assertThat(holdStatus(charged.card())).isEqualTo("PLACED");
+        .containsEntry("outcome", "NO_AUTHORIZATION")
+        .containsEntry("journal_entry_id", entryId);
+    assertThat(holdStatus(charged.card())).isEqualTo("CLEARED");
     assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
-        .isEqualTo(SingleUseCard.Status.AUTHORIZED);
-    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 1_000_000);
+  }
+
+  @Test
+  void aClearingForAPanTheVaultDoesntKnowIsPostedToClearingSuspense() {
+    var networkRecordId = newId("R", 20);
+    var unknownCard =
+        new Detail(networkRecordId, UNKNOWN_PAN, 500_000, newId("Q", 12), "ZZZZZZ", ACCEPTOR_ID);
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 13, List.of(unknownCard));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    var entryId = journalEntryFor(networkRecordId);
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("CLEARING_SUSPENSE", null, "DEBIT", 500_000L),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 500_000L));
+    assertThat(clearingRecorded(networkRecordId))
+        .containsEntry("card_token", null)
+        .containsEntry("authorization_request_id", null)
+        .containsEntry("cleared_amount_minor", 500_000L)
+        .containsEntry("outcome", "UNKNOWN_CARD")
+        .containsEntry("journal_entry_id", entryId);
+  }
+
+  @Test
+  void aClearingInAnotherCurrencyThanItsCardsIsPostedToClearingSuspenseAndClearsTheCardAndHold()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var charged = chargedCard(buyerId);
+    var networkRecordId = newId("R", 20);
+    // One record in euros in the Network's file in dollars, for a card in dollars.
+    var inEuros =
+        new Detail(
+            networkRecordId,
+            charged.pan(),
+            1_000_000,
+            "EUR",
+            charged.requestId(),
+            charged.authorizationCode(),
+            ACCEPTOR_ID);
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 14, List.of(inEuros));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    var entryId = journalEntryFor(networkRecordId);
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("CLEARING_SUSPENSE", null, "DEBIT", 1_000_000L),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 1_000_000L));
+    assertThat(clearingRecorded(networkRecordId))
+        .containsEntry("card_token", charged.card().cardToken())
+        .containsEntry("authorization_request_id", charged.requestId())
+        .containsEntry("cleared_currency", "EUR")
+        .containsEntry("authorized_currency", "USD")
+        .containsEntry("outcome", "OTHER_CURRENCY")
+        .containsEntry("journal_entry_id", entryId);
+    assertThat(holdStatus(charged.card())).isEqualTo("CLEARED");
+    assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+    // Nothing is charged to the Buyer until a person resolves the Clearing, and the Hold is gone.
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000);
+  }
+
+  @Test
+  void aClearingAboveItsAuthorizationIsPostedWholeToItsCardsBuyer() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var charged = chargedCard(buyerId);
+    var networkRecordId = newId("R", 20);
+    var fileName =
+        TestClearingFiles.drop(
+            DROP_FOLDER,
+            newId("F", 16),
+            15,
+            List.of(clearingOf(charged, networkRecordId, CARD_AMOUNT + 60_000)));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    var entryId = journalEntryFor(networkRecordId);
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT + 60_000),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT + 60_000));
+    assertThat(clearingRecorded(networkRecordId))
+        .containsEntry("authorization_request_id", charged.requestId())
+        .containsEntry("cleared_amount_minor", CARD_AMOUNT + 60_000)
+        .containsEntry("authorized_amount_minor", CARD_AMOUNT)
+        .containsEntry("outcome", "ABOVE_AUTHORIZED_AMOUNT")
+        .containsEntry("journal_entry_id", entryId);
+    assertThat(holdStatus(charged.card())).isEqualTo("CLEARED");
+    assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+    // More than the Hold reserved: the Buyer owes all of it.
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - CARD_AMOUNT - 60_000);
+  }
+
+  @Test
+  void aClearingAgainstAReversedAuthorizationIsPostedAndClearsTheActiveCardAndItsHold()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var charged = chargedCard(buyerId);
+    reverse(charged);
+    var networkRecordId = newId("R", 20);
+    var fileName =
+        TestClearingFiles.drop(
+            DROP_FOLDER,
+            newId("F", 16),
+            16,
+            List.of(clearingOf(charged, networkRecordId, CARD_AMOUNT)));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    var entryId = journalEntryFor(networkRecordId);
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT));
+    assertThat(clearingRecorded(networkRecordId))
+        .containsEntry("authorization_request_id", charged.requestId())
+        .containsEntry("outcome", "AGAINST_REVERSED_AUTHORIZATION")
+        .containsEntry("journal_entry_id", entryId);
+    // The Reversal moved the card back to ACTIVE; its Hold stayed placed.
+    assertThat(holdStatus(charged.card())).isEqualTo("CLEARED");
+    assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - CARD_AMOUNT);
+  }
+
+  @Test
+  void aSecondClearingOfOneAuthorizationIsPostedAsAuthorizationAlreadyCleared() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var charged = chargedCard(buyerId);
+    var first = clearingOf(charged, newId("R", 20), 1_000_000);
+    var second = clearingOf(charged, newId("R", 20), 200_000);
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 17, List.of(first, second));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    assertThat(clearingRecorded(first.networkRecordId())).containsEntry("outcome", "MATCHED");
+    var entryId = journalEntryFor(second.networkRecordId());
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", 200_000L),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 200_000L));
+    assertThat(clearingRecorded(second.networkRecordId()))
+        .containsEntry("authorization_request_id", charged.requestId())
+        .containsEntry("outcome", "AUTHORIZATION_ALREADY_CLEARED")
+        .containsEntry("journal_entry_id", entryId);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 1_000_000 - 200_000);
+  }
+
+  @Test
+  void aClearingAfterTheSevenDayRuleReleasedItsHoldIsPostedAndClearsTheExpiredCard()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var charged = chargedCard(buyerId);
+    CardExpiryJob.runAt(context, Instant.now().plus(Duration.ofDays(7)));
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> "RELEASED".equals(holdStatus(charged.card())));
+    assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.EXPIRED);
+    var networkRecordId = newId("R", 20);
+    var fileName =
+        TestClearingFiles.drop(
+            DROP_FOLDER,
+            newId("F", 16),
+            18,
+            List.of(clearingOf(charged, networkRecordId, CARD_AMOUNT)));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    var entryId = journalEntryFor(networkRecordId);
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT));
+    assertThat(clearingRecorded(networkRecordId))
+        .containsEntry("authorization_request_id", charged.requestId())
+        .containsEntry("outcome", "AFTER_HOLD_EXPIRED")
+        .containsEntry("journal_entry_id", entryId);
+    assertThat(holdStatus(charged.card())).isEqualTo("RELEASED");
+    assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - CARD_AMOUNT);
+  }
+
+  @Test
+  void aClearingOnACancelledCardIsPostedToItsBuyerAndClearsTheCardAndItsHold() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var card = issuedCard(buyerId);
+    cards.cancel(card.cardToken());
+    var networkRecordId = newId("R", 20);
+    var clearing =
+        new Detail(
+            networkRecordId,
+            vault.cardDetails(card.cardToken()).pan(),
+            CARD_AMOUNT,
+            newId("Q", 12),
+            "ZZZZZZ",
+            ACCEPTOR_ID);
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 19, List.of(clearing));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    var entryId = journalEntryFor(networkRecordId);
+    assertThat(linesOf(entryId))
+        .containsExactly(
+            tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT),
+            tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT));
+    assertThat(clearingRecorded(networkRecordId)).containsEntry("outcome", "NO_AUTHORIZATION");
+    assertThat(holdStatus(card)).isEqualTo("CLEARED");
+    assertThat(cards.find(card.cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+  }
+
+  @Test
+  void aClearingBeforeAnExpiredCardsHoldIsReleasedClearsTheHoldAndTheLateExpiryLeavesIt()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var charged = chargedCard(buyerId);
+    var card = charged.card();
+    // payables handles the card's CardExpired, but its release of the Hold waits for the
+    // Clearing: the window between the 7-day rule's commit and that release, held open.
+    var clearingImported = new CountDownLatch(1);
+    doAnswer(
+            release -> {
+              if (card.paymentId().equals(release.getArgument(0))) {
+                clearingImported.await(10, TimeUnit.SECONDS);
+              }
+              return release.callRealMethod();
+            })
+        .when(holds)
+        .release(any());
+    CardExpiryJob.runAt(context, Instant.now().plus(Duration.ofDays(7)));
+    assertThat(cards.find(card.cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.EXPIRED);
+    assertThat(holdStatus(card)).isEqualTo("PLACED");
+    var networkRecordId = newId("R", 20);
+    var fileName =
+        TestClearingFiles.drop(
+            DROP_FOLDER,
+            newId("F", 16),
+            20,
+            List.of(clearingOf(charged, networkRecordId, 1_000_000)));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    assertThat(clearingRecorded(networkRecordId)).containsEntry("outcome", "MATCHED");
+    assertThat(holdStatus(card)).isEqualTo("CLEARED");
+    assertThat(cards.find(card.cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+    var creditAfterClearing = availableCredit(buyerId);
+
+    clearingImported.countDown();
+    await().atMost(Duration.ofSeconds(10)).until(() -> completedExpiriesOf(card.cardToken()) == 1);
+
+    assertThat(holdStatus(card)).isEqualTo("CLEARED");
+    assertThat(creditAfterClearing).isEqualTo(10_000_000 - 1_000_000);
+    assertThat(availableCredit(buyerId)).isEqualTo(creditAfterClearing);
+  }
+
+  @Test
+  void theSummaryCountsTheFilesClearingsByOutcomeAndTheJournalStillBalances() throws Exception {
+    var buyerId = buyerWithCreditLine(100_000_000);
+    var clearings =
+        List.of(
+            clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT),
+            clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000),
+            clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT + 1),
+            new Detail(
+                newId("R", 20),
+                chargedCard(buyerId).pan(),
+                CARD_AMOUNT,
+                newId("Q", 12),
+                "ZZZZZZ",
+                ACCEPTOR_ID),
+            new Detail(
+                newId("R", 20), UNKNOWN_PAN, 500_000, newId("Q", 12), "ZZZZZZ", ACCEPTOR_ID));
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 21, clearings);
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    assertThat(response)
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"recordCount": 5,
+             "outcomes": {"matched": 2, "aboveAuthorizedAmount": 1, "noAuthorization": 1,
+                          "unknownCard": 1, "otherCurrency": 0, "againstReversedAuthorization": 0,
+                          "afterHoldExpired": 0, "authorizationAlreadyCleared": 0}}
+            """);
+    // Every Journal Entry balances, so the whole journal does: the Clearing Suspense posting too.
+    var totals =
+        jdbc.sql(
+                """
+                select coalesce(sum(amount_minor) filter (where side = 'DEBIT'), 0) as debits,
+                       coalesce(sum(amount_minor) filter (where side = 'CREDIT'), 0) as credits
+                  from ledger.journal_line
+                """)
+            .query()
+            .singleRow();
+    assertThat(totals.get("debits")).isEqualTo(totals.get("credits"));
   }
 
   // Each check of the validate step refuses the whole file: nothing is posted, the file waits in
@@ -850,6 +1174,27 @@ class ClearingFileImportTests {
   // A card issued as the Payment saga issues it (the Hold, then the card, for one Payment), and
   // charged for its whole amount by the Network, which the platform approved.
   private ChargedCard chargedCard(BuyerId buyerId) {
+    var card = issuedCard(buyerId);
+    var details = vault.cardDetails(card.cardToken());
+    var requestId = newId("Q", 12);
+    var response =
+        network()
+            .authorize(
+                AuthorizationRequest.newBuilder()
+                    .setPrimaryAccountNumber(details.pan())
+                    .setSecurityCode(details.securityCode())
+                    .setExpirationDate(EXPIRATION_DATE.format(card.expiresAt()))
+                    .setAmountMinor(CARD_AMOUNT)
+                    .setCurrencyCode("USD")
+                    .setRetrievalReferenceNumber(requestId)
+                    .setCardAcceptorId(ACCEPTOR_ID)
+                    .setCardAcceptorName("Globex, Springfield")
+                    .build());
+    assertThat(response.getResponseCode()).isEqualTo("00");
+    return new ChargedCard(card, details.pan(), requestId, response.getAuthorizationCode());
+  }
+
+  private SingleUseCard issuedCard(BuyerId buyerId) {
     var supplier =
         suppliers
             .relate(
@@ -864,26 +1209,26 @@ class ClearingFileImportTests {
     var paymentId = UUID.randomUUID();
     var amount = new Money(CARD_AMOUNT, USD);
     assertThat(holds.place(paymentId, buyerId, amount)).isEqualTo(Holds.Outcome.PLACED);
-    var card = cards.issueSingleUse(paymentId, buyerId, supplier.id(), amount, Instant.now());
-    var details = vault.cardDetails(card.cardToken());
-    var requestId = newId("Q", 12);
+    return cards.issueSingleUse(paymentId, buyerId, supplier.id(), amount, Instant.now());
+  }
+
+  // The Network cancels the Charge's Authorization: the card is ACTIVE again.
+  private void reverse(ChargedCard charged) {
     var response =
-        IssuerAuthorizationGrpc.newBlockingStub(channel)
-            .withDeadlineAfter(5, TimeUnit.SECONDS)
-            .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"))
-            .authorize(
-                AuthorizationRequest.newBuilder()
-                    .setPrimaryAccountNumber(details.pan())
-                    .setSecurityCode(details.securityCode())
-                    .setExpirationDate(EXPIRATION_DATE.format(card.expiresAt()))
-                    .setAmountMinor(CARD_AMOUNT)
-                    .setCurrencyCode("USD")
-                    .setRetrievalReferenceNumber(requestId)
-                    .setCardAcceptorId(ACCEPTOR_ID)
-                    .setCardAcceptorName("Globex, Springfield")
+        network()
+            .reverse(
+                ReversalRequest.newBuilder()
+                    .setRetrievalReferenceNumber(charged.requestId())
                     .build());
     assertThat(response.getResponseCode()).isEqualTo("00");
-    return new ChargedCard(card, details.pan(), requestId, response.getAuthorizationCode());
+    assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.ACTIVE);
+  }
+
+  private IssuerAuthorizationGrpc.IssuerAuthorizationBlockingStub network() {
+    return IssuerAuthorizationGrpc.newBlockingStub(channel)
+        .withDeadlineAfter(5, TimeUnit.SECONDS)
+        .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"));
   }
 
   private record ChargedCard(
@@ -986,7 +1331,7 @@ class ClearingFileImportTests {
   }
 
   // Each line's Account (kind, and Buyer for a Buyer Receivable), side and amount, in order.
-  private List<Map<String, Object>> linesOf(UUID entryId) {
+  private List<Tuple> linesOf(UUID entryId) {
     return jdbc.sql(
             """
             select a.kind, a.buyer_id, l.side, l.amount_minor
@@ -996,8 +1341,22 @@ class ClearingFileImportTests {
              order by l.line_number
             """)
         .param("entryId", entryId)
-        .query()
-        .listOfRows();
+        .query(
+            (row, rowNumber) ->
+                tuple(
+                    row.getString("kind"),
+                    row.getObject("buyer_id", UUID.class),
+                    row.getString("side"),
+                    row.getLong("amount_minor")))
+        .list();
+  }
+
+  private long completedExpiriesOf(String cardToken) {
+    return completedEvents.findAll().stream()
+        .map(EventPublication::getEvent)
+        .filter(
+            event -> event instanceof CardExpired expired && expired.cardToken().equals(cardToken))
+        .count();
   }
 
   private String holdStatus(SingleUseCard card) {

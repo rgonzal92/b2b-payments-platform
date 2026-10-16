@@ -13,7 +13,6 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Currency;
-import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.function.Consumer;
 
@@ -90,8 +89,10 @@ final class ClearingFileLayout {
     var header = readHeader(lines);
     FileTrailer trailer = null;
     var clearings = 0L;
-    // Each currency's total: the trailer's amount total is in one currency, which comes last.
-    var amountTotals = new HashMap<Currency, Long>();
+    // A control total, as the layout defines it: the detail records' amounts summed, whatever
+    // their currency, so it shows the file arrived whole; a Clearing in another currency than its
+    // card's has an outcome of its own (ClearingOutcome).
+    var amountTotal = 0L;
     var lineNumber = 1;
     String line;
     while ((line = lines.readLine()) != null) {
@@ -102,8 +103,7 @@ final class ClearingFileLayout {
       switch (parse(line, lineNumber)) {
         case ClearingRecord clearing -> {
           clearings++;
-          amountTotals.merge(
-              clearing.amount().currency(), clearing.amount().minorUnits(), Long::sum);
+          amountTotal += clearing.amount().minorUnits();
           eachClearing.accept(clearing);
         }
         case FileTrailer fileTrailer -> trailer = fileTrailer;
@@ -118,9 +118,7 @@ final class ClearingFileLayout {
       throw new MalformedClearingFileException(
           lineNumber, "the record count (positions 3–10) isn't the number of detail records");
     }
-    var amountTotal = trailer.amountTotal();
-    if (!amountTotals.keySet().stream().allMatch(amountTotal.currency()::equals)
-        || amountTotals.getOrDefault(amountTotal.currency(), 0L) != amountTotal.minorUnits()) {
+    if (trailer.amountTotal().minorUnits() != amountTotal) {
       throw new MalformedClearingFileException(
           lineNumber,
           "the amount total (positions 11–25) isn't the sum of the detail records' amounts");

@@ -152,17 +152,6 @@ class ClearingFileLayoutTests {
                 lines.get(3),
                 replace(trailer, 11, "000000001752346")),
             "Line 5: the amount total (positions 11–25) isn't the sum of the detail records'"
-                + " amounts."),
-        arguments(
-            "a detail record in another currency than the trailer's",
-            // The other two records total the trailer's figure, in its currency.
-            List.of(
-                header,
-                detail,
-                replace(lines.get(2), 54, "EUR"),
-                lines.get(3),
-                replace(trailer, 11, "000000001252345")),
-            "Line 5: the amount total (positions 11–25) isn't the sum of the detail records'"
                 + " amounts."));
   }
 

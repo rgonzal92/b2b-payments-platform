@@ -21,15 +21,14 @@ A file whose first line isn't a readable header has no file ID to record, so it 
 
 Detail records hold PANs in clear text (positions 23–41), so look at the file by field, never by whole line:
 
-- **"the record count (positions 3–10) isn't the number of detail records"** or **"the amount total (positions 11–25) isn't the sum of the detail records' amounts"**: the file didn't arrive whole, or the Network's totals are wrong. Compare the trailer's figures with the detail records'. Every detail record has to be in the trailer's currency (positions 41–43) to count towards its amount total.
+- **"the record count (positions 3–10) isn't the number of detail records"** or **"the amount total (positions 11–25) isn't the sum of the detail records' amounts"**: the file didn't arrive whole, or the Network's totals are wrong. Compare the trailer's figures with the detail records'. The amount total is a control total: the detail records' amounts summed, whatever their currency.
 
   ```sh
   # The trailer's record count, amount total and currency
   tail -n 1 var/clearing/failed/<file name> | cut -c 3-10,11-25,41-43 --output-delimiter=' '
-  # The detail records: how many, their amounts' sum, their currencies
+  # The detail records: how many, and their amounts' sum
   grep -c '^05' var/clearing/failed/<file name>
   grep '^05' var/clearing/failed/<file name> | cut -c 42-53 | awk '{ s += $1 } END { print s }'
-  grep '^05' var/clearing/failed/<file name> | cut -c 54-56 | sort | uniq -c
   ```
 
 - **"the currency (positions 41–43) isn't USD, the only currency the platform settles"**: the Network sent the file in a currency the platform doesn't take yet (more currencies are deferred). Ask the Network for the Issuer's USD file.

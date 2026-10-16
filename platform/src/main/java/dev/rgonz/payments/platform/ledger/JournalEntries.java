@@ -29,12 +29,23 @@ class JournalEntries implements Journal {
   @Override
   @Transactional
   public UUID postClearing(String networkRecordId, BuyerId buyerId, Money amount) {
+    return postClearing(networkRecordId, Account.buyerReceivable(buyerId), amount);
+  }
+
+  @Override
+  @Transactional
+  public UUID postClearingToSuspense(String networkRecordId, Money amount) {
+    return postClearing(networkRecordId, Account.clearingSuspense(), amount);
+  }
+
+  // A Clearing debits the Account that carries it and credits the Network Settlement Payable.
+  private UUID postClearing(String networkRecordId, Account debited, Money amount) {
     return post(
         new JournalEntry(
             JournalEntry.Kind.CLEARING,
             networkRecordId,
             List.of(
-                new Line(Account.buyerReceivable(buyerId), Side.DEBIT, amount),
+                new Line(debited, Side.DEBIT, amount),
                 new Line(Account.networkSettlementPayable(), Side.CREDIT, amount))));
   }
 

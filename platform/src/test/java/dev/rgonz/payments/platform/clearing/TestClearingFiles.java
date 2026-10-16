@@ -25,14 +25,34 @@ public final class TestClearingFiles {
 
   private TestClearingFiles() {}
 
-  /** One detail record's fields, in USD. */
+  /** One detail record's fields. */
   public record Detail(
       String networkRecordId,
       String pan,
       long amountMinor,
+      String currency,
       String retrievalReferenceNumber,
       String authorizationCode,
-      String acceptorId) {}
+      String acceptorId) {
+
+    /** A detail record in USD. */
+    public Detail(
+        String networkRecordId,
+        String pan,
+        long amountMinor,
+        String retrievalReferenceNumber,
+        String authorizationCode,
+        String acceptorId) {
+      this(
+          networkRecordId,
+          pan,
+          amountMinor,
+          "USD",
+          retrievalReferenceNumber,
+          authorizationCode,
+          acceptorId);
+    }
+  }
 
   /**
    * Writes a file of these Clearings, with its header (a new file ID, the sequence number, Business
@@ -64,11 +84,12 @@ public final class TestClearingFiles {
 
   public static String detail(Detail detail) {
     return record(
-        "05%-20s%-19s%012dUSD%-12s%-6s%-15s%s"
+        "05%-20s%-19s%012d%s%-12s%-6s%-15s%s"
             .formatted(
                 detail.networkRecordId(),
                 detail.pan(),
                 detail.amountMinor(),
+                detail.currency(),
                 detail.retrievalReferenceNumber(),
                 detail.authorizationCode(),
                 detail.acceptorId(),
