@@ -382,6 +382,32 @@ class ClearingFileImportTests {
             "content_hash", "91731a4f539bd52ffefa9d9768fb210eab0584f9049d5fbc9bf3c59a85da8bab");
   }
 
+  // A refused file wasn't imported, so its ID isn't taken: the Network's corrected file may carry
+  // it again, as when a file cut short in transit is sent again whole.
+  @Test
+  void aCorrectedFileWithTheIdOfARefusedFileIsImported() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var clearing = clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000);
+    var fileId = newId("F", 16);
+    var cutShort =
+        TestClearingFiles.write(
+            DROP_FOLDER,
+            List.of(TestClearingFiles.header(fileId, 19), TestClearingFiles.detail(clearing)));
+    assertProblem(importFile(cutShort, "ROLE_issuer-admin"), 422);
+    var whole = TestClearingFiles.drop(DROP_FOLDER, fileId, 19, List.of(clearing));
+
+    var response = importFile(whole, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    assertThat(files.find(fileId))
+        .get()
+        .returns(ClearingFileSummary.Status.IMPORTED, ClearingFileSummary::status)
+        .returns(null, ClearingFileSummary::refusalReason);
+    assertThat(postedCount(List.of(clearing))).isEqualTo(1);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 1_000_000);
+    assertThat(DROP_FOLDER.resolve("processing").resolve(whole)).doesNotExist();
+  }
+
   @Test
   void aFileWithTheIdOfAnImportedFileIsRefusedAndPostsNothingTwice() throws Exception {
     var buyerId = buyerWithCreditLine(10_000_000);

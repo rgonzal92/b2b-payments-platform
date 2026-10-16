@@ -20,29 +20,47 @@ class ClearingFiles {
 
   /**
    * Records a file the validate step accepted, as {@code IMPORTING}, with its header's and its
-   * trailer's figures and its content hash. Joins the step's transaction.
+   * trailer's figures and its content hash, in place of a refused file with its ID. Joins the
+   * step's transaction.
    */
   void receive(ClearingFileLayout.Envelope file, String contentHash) {
     var header = file.header();
     var trailer = file.trailer();
-    jdbc.sql(
-            """
-            insert into clearing.clearing_file
-                   (id, sequence_number, business_date, status, record_count, amount_total_minor,
-                    net_settlement_amount_minor, totals_currency, content_hash)
-            values (:id, :sequenceNumber, :businessDate, :status, :recordCount, :amountTotal,
-                    :netSettlementAmount, :currency, :contentHash)
-            """)
-        .param("id", header.fileId())
-        .param("sequenceNumber", header.sequenceNumber())
-        .param("businessDate", header.businessDate())
-        .param("status", ClearingFileSummary.Status.IMPORTING.name())
-        .param("recordCount", trailer.recordCount())
-        .param("amountTotal", trailer.amountTotal().minorUnits())
-        .param("netSettlementAmount", trailer.netSettlementAmount().minorUnits())
-        .param("currency", trailer.amountTotal().currency().getCurrencyCode())
-        .param("contentHash", contentHash)
-        .update();
+    var received =
+        jdbc.sql(
+                """
+                insert into clearing.clearing_file
+                       (id, sequence_number, business_date, status, record_count,
+                        amount_total_minor, net_settlement_amount_minor, totals_currency,
+                        content_hash)
+                values (:id, :sequenceNumber, :businessDate, :status, :recordCount, :amountTotal,
+                        :netSettlementAmount, :currency, :contentHash)
+                on conflict (id) do update
+                   set sequence_number = excluded.sequence_number,
+                       business_date = excluded.business_date, status = excluded.status,
+                       record_count = excluded.record_count,
+                       amount_total_minor = excluded.amount_total_minor,
+                       net_settlement_amount_minor = excluded.net_settlement_amount_minor,
+                       totals_currency = excluded.totals_currency,
+                       content_hash = excluded.content_hash, refusal_reason = null,
+                       received_at = now()
+                 where clearing_file.status = :refused
+                """)
+            .param("id", header.fileId())
+            .param("sequenceNumber", header.sequenceNumber())
+            .param("businessDate", header.businessDate())
+            .param("status", ClearingFileSummary.Status.IMPORTING.name())
+            .param("recordCount", trailer.recordCount())
+            .param("amountTotal", trailer.amountTotal().minorUnits())
+            .param("netSettlementAmount", trailer.netSettlementAmount().minorUnits())
+            .param("currency", trailer.amountTotal().currency().getCurrencyCode())
+            .param("contentHash", contentHash)
+            .param("refused", ClearingFileSummary.Status.REFUSED.name())
+            .update();
+    // Only another import of the same file ID, which the job's key keeps from running at once.
+    if (received != 1) {
+      throw new IllegalStateException("Clearing File " + header.fileId() + " is already received");
+    }
   }
 
   /**
@@ -77,7 +95,7 @@ class ClearingFiles {
 
   /**
    * Records a file that failed a check of the validate step, as {@code REFUSED}, with the check it
-   * failed.
+   * failed, in place of an earlier refused file with its ID.
    */
   void refuse(FileHeader header, String reason) {
     jdbc.sql(
@@ -85,6 +103,11 @@ class ClearingFiles {
             insert into clearing.clearing_file
                    (id, sequence_number, business_date, status, refusal_reason)
             values (:id, :sequenceNumber, :businessDate, :status, :reason)
+            on conflict (id) do update
+               set sequence_number = excluded.sequence_number,
+                   business_date = excluded.business_date,
+                   refusal_reason = excluded.refusal_reason, received_at = now()
+             where clearing_file.status = excluded.status
             """)
         .param("id", header.fileId())
         .param("sequenceNumber", header.sequenceNumber())
@@ -95,21 +118,23 @@ class ClearingFiles {
   }
 
   /**
-   * The ID of the file one with this file ID and content hash repeats: a file received earlier with
-   * the same file ID, refused ones included, or the same content hash. Never the file whose import
-   * stopped partway, which has both and is still {@code IMPORTING}: importing it again restarts
-   * that import.
+   * The ID of the file one with this file ID and content hash repeats: a file imported, or being
+   * imported, with the same file ID or the same content hash. Never a refused file, which wasn't
+   * imported, nor the file whose import stopped partway, which has both and is still {@code
+   * IMPORTING}: importing it again restarts that import.
    */
   Optional<String> repeatedBy(String fileId, String contentHash) {
     return jdbc.sql(
             """
             select id from clearing.clearing_file
-             where (id = :id or content_hash = :contentHash)
+             where status <> :refused
+               and (id = :id or content_hash = :contentHash)
                and not (id = :id and content_hash = :contentHash and status = :importing)
              limit 1
             """)
         .param("id", fileId)
         .param("contentHash", contentHash)
+        .param("refused", ClearingFileSummary.Status.REFUSED.name())
         .param("importing", ClearingFileSummary.Status.IMPORTING.name())
         .query(String.class)
         .optional();
