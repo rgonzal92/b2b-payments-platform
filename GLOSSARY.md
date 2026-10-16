@@ -10,6 +10,10 @@ The Issuer's platform for commercial payments: Buyers receive Virtual Cards from
 The bank that issues Virtual Cards to Buyers and pays for their purchases. This platform acts on its behalf.
 _Avoid_: Bank, processor, issuing bank
 
+**Issuer Staff**:
+People at the Issuer who run the platform day to day: they set up Buyers and their Credit Lines and resolve Breaks.
+_Avoid_: Admin, operator, back office
+
 **Buyer**:
 A company that holds Virtual Cards from the Issuer and uses them to pay Suppliers.
 _Avoid_: Customer, client, cardholder, corporate

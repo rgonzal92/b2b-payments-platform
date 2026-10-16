@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 foundations are built (both apps, local stack, CI); none of the modules below exist yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 foundations are built, and M1 is under way: `shared` and `buyers` exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -9,8 +9,9 @@ The `platform` is the Issuer's system. Everything it talks to, apart from Keyclo
 ```mermaid
 flowchart LR
   buyerStaff["Buyer staff<br/>(Approvers)"]
-  issuerStaff["Issuer staff<br/>(resolve Breaks)"]
+  issuerStaff["Issuer staff<br/>(set up Buyers, resolve Breaks)"]
   subgraph sim["simulator app"]
+    simIssuer["Issuer staff<br/>(creates Acme at startup)"]
     erp["Buyer ERP"]
     supplier["Supplier"]
     acquirer["Acquirer"]
@@ -19,9 +20,10 @@ flowchart LR
   platform["platform<br/>(the Issuer's system)"]
   keycloak["Keycloak"]
 
+  simIssuer -- "create Buyers (REST)" --> platform
   erp -- "Invoices (REST)" --> platform
   buyerStaff -- "approve Invoices (REST)" --> platform
-  issuerStaff -- "resolve Breaks (REST)" --> platform
+  issuerStaff -- "set up Buyers, resolve Breaks (REST)" --> platform
   platform -- "Remittance Advice link" --> supplier
   supplier -- "charges card" --> acquirer
   acquirer --> network
@@ -32,7 +34,10 @@ flowchart LR
 
 ## Runtime (M0 to M4)
 
-Docker Compose runs PostgreSQL (one schema per module) and `grafana/otel-lgtm` for metrics, traces and logs; Keycloak joins in M1. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
+Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, and Keycloak, which issues every token. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
+
+- **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp` and `issuer-admin`, and puts them in a flat `roles` claim. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
+- **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it.
 
 ## Modules
 
@@ -40,6 +45,7 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 
 | Module | Owns | Calls |
 |---|---|---|
+| `shared` | `Money`; open to every module | |
 | `buyers` | Buyer profiles, Approval Thresholds | |
 | `suppliers` | Suppliers, Supplier Relationships, Remittance Advice delivery | |
 | `payables` | Invoices, approvals, Payments (runs the Payment saga) | `ledger`, `cards`, `suppliers` |
@@ -54,7 +60,7 @@ How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card.
 - **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008).
-- **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009).
+- **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`.
 
 ## Core payment path
 

@@ -33,14 +33,16 @@ Java 25, Spring Boot 4, Maven, PostgreSQL, Spring Modulith, gRPC, Spring Batch, 
 
 ## Run it locally
 
-You need Java 25 (Corretto) and Docker running, with ports 5432, 3000, 4317, 4318, 8080 and 8081 free. Docker Compose starts the database and the telemetry stack for you.
+You need Java 25 (Corretto), Docker running, OpenSSL, and ports 5432, 3000, 4317, 4318, 8080, 8081 and 8180 free. Docker Compose starts the database, the telemetry stack and Keycloak for you.
 
-1. Start the platform: `./mvnw -pl platform spring-boot:run`. The first start pulls the PostgreSQL and Grafana LGTM images, then the platform listens on <http://localhost:8080>.
-2. In a second terminal, start the simulator: `./mvnw -pl simulator spring-boot:run`. It listens on <http://localhost:8081> and reuses the running stack.
-3. Open Grafana at <http://localhost:3000> (no login). Under **Explore**, pick **Tempo** for traces, **Loki** for logs or **Prometheus** for metrics. Metrics arrive once a minute.
-4. Stopping an app leaves the stack running for the other. Stop the stack with `docker compose down`.
+1. Once, generate local secrets: `./scripts/init-env.sh`. It writes random development secrets into `.env`, which git ignores; running it again keeps existing values.
+2. Start the platform: `./mvnw -pl platform -am spring-boot:run`. The first start pulls the PostgreSQL, Grafana LGTM and Keycloak images, then the platform listens on <http://localhost:8080>.
+3. In a second terminal, start the simulator: `./mvnw -pl simulator -am spring-boot:run`. It listens on <http://localhost:8081>, reuses the running stack, and creates the Buyer Acme through the platform, signed in through Keycloak.
+4. Open Grafana at <http://localhost:3000> (no login). Under **Explore**, pick **Tempo** for traces, **Loki** for logs or **Prometheus** for metrics. Metrics arrive once a minute.
+5. Keycloak's admin console is at <http://localhost:8180>: user `admin`, password `KEYCLOAK_ADMIN_PASSWORD` from `.env`.
+6. Stopping an app leaves the stack running for the other. Stop the stack with `docker compose down`. If only part of it is running, run `docker compose up -d` before starting an app: Spring Boot starts the stack only when none of it is running.
 
-Tests need Docker but not the stack: `./mvnw verify` starts its own throwaway PostgreSQL.
+Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own throwaway PostgreSQL and Keycloak.
 
 ## Roadmap
 

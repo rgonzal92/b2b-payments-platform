@@ -1,0 +1,46 @@
+{
+  "realm": "payments",
+  "enabled": true,
+  "roles": {
+    "realm": [
+      { "name": "approver", "description": "A Buyer's employee who approves or rejects Invoices" },
+      { "name": "erp", "description": "A Buyer's ERP, signing in as a machine" },
+      { "name": "issuer-admin", "description": "Issuer staff" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "simulator-issuer-admin",
+      "description": "The simulator acting as Issuer staff",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "${SIMULATOR_ISSUER_ADMIN_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "realm roles as roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-simulator-issuer-admin",
+      "enabled": true,
+      "serviceAccountClientId": "simulator-issuer-admin",
+      "realmRoles": ["issuer-admin"]
+    }
+  ]
+}

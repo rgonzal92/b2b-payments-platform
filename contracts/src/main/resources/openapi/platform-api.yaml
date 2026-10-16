@@ -1,0 +1,114 @@
+openapi: 3.0.3
+info:
+  title: B2B Payments Platform API
+  version: v1
+  description: The Issuer's platform API. Terms follow GLOSSARY.md; errors are RFC 9457 problem details.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /v1/buyers/{buyerId}:
+    put:
+      tags: [Buyers]
+      operationId: putBuyer
+      summary: Create a Buyer
+      description: >-
+        Issuer staff only (role `issuer-admin`). The caller chooses the Buyer ID, so the same ID can be
+        provisioned into Buyer-side tokens ahead of time. Repeating the same request is safe; a different
+        Buyer under an existing ID is a conflict.
+      parameters:
+        - name: buyerId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BuyerRequest'
+      responses:
+        '200':
+          description: The same Buyer already existed; nothing changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Buyer'
+        '201':
+          description: The Buyer was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Buyer'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Problem:
+      description: An RFC 9457 problem.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    Money:
+      type: object
+      description: An amount in integer minor units (cents for USD) with its currency.
+      required: [minorUnits, currency]
+      properties:
+        minorUnits:
+          type: integer
+          format: int64
+          minimum: 0
+        currency:
+          type: string
+          enum: [USD]
+    BuyerRequest:
+      type: object
+      required: [name, approvalThreshold]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          # At least one character that isn't whitespace.
+          pattern: '.*\S.*'
+        approvalThreshold:
+          $ref: '#/components/schemas/Money'
+    Buyer:
+      type: object
+      required: [id, name, approvalThreshold]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        approvalThreshold:
+          $ref: '#/components/schemas/Money'
+    Problem:
+      type: object
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string

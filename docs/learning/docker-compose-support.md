@@ -15,4 +15,5 @@ Running the platform needs PostgreSQL and Grafana LGTM, and every app needs to k
 - **Two apps, one stack.** By default an app stops the stack when it shuts down, which would pull the database out from under the other app. Both apps set `spring.docker.compose.lifecycle-management=start-only`, and `docker compose down` stops the stack.
 - **The Compose file path is relative to the module directory**, where `spring-boot:run` starts the app, hence `spring.docker.compose.file=../compose.yaml`.
 - **PostgreSQL needs no password.** With `POSTGRES_HOST_AUTH_METHOD: trust`, Boot connects without one, so no credential is committed; binding the port to 127.0.0.1 keeps the database unreachable from other machines.
+- **It starts the stack only when none of it is running.** With only Keycloak up (from an earlier `docker compose up keycloak`), the platform started nothing else and failed with "Failed to configure a DataSource". `docker compose up -d` brings the rest up.
 - **The simulator starts PostgreSQL too,** even though it has no database: Compose support starts every service in the file.

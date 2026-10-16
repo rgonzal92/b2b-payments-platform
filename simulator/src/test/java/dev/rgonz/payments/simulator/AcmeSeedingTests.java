@@ -1,0 +1,96 @@
+package dev.rgonz.payments.simulator;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+
+/**
+ * The simulator creates Acme at startup, signed in as Issuer staff, against a stub Keycloak and
+ * platform.
+ */
+@SpringBootTest(properties = "simulator.seed.enabled=true")
+class AcmeSeedingTests {
+
+  record Recorded(String method, String path, String authorization, String body) {}
+
+  static final List<Recorded> platformRequests = new CopyOnWriteArrayList<>();
+  static final HttpServer stub = startStub();
+
+  @DynamicPropertySource
+  static void pointAtStub(DynamicPropertyRegistry registry) {
+    var base = "http://localhost:" + stub.getAddress().getPort();
+    registry.add(
+        "spring.security.oauth2.client.provider.keycloak.token-uri", () -> base + "/token");
+    registry.add(
+        "spring.security.oauth2.client.registration.issuer-admin.client-secret", () -> "test");
+    registry.add("simulator.platform-url", () -> base);
+  }
+
+  @AfterAll
+  static void stopStub() {
+    stub.stop(0);
+  }
+
+  @Test
+  void createsAcmeAsIssuerStaff() {
+    assertThat(platformRequests).hasSize(1);
+    var put = platformRequests.getFirst();
+    assertThat(put.method()).isEqualTo("PUT");
+    assertThat(put.path()).isEqualTo("/v1/buyers/dc9a9857-e40f-4d50-9ee3-879f0c7472c5");
+    assertThat(put.authorization()).isEqualTo("Bearer stub-token");
+    assertThat(put.body()).contains("\"name\":\"Acme\"").contains("\"currency\":\"USD\"");
+  }
+
+  private static HttpServer startStub() {
+    try {
+      var server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+      server.createContext(
+          "/token",
+          exchange ->
+              respond(
+                  exchange,
+                  200,
+                  """
+                  {"access_token": "stub-token", "token_type": "Bearer", "expires_in": 300}
+                  """));
+      server.createContext(
+          "/v1/buyers/",
+          exchange -> {
+            var body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            platformRequests.add(
+                new Recorded(
+                    exchange.getRequestMethod(),
+                    exchange.getRequestURI().getPath(),
+                    exchange.getRequestHeaders().getFirst("Authorization"),
+                    body));
+            respond(
+                exchange,
+                201,
+                body.replaceFirst("\\{", "{\"id\": \"dc9a9857-e40f-4d50-9ee3-879f0c7472c5\", "));
+          });
+      server.start();
+      return server;
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  private static void respond(HttpExchange exchange, int status, String json) throws IOException {
+    var bytes = json.getBytes(StandardCharsets.UTF_8);
+    exchange.getResponseHeaders().add("Content-Type", "application/json");
+    exchange.sendResponseHeaders(status, bytes.length);
+    exchange.getResponseBody().write(bytes);
+    exchange.close();
+  }
+}
