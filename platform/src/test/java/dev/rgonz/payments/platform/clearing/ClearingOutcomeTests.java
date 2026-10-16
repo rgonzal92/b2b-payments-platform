@@ -19,6 +19,8 @@ class ClearingOutcomeTests {
       new ApprovedAuthorization("Q00000000001", usd(1_240_000), false);
   private static final boolean NOT_YET_CLEARED = false;
   private static final boolean HOLD_OPEN = false;
+  private static final boolean ALREADY_CLEARED = true;
+  private static final boolean HOLD_RELEASED = true;
 
   @Test
   void aClearingWhoseCardTheVaultDoesntKnowIsUnknownCard() {
@@ -45,7 +47,7 @@ class ClearingOutcomeTests {
 
   @Test
   void aSecondClearingOfAnAuthorizationIsAuthorizationAlreadyClearedNotMatched() {
-    var facts = new Facts(usd(1_240_000), USD, APPROVED, true, HOLD_OPEN);
+    var facts = new Facts(usd(1_240_000), USD, APPROVED, ALREADY_CLEARED, HOLD_OPEN);
 
     assertThat(facts.outcome()).isEqualTo(ClearingOutcome.AUTHORIZATION_ALREADY_CLEARED);
   }
@@ -61,7 +63,7 @@ class ClearingOutcomeTests {
 
   @Test
   void aClearingAfterItsCardsHoldWasReleasedAboveItsAmountIsAfterHoldExpired() {
-    var facts = new Facts(usd(1_300_000), USD, APPROVED, NOT_YET_CLEARED, true);
+    var facts = new Facts(usd(1_300_000), USD, APPROVED, NOT_YET_CLEARED, HOLD_RELEASED);
 
     assertThat(facts.outcome()).isEqualTo(ClearingOutcome.AFTER_HOLD_EXPIRED);
   }
@@ -86,7 +88,7 @@ class ClearingOutcomeTests {
   void anUnknownCardComesFirst() {
     var euros = new Money(1_300_000, Currency.getInstance("EUR"));
 
-    var facts = new Facts(euros, null, null, true, true);
+    var facts = new Facts(euros, null, null, ALREADY_CLEARED, HOLD_RELEASED);
 
     assertThat(facts.outcome()).isEqualTo(ClearingOutcome.UNKNOWN_CARD);
   }
@@ -95,7 +97,7 @@ class ClearingOutcomeTests {
   void aSecondClearingOfAReversedAuthorizationIsAuthorizationAlreadyCleared() {
     var reversed = new ApprovedAuthorization("Q00000000001", usd(1_240_000), true);
 
-    var facts = new Facts(usd(1_300_000), USD, reversed, true, true);
+    var facts = new Facts(usd(1_300_000), USD, reversed, ALREADY_CLEARED, HOLD_RELEASED);
 
     assertThat(facts.outcome()).isEqualTo(ClearingOutcome.AUTHORIZATION_ALREADY_CLEARED);
   }
@@ -104,7 +106,7 @@ class ClearingOutcomeTests {
   void aReversedAuthorizationWhoseHoldWasReleasedIsAgainstAReversedAuthorization() {
     var reversed = new ApprovedAuthorization("Q00000000001", usd(1_240_000), true);
 
-    var facts = new Facts(usd(1_240_000), USD, reversed, NOT_YET_CLEARED, true);
+    var facts = new Facts(usd(1_240_000), USD, reversed, NOT_YET_CLEARED, HOLD_RELEASED);
 
     assertThat(facts.outcome()).isEqualTo(ClearingOutcome.AGAINST_REVERSED_AUTHORIZATION);
   }

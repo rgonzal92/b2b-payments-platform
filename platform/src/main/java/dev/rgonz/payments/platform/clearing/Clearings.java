@@ -57,9 +57,10 @@ class Clearings {
             : authorizations.find(cardToken, record.authorizationCode()).orElse(null);
     var holdReleased = false;
     if (card != null) {
-      // The card first, then its Hold, in the order every module locks them. The Hold stays locked
-      // from its read to the chunk's commit, so a CardExpired handled meanwhile waits, then finds
-      // it cleared and leaves it; a released Hold stays released.
+      // The card first, then its Hold, in the order every module locks them, both locked until the
+      // chunk commits. A Clearing of this card in another import waits, then finds this one
+      // recorded; a CardExpired handled meanwhile waits, then finds the Hold cleared and leaves it.
+      // A released Hold stays released.
       cards.clear(cardToken);
       // The Payment saga places each card's Hold under its Payment's ID.
       holdReleased = holds.isReleased(card.paymentId());

@@ -8,8 +8,7 @@ alter table clearing add constraint clearing_outcome_check
 alter table clearing drop constraint clearing_posted_check;
 alter table clearing alter column journal_entry_id set not null;
 
--- An Authorization's first Clearing, found when the next one comes for it. Unique, so of two imports clearing one
--- Authorization at once only one records its first Clearing; the other's chunk fails, and its restart finds the
--- Authorization already cleared.
+-- An Authorization's first Clearing, found when the next one comes for it. Imports take turns on the card's row, so the
+-- next one always finds it; unique besides, so an Authorization never has two first Clearings.
 create unique index clearing_authorization_first_idx on clearing (authorization_request_id)
     where outcome <> 'AUTHORIZATION_ALREADY_CLEARED';

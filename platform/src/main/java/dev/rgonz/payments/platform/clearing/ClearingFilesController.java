@@ -67,15 +67,24 @@ class ClearingFilesController implements ClearingFilesApi {
   }
 
   private static ClearingOutcomeCountsDto toDto(Map<ClearingOutcome, Long> outcomes) {
-    return new ClearingOutcomeCountsDto()
-        .matched(outcomes.get(ClearingOutcome.MATCHED))
-        .aboveAuthorizedAmount(outcomes.get(ClearingOutcome.ABOVE_AUTHORIZED_AMOUNT))
-        .noAuthorization(outcomes.get(ClearingOutcome.NO_AUTHORIZATION))
-        .unknownCard(outcomes.get(ClearingOutcome.UNKNOWN_CARD))
-        .otherCurrency(outcomes.get(ClearingOutcome.OTHER_CURRENCY))
-        .againstReversedAuthorization(outcomes.get(ClearingOutcome.AGAINST_REVERSED_AUTHORIZATION))
-        .afterHoldExpired(outcomes.get(ClearingOutcome.AFTER_HOLD_EXPIRED))
-        .authorizationAlreadyCleared(outcomes.get(ClearingOutcome.AUTHORIZATION_ALREADY_CLEARED));
+    var counts = new ClearingOutcomeCountsDto();
+    outcomes.forEach((outcome, count) -> withCount(counts, outcome, count));
+    return counts;
+  }
+
+  // A switch expression: an outcome added without its count here doesn't compile.
+  private static ClearingOutcomeCountsDto withCount(
+      ClearingOutcomeCountsDto counts, ClearingOutcome outcome, long count) {
+    return switch (outcome) {
+      case MATCHED -> counts.matched(count);
+      case ABOVE_AUTHORIZED_AMOUNT -> counts.aboveAuthorizedAmount(count);
+      case NO_AUTHORIZATION -> counts.noAuthorization(count);
+      case UNKNOWN_CARD -> counts.unknownCard(count);
+      case OTHER_CURRENCY -> counts.otherCurrency(count);
+      case AGAINST_REVERSED_AUTHORIZATION -> counts.againstReversedAuthorization(count);
+      case AFTER_HOLD_EXPIRED -> counts.afterHoldExpired(count);
+      case AUTHORIZATION_ALREADY_CLEARED -> counts.authorizationAlreadyCleared(count);
+    };
   }
 
   private static ErrorResponseException problem(HttpStatus status, String detail) {

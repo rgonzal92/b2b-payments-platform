@@ -38,7 +38,7 @@ select outcome, count(*) from clearing.clearing where file_id = '<file ID>' grou
 
 1. Find the exception that rolled the chunk back: the platform's log has its stack trace under `Rolling back chunk transaction`, and the last `Caused by:` names it. The step's `exit_message` holds the same trace, cut at 2,500 characters. It names a line number of the file at most, never a field's value (ADR-0004).
    - **The database was unreachable, or a lock wait timed out:** nothing to fix in the file; go to step 2 once the database is back.
-   - **`duplicate key value violates unique constraint "clearing_pkey"`:** the file repeats a Network record ID that an earlier file already brought. The Network's IDs are unique across its files, so the file is wrong: ask the Network about the record. Restarting fails the same way until #51 skips repeated records.
+   - **`duplicate key value violates unique constraint "clearing_pkey"`:** the file repeats a Network record ID that an earlier file already brought. The Network's IDs are unique across its files, so the file is wrong: ask the Network about the record. Restarting fails the same way until #50 skips repeated records.
    - **Anything else that fails on every attempt** stops the file at the same chunk each time. Raise it as a bug with the stack trace; the file waits safely in `processing/` meanwhile.
 2. Import the file again, under the same name, as Issuer staff. From the repository root:
 

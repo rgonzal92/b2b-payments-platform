@@ -51,6 +51,8 @@ class ClearingFiles {
   }
 
   Optional<ClearingFileSummary> find(String fileId) {
+    // Counted first, not from inside the row mapper, which would hold a second connection.
+    var outcomes = outcomes(fileId);
     return jdbc.sql(
             """
             select id, sequence_number, business_date, status, record_count
@@ -66,7 +68,7 @@ class ClearingFiles {
                     row.getObject("business_date", LocalDate.class),
                     ClearingFileSummary.Status.valueOf(row.getString("status")),
                     row.getLong("record_count"),
-                    outcomes(fileId)))
+                    outcomes))
         .optional();
   }
 
@@ -84,10 +86,12 @@ class ClearingFiles {
              group by outcome
             """)
         .param("fileId", fileId)
+        // A block: an expression lambda would also fit query's ResultSetExtractor overload.
         .query(
-            row ->
-                outcomes.put(
-                    ClearingOutcome.valueOf(row.getString("outcome")), row.getLong("clearings")));
+            row -> {
+              outcomes.put(
+                  ClearingOutcome.valueOf(row.getString("outcome")), row.getLong("clearings"));
+            });
     return outcomes;
   }
 }

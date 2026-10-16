@@ -134,6 +134,7 @@ class CreditLines implements Holds {
         .update();
   }
 
+  // Locks the row, so a release or clear by another transaction waits for the caller's to end.
   @Override
   public boolean isReleased(UUID holdId) {
     return jdbc.sql("select status = 'RELEASED' from ledger.hold where id = :id for update")

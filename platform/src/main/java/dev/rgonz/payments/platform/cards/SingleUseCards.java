@@ -148,14 +148,11 @@ class SingleUseCards implements Cards {
         .update();
   }
 
-  // Any status moves: a card the expiry job holds locked waits for it to commit, then clears.
+  // Any status moves, and the row is updated even when already CLEARED, so every Clearing of the
+  // card takes its row lock: Clearings of one card in two imports at once take turns.
   @Override
   public void clear(String cardToken) {
-    jdbc.sql(
-            """
-            update cards.card set status = :cleared
-             where card_token = :cardToken and status <> :cleared
-            """)
+    jdbc.sql("update cards.card set status = :cleared where card_token = :cardToken")
         .param("cleared", SingleUseCard.Status.CLEARED.name())
         .param("cardToken", cardToken)
         .update();

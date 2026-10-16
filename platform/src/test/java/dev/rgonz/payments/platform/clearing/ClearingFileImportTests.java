@@ -40,6 +40,7 @@ import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.assertj.core.groups.Tuple;
@@ -51,7 +52,6 @@ import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.grpc.client.interceptor.security.BearerTokenAuthenticationInterceptor;
@@ -67,7 +67,6 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Issuer staff import a Clearing File from the drop folder through the endpoint, on PostgreSQL:
@@ -111,13 +110,12 @@ class ClearingFileImportTests {
   @Autowired MockMvcTester mvc;
   @Autowired JdbcClient jdbc;
   @Autowired Cards cards;
-  @Autowired Holds holds;
+  // The real Holds, whose release the expiry race test holds back.
+  @MockitoSpyBean Holds holds;
   @Autowired Vault vault;
   @Autowired Suppliers suppliers;
   @Autowired ClearingFileImports imports;
   @Autowired ApplicationContext context;
-  @Autowired TransactionTemplate transactions;
-  @Autowired ApplicationEventPublisher events;
   @Autowired CompletedEventPublications completedEvents;
 
   // The real journal, which the restart test makes fail once.
@@ -204,7 +202,7 @@ class ClearingFileImportTests {
             """
                 .formatted(fileId));
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", 1_000_000L),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 1_000_000L));
@@ -244,7 +242,7 @@ class ClearingFileImportTests {
     assertThat(response).hasStatus(201);
     assertThat(response).bodyJson().extractingPath("$.status").isEqualTo("IMPORTED");
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", 1_000_000L),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 1_000_000L));
@@ -272,7 +270,7 @@ class ClearingFileImportTests {
 
     assertThat(response).hasStatus(201);
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("CLEARING_SUSPENSE", null, "DEBIT", 500_000L),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 500_000L));
@@ -305,7 +303,7 @@ class ClearingFileImportTests {
 
     assertThat(response).hasStatus(201);
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("CLEARING_SUSPENSE", null, "DEBIT", 1_000_000L),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 1_000_000L));
@@ -339,7 +337,7 @@ class ClearingFileImportTests {
 
     assertThat(response).hasStatus(201);
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT + 60_000),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT + 60_000));
@@ -374,7 +372,7 @@ class ClearingFileImportTests {
 
     assertThat(response).hasStatus(201);
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT));
@@ -402,7 +400,7 @@ class ClearingFileImportTests {
     assertThat(response).hasStatus(201);
     assertThat(clearingRecorded(first.networkRecordId())).containsEntry("outcome", "MATCHED");
     var entryId = journalEntryFor(second.networkRecordId());
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", 200_000L),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", 200_000L));
@@ -436,7 +434,7 @@ class ClearingFileImportTests {
 
     assertThat(response).hasStatus(201);
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT));
@@ -470,7 +468,7 @@ class ClearingFileImportTests {
 
     assertThat(response).hasStatus(201);
     var entryId = journalEntryFor(networkRecordId);
-    assertThat(postingsOf(entryId))
+    assertThat(linesOf(entryId))
         .containsExactly(
             tuple("BUYER_RECEIVABLE", buyerId.value(), "DEBIT", CARD_AMOUNT),
             tuple("NETWORK_SETTLEMENT_PAYABLE", null, "CREDIT", CARD_AMOUNT));
@@ -486,11 +484,22 @@ class ClearingFileImportTests {
     var buyerId = buyerWithCreditLine(10_000_000);
     var charged = chargedCard(buyerId);
     var card = charged.card();
-    // What the 7-day rule leaves when it commits: the card EXPIRED, its CardExpired not yet
-    // handled, so its Hold is still open.
-    jdbc.sql("update cards.card set status = 'EXPIRED' where card_token = :cardToken")
-        .param("cardToken", card.cardToken())
-        .update();
+    // payables handles the card's CardExpired, but its release of the Hold waits for the
+    // Clearing: the window between the 7-day rule's commit and that release, held open.
+    var clearingImported = new CountDownLatch(1);
+    doAnswer(
+            release -> {
+              if (card.paymentId().equals(release.getArgument(0))) {
+                clearingImported.await(10, TimeUnit.SECONDS);
+              }
+              return release.callRealMethod();
+            })
+        .when(holds)
+        .release(any());
+    CardExpiryJob.runAt(context, Instant.now().plus(Duration.ofDays(7)));
+    assertThat(cards.find(card.cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.EXPIRED);
+    assertThat(holdStatus(card)).isEqualTo("PLACED");
     var networkRecordId = newId("R", 20);
     var fileName =
         TestClearingFiles.drop(
@@ -508,11 +517,7 @@ class ClearingFileImportTests {
         .isEqualTo(SingleUseCard.Status.CLEARED);
     var creditAfterClearing = availableCredit(buyerId);
 
-    transactions.executeWithoutResult(
-        status ->
-            events.publishEvent(
-                new CardExpired(
-                    card.cardToken(), card.paymentId(), card.buyerId(), card.amount())));
+    clearingImported.countDown();
     await().atMost(Duration.ofSeconds(10)).until(() -> completedExpiriesOf(card.cardToken()) == 1);
 
     assertThat(holdStatus(card)).isEqualTo("CLEARED");
@@ -761,7 +766,7 @@ class ClearingFileImportTests {
   }
 
   // Each line's Account (kind, and Buyer for a Buyer Receivable), side and amount, in order.
-  private List<Tuple> postingsOf(UUID entryId) {
+  private List<Tuple> linesOf(UUID entryId) {
     return jdbc.sql(
             """
             select a.kind, a.buyer_id, l.side, l.amount_minor
