@@ -1,5 +1,7 @@
 package dev.rgonz.payments.platform.vault;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Optional;
 import java.util.random.RandomGenerator;
@@ -70,6 +72,23 @@ class CardSecrets implements Vault {
         .param("panHash", crypto.hash(pan))
         .query(String.class)
         .optional();
+  }
+
+  // MessageDigest.isEqual takes as long whichever byte differs, so timing can't tell a caller how
+  // much of a guess was right; it only shows whether the lengths differ.
+  @Override
+  public boolean securityCodeMatches(String cardToken, String securityCode) {
+    return jdbc.sql(
+            "select security_code_ciphertext from vault.card_secret where card_token = :cardToken")
+        .param("cardToken", cardToken)
+        .query((row, rowNumber) -> row.getBytes("security_code_ciphertext"))
+        .optional()
+        .map(
+            storedCode ->
+                MessageDigest.isEqual(
+                    crypto.decrypt(storedCode, cardToken).getBytes(StandardCharsets.UTF_8),
+                    securityCode.getBytes(StandardCharsets.UTF_8)))
+        .orElse(false);
   }
 
   // The unique PAN hash rejects a PAN another card already has; `on conflict` reports that as no

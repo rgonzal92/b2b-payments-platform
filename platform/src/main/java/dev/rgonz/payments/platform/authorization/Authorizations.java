@@ -2,10 +2,10 @@ package dev.rgonz.payments.platform.authorization;
 
 import dev.rgonz.payments.platform.authorization.Authorization.ResponseCode;
 import dev.rgonz.payments.platform.cards.Cards;
-import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
 import java.security.SecureRandom;
+import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -39,57 +39,97 @@ class Authorizations {
   }
 
   /**
-   * Approves a Charge from the card's Supplier on an issued, {@code ACTIVE} card and moves the card
-   * to {@code AUTHORIZED}; declines anything else, checking the rules in the design's order. The
-   * PAN goes to the vault and nowhere else. The card's move and the recorded Authorization commit
-   * together.
+   * Answers the Charge by the Authorization rules and records the answer; an approval also moves
+   * the card to {@code AUTHORIZED}. A request ID that already has an answer gets that answer back,
+   * whatever the rules would say now, and changes nothing. The PAN and security code go to the
+   * vault and nowhere else. The card's move and the recorded Authorization commit together.
    */
   @Transactional
-  Authorization authorize(Charge charge) {
+  Authorization authorize(Charge charge, Instant now) {
     var cardToken = vault.cardFor(charge.pan()).orElse(null);
     var card = cardToken == null ? null : cards.find(cardToken).orElse(null);
-    Authorization authorization;
-    if (card == null) {
-      authorization = Authorization.declined(ResponseCode.INVALID_CARD);
-    } else if (card.status() != SingleUseCard.Status.ACTIVE) {
-      authorization = Authorization.declined(ResponseCode.EXPIRED_CARD);
-    } else if (!isFromTheCardsSupplier(charge, card)) {
-      authorization = Authorization.declined(ResponseCode.NOT_PERMITTED);
-    } else if (cards.authorize(cardToken)) {
-      authorization = Authorization.approved(newAuthorizationCode());
-    } else {
-      // Another Charge moved the card first.
-      authorization = Authorization.declined(ResponseCode.EXPIRED_CARD);
+    var suppliersAcceptorId =
+        card == null ? null : suppliers.acceptorId(card.supplierId()).orElse(null);
+    var securityCodeMatches =
+        card != null && vault.securityCodeMatches(cardToken, charge.securityCode());
+    var responseCode =
+        AuthorizationRules.decide(charge, card, suppliersAcceptorId, securityCodeMatches, now);
+    var authorization =
+        responseCode == ResponseCode.APPROVED
+            ? Authorization.approved(newAuthorizationCode())
+            : Authorization.declined(responseCode);
+    if (!insertUnlessAnswered(charge, cardToken, authorization)) {
+      var stored = storedAnswer(charge.requestId());
+      log.info(
+          "Authorization {} was resent and answered {} again",
+          charge.requestId(),
+          stored.responseCode().code());
+      return stored;
     }
-    record(charge, cardToken, authorization);
+    if (authorization.status() == Authorization.Status.APPROVED && !cards.authorize(cardToken)) {
+      // A Charge with another request ID moved the card first, after this one read it ACTIVE.
+      authorization = Authorization.declined(ResponseCode.NOT_PERMITTED);
+      replaceAnswer(charge.requestId(), authorization);
+    }
     log.info(
         "Authorization {} answered {}", charge.requestId(), authorization.responseCode().code());
     return authorization;
   }
 
-  // An exact match: the Network names the Supplier by the Acceptor ID its Acquirer gave it, and a
-  // card whose Supplier has none can't be charged by anyone.
-  private boolean isFromTheCardsSupplier(Charge charge, SingleUseCard card) {
-    return suppliers.acceptorId(card.supplierId()).filter(charge.acceptorId()::equals).isPresent();
+  // Records the answer unless the request ID already has one. The primary key decides, not a read
+  // first: of two requests with one ID at once, the second's insert waits for the first to commit,
+  // then inserts nothing, so only one of them ever moves the card.
+  private boolean insertUnlessAnswered(
+      Charge charge, String cardToken, Authorization authorization) {
+    return jdbc.sql(
+                """
+                insert into "authorization".authorizations
+                       (request_id, card_token, amount_minor, currency, acceptor_id, response_code,
+                        authorization_code, status)
+                values (:requestId, :cardToken, :amount, :currency, :acceptorId, :responseCode,
+                        :authorizationCode, :status)
+                on conflict (request_id) do nothing
+                """)
+            .param("requestId", charge.requestId())
+            .param("cardToken", cardToken)
+            .param("amount", charge.amountMinor())
+            .param("currency", charge.currencyCode())
+            .param("acceptorId", charge.acceptorId())
+            .param("responseCode", authorization.responseCode().code())
+            .param("authorizationCode", authorization.authorizationCode())
+            .param("status", authorization.status().name())
+            .update()
+        == 1;
   }
 
-  private void record(Charge charge, String cardToken, Authorization authorization) {
+  private Authorization storedAnswer(String requestId) {
+    return jdbc.sql(
+            """
+            select response_code, authorization_code
+              from "authorization".authorizations
+             where request_id = :requestId
+            """)
+        .param("requestId", requestId)
+        .query(
+            (row, rowNumber) ->
+                new Authorization(
+                    ResponseCode.of(row.getString("response_code")),
+                    row.getString("authorization_code")))
+        .single();
+  }
+
+  private void replaceAnswer(String requestId, Authorization authorization) {
     jdbc.sql(
             """
-            insert into "authorization".authorizations
-                   (request_id, card_token, amount_minor, currency, acceptor_id, response_code,
-                    authorization_code, status)
-            values (:requestId, :cardToken, :amount, :currency, :acceptorId, :responseCode,
-                    :authorizationCode, :status)
+            update "authorization".authorizations
+               set response_code = :responseCode, authorization_code = :authorizationCode,
+                   status = :status
+             where request_id = :requestId
             """)
-        .param("requestId", charge.requestId())
-        .param("cardToken", cardToken)
-        .param("amount", charge.amount().minorUnits())
-        .param("currency", charge.amount().currency().getCurrencyCode())
-        .param("acceptorId", charge.acceptorId())
         .param("responseCode", authorization.responseCode().code())
         .param("authorizationCode", authorization.authorizationCode())
         .param("status", authorization.status().name())
+        .param("requestId", requestId)
         .update();
   }
 

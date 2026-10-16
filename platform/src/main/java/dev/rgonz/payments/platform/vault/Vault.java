@@ -4,7 +4,8 @@ import java.util.Optional;
 
 /**
  * The only place PANs and security codes are stored (ADR-0004). Other modules refer to a card by
- * its Card Token; only {@link #cardDetails} hands out a PAN, for showing to a Supplier once.
+ * its Card Token; only {@link #cardDetails} hands out a PAN and security code, for showing to a
+ * Supplier once.
  */
 public interface Vault {
 
@@ -28,4 +29,13 @@ public interface Vault {
    * or logs it.
    */
   Optional<String> cardFor(String pan);
+
+  /**
+   * Whether this is the security code of the card with this Card Token: the vault decrypts the
+   * stored code and compares the two in constant time, so neither the stored code nor how much of
+   * it matched ever leaves the vault. False when no card has the Card Token. For answering the
+   * Network's Authorization request, whose caller passes the code straight through and never stores
+   * or logs it.
+   */
+  boolean securityCodeMatches(String cardToken, String securityCode);
 }
