@@ -2,7 +2,7 @@
 
 **Signals:** `POST /v1/clearing-files` answers `500` "The import of Clearing File … stopped partway", or `409` "An import of Clearing File … is running, or stopped without recording it"; the platform logs `The import of Clearing File <file ID> stopped partway; importing it again restarts it`, usually after Spring Batch's `Rolling back chunk transaction` and `Encountered an error executing step import`; a file waits in the drop folder's `processing/` folder (`var/clearing/processing/` in local development) for more than a minute; a Clearing File stays `IMPORTING` in `clearing.clearing_file`.
 
-How an import runs (details in [`docs/learning/spring-batch.md`](../learning/spring-batch.md)): the platform moves the file into `processing/`, then runs the Spring Batch job `clearingFileImport` for its file ID: `validate` checks every record, `import` posts the Clearings in chunks of 100, each chunk one transaction, and `complete` marks the file `IMPORTED`; then the file is deleted. A chunk that fails rolls back whole, and the chunks before it stay committed. **Importing the same file name again restarts the job after its last committed chunk; nothing committed is posted twice.**
+How an import runs (details in [`docs/learning/spring-batch.md`](../learning/spring-batch.md)): the platform moves the file into `processing/`, checks that it doesn't repeat a file already received, then runs the Spring Batch job `clearingFileImport` for its file ID: `validate` checks every record and the trailer's totals, `import` posts the Clearings in chunks of 100, each chunk one transaction, and `complete` marks the file `IMPORTED`; then the file is deleted. A chunk that fails rolls back whole, and the chunks before it stay committed. **Importing the same file name again restarts the job after its last committed chunk; nothing committed is posted twice.**
 
 Every query below runs against the development database: `docker compose exec postgres psql -U payments payments`.
 
@@ -38,7 +38,6 @@ select outcome, count(*) from clearing.clearing where file_id = '<file ID>' grou
 
 1. Find the exception that rolled the chunk back: the platform's log has its stack trace under `Rolling back chunk transaction`, and the last `Caused by:` names it. The step's `exit_message` holds the same trace, cut at 2,500 characters. It names a line number of the file at most, never a field's value (ADR-0004).
    - **The database was unreachable, or a lock wait timed out:** nothing to fix in the file; go to step 2 once the database is back.
-   - **`duplicate key value violates unique constraint "clearing_pkey"`:** the file repeats a Network record ID that an earlier file already brought. The Network's IDs are unique across its files, so the file is wrong: ask the Network about the record. Restarting fails the same way until #51 skips repeated records.
    - **Anything else that fails on every attempt** stops the file at the same chunk each time. Raise it as a bug with the stack trace; the file waits safely in `processing/` meanwhile.
 2. Import the file again, under the same name, as Issuer staff. From the repository root:
 
@@ -75,9 +74,9 @@ When the platform stops abruptly (killed, out of memory, the machine lost), its 
 
 A run whose status is `UNKNOWN` ended with a failure Spring Batch couldn't record; a restart refuses it with "Cannot restart job from UNKNOWN status". Check what the file recorded (the outcome query above) against its chunks' `write_count`, then mark it failed with the same two updates (`status in ('STARTING', 'STARTED', 'STOPPING', 'UNKNOWN')` for the steps) and restart.
 
-## The file is refused (`422`)
+## The file is refused (`422`) or repeats another (`409`)
 
-A file that doesn't follow the layout ([`contracts/src/main/resources/clearing-file/layout.md`](../../contracts/src/main/resources/clearing-file/layout.md)) is refused before anything is posted: the answer, and the log line `Refused Clearing File …`, name the line and the field. It stays in `processing/`. The Network has to send a corrected file under a new file ID; delete the refused one once it does. #50 moves refused files into a `failed/` folder of their own.
+Neither is a stopped import: nothing in the file was posted, and it moved on to the drop folder's `failed/` folder. A file that fails a check of the `validate` step: [`clearing-file-refused.md`](clearing-file-refused.md). A file that repeats one already received: [`clearing-file-arrived-twice.md`](clearing-file-arrived-twice.md). A `validate` step that fails for another reason, such as the database being unreachable, stops the import like any other step: the file stays in `processing/`, and importing it again runs `validate` again.
 
 ## Afterwards
 

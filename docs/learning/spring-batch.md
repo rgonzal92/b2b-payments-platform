@@ -16,16 +16,20 @@ Once a day the Network sends a Clearing File: thousands of Clearings, each of wh
 POST /v1/clearing-files {fileName}  or  the drop-folder check, every 30 s
   └─ ClearingFileImports.importFile
        ├─ move drop/<name> → drop/processing/<name>        one atomic rename: one importer wins
-       ├─ read the header: the file ID
-       └─ JobOperator.start(clearingFileImport, {fileId (identifying), file (not)})
-            ├─ validate   tasklet, one transaction: header, every record, trailer parse; clearing_file row IMPORTING
+       ├─ read the header: the file ID; hash the content after it
+       ├─ the file ID or the hash already received? a repeat: move it to failed/, 409
+       └─ JobOperator.start(clearingFileImport, {fileId (identifying), file, contentHash (not)})
+            ├─ validate   tasklet, one transaction: header, every record, trailer parse, the trailer's totals
+            │             match; clearing_file row IMPORTING, with the trailer's figures and the hash
             ├─ import     chunks of 100, each one transaction:
             │               read 100 ─▶ for each: vault.cardFor(PAN), cards.find, authorizations.find
-            │                           matched: cards.clear, journal.postClearing, holds.clear
-            │                           record the Clearing (MATCHED or UNMATCHED)
-            │               + the reader's position into the step's execution context, same commit
+            │                           record the Clearing; its Network record ID already recorded: skip it
+            │                           matched: cards.clear, journal.postClearing, holds.clear; MATCHED
+            │               + the chunk's skipped count, and the reader's position into the step's
+            │                 execution context, same commit
             └─ complete   tasklet, one transaction: clearing_file row IMPORTED
-       COMPLETED: delete the file │ FAILED: the file stays in processing/; importing it again restarts the job
+       COMPLETED: delete the file │ validate failed a check: REFUSED, the file to failed/
+       FAILED otherwise: the file stays in processing/; importing it again restarts the job
 ```
 
 ## How it's built here
@@ -34,7 +38,7 @@ POST /v1/clearing-files {fileName}  or  the drop-folder check, every 30 s
 - **Launching is synchronous.** Boot's `JobOperator` runs the job on the caller's thread, so `POST /v1/clearing-files` answers when the import is done. The import service is deliberately not `@Transactional`: the job repository refuses to start a job inside an open transaction, and every step must commit on its own.
 - **Step-scoped reader and writer.** `@StepScope` beans are created per step execution, with `#{jobParameters['file']}` resolved at that moment, so two files importing at once never share a reader's state.
 - **The step state is JSON.** An `ExecutionContextSerializer` bean (`JacksonExecutionContextStringSerializer`) replaces the default base64 Java serialization, so `batch.batch_step_execution_context.short_context` is JSON text with the reader's position under `clearingRecordReader.read.count`: the runbook can show how far a stopped import got, and the PAN check in `CorePathTests` can search inside it.
-- **Proof** (`ClearingFileImportTests`): 250 Clearings, the 150th failing once through a Mockito spy on the journal. The first attempt answers `500` with 100 Clearings posted; the second answers `201` with all 250 posted exactly once. The same test fails against a reader that doesn't save its position: the restart replays the first chunk, meets Network record IDs already recorded, and stops again.
+- **Proof** (`ClearingFileImportTests`): 250 Clearings, the 150th failing once through a Mockito spy on the journal. The first attempt answers `500` with 100 Clearings posted; the second answers `201` with all 250 posted exactly once. The same test fails against a reader that doesn't save its position: the restart replays the first chunk and skips its 100 Clearings, already recorded, which the restart's summary counts.
 
 ## Gotchas we hit
 
