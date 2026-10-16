@@ -9,10 +9,6 @@ import dev.rgonz.payments.contracts.server.model.MoneyDto;
 import dev.rgonz.payments.contracts.server.model.SettlementDto;
 import dev.rgonz.payments.platform.clearing.ClearingFileImports.ImportResult;
 import dev.rgonz.payments.platform.shared.Money;
-import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.time.format.DateTimeParseException;
-import java.util.Base64;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -46,8 +42,18 @@ class ClearingFilesController implements ClearingFilesApi {
     return ResponseEntity.ok(
         new ClearingFileListDto()
             .items(page.files().stream().map(ClearingFilesController::toDto).toList())
-            .nextCursor(page.next() == null ? null : cursor(page.next()))
+            .nextCursor(page.next() == null ? null : page.next().cursor())
             .missingSequenceNumbers(files.missingSequenceNumbers(MISSING_SEQUENCE_NUMBERS_SHOWN)));
+  }
+
+  private static ClearingFiles.Position position(String cursor) {
+    try {
+      return ClearingFiles.Position.of(cursor);
+    } catch (IllegalArgumentException e) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          "This cursor can't be read: pass a page's nextCursor as it is, or leave it out.");
+    }
   }
 
   @Override
@@ -57,26 +63,6 @@ class ClearingFilesController implements ClearingFilesApi {
         .find(fileId)
         .map(file -> ResponseEntity.ok(toDto(file)))
         .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No Clearing File has this ID."));
-  }
-
-  // The cursor is opaque to callers: the position's fields, in base64url.
-  private static String cursor(ClearingFiles.Position position) {
-    var fields = position.receivedAt() + " " + position.fileId();
-    return Base64.getUrlEncoder()
-        .withoutPadding()
-        .encodeToString(fields.getBytes(StandardCharsets.UTF_8));
-  }
-
-  private static ClearingFiles.Position position(String cursor) {
-    try {
-      var fields = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
-      var separator = fields.indexOf(' ');
-      return new ClearingFiles.Position(
-          Instant.parse(fields.substring(0, separator)), fields.substring(separator + 1));
-    } catch (IllegalArgumentException | IndexOutOfBoundsException | DateTimeParseException e) {
-      throw problem(
-          HttpStatus.BAD_REQUEST, "This cursor isn't one a page of the list gave: leave it out.");
-    }
   }
 
   @Override
@@ -91,10 +77,13 @@ class ClearingFilesController implements ClearingFilesApi {
           throw problem(
               HttpStatus.UNPROCESSABLE_CONTENT,
               "This isn't a Clearing File the platform can import: " + refused.reason());
-      case ImportResult.AlreadyImported alreadyImported ->
+      case ImportResult.Repeated repeated ->
           throw problem(
               HttpStatus.CONFLICT,
-              "Clearing File " + alreadyImported.fileId() + " was already imported.");
+              "This file repeats Clearing File "
+                  + repeated.earlierFileId()
+                  + ", imported or importing, so nothing in it was posted: see"
+                  + " docs/runbooks/clearing-file-arrived-twice.md.");
       case ImportResult.Running running ->
           throw problem(
               HttpStatus.CONFLICT,
@@ -119,8 +108,10 @@ class ClearingFilesController implements ClearingFilesApi {
         .businessDate(file.businessDate())
         .status(ClearingFileDto.StatusEnum.fromValue(file.status().name()))
         .recordCount(file.recordCount())
+        .skippedCount(file.skippedCount())
         .outcomes(toDto(file.outcomes()))
-        .settlement(file.settlement() == null ? null : toDto(file.settlement()));
+        .settlement(file.settlement() == null ? null : toDto(file.settlement()))
+        .refusalReason(file.refusalReason());
   }
 
   private static ClearingOutcomeCountsDto toDto(Map<ClearingOutcome, Long> outcomes) {

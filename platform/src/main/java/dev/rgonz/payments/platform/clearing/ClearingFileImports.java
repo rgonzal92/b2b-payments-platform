@@ -9,6 +9,7 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
@@ -26,8 +27,9 @@ import org.springframework.stereotype.Component;
 /**
  * Imports Clearing Files from the drop folder, where the Network delivers them. A file is moved
  * into the folder's {@code processing/} folder before its import starts, in one atomic rename, so
- * of two importers only one gets it; it waits there until its import completes, then is deleted.
- * Logs name a file by its name or ID, never its contents.
+ * of two importers only one gets it; it waits there until its import completes, then is deleted. A
+ * refused file moves on to the folder's {@code failed/} folder, where it waits for a person. Logs
+ * name a file by its name or ID, never its contents.
  */
 @Component
 class ClearingFileImports {
@@ -36,6 +38,7 @@ class ClearingFileImports {
 
   private final Path dropFolder;
   private final Path processingFolder;
+  private final Path failedFolder;
   private final JobOperator jobOperator;
   private final Job clearingFileImport;
   private final ClearingFiles files;
@@ -49,6 +52,7 @@ class ClearingFileImports {
       ClearingFiles files) {
     this.dropFolder = Path.of(dropFolder).toAbsolutePath().normalize();
     this.processingFolder = this.dropFolder.resolve("processing");
+    this.failedFolder = this.dropFolder.resolve("failed");
     this.jobOperator = jobOperator;
     this.clearingFileImport = clearingFileImport;
     this.files = files;
@@ -74,10 +78,10 @@ class ClearingFileImports {
       try (var lines = ClearingFileLayout.open(file)) {
         header = ClearingFileLayout.readHeader(lines);
       } catch (MalformedClearingFileException malformed) {
-        log.warn("Refused Clearing File {}: {}", fileName, malformed.getMessage());
-        return new ImportResult.Refused(malformed.getMessage());
+        // Without a header there is no file ID to record it under.
+        return refused(file, malformed.getMessage());
       }
-      return run(header.fileId(), file);
+      return run(header, file);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
@@ -125,7 +129,12 @@ class ClearingFileImports {
     }
   }
 
-  private ImportResult run(String fileId, Path file) throws IOException {
+  private ImportResult run(FileHeader header, Path file) throws IOException {
+    var fileId = header.fileId();
+    var earlier = files.repeatedBy(fileId, ClearingFileLayout.contentHash(file));
+    if (earlier.isPresent()) {
+      return repeated(file, earlier.get());
+    }
     var parameters =
         new JobParametersBuilder()
             .addString(ClearingFileImportJob.FILE_ID, fileId)
@@ -135,8 +144,7 @@ class ClearingFileImports {
     try {
       execution = jobOperator.start(clearingFileImport, parameters);
     } catch (JobInstanceAlreadyCompleteException alreadyImported) {
-      log.warn("Clearing File {} was already imported", fileId);
-      return new ImportResult.AlreadyImported(fileId);
+      return repeated(file, fileId);
     } catch (JobExecutionAlreadyRunningException running) {
       log.warn("Clearing File {} is being imported, or its import stopped abruptly", fileId);
       return new ImportResult.Running(fileId);
@@ -144,7 +152,8 @@ class ClearingFileImports {
       throw new IllegalStateException("Couldn't start the import of Clearing File " + fileId, e);
     }
     if (execution.getStatus() == BatchStatus.COMPLETED) {
-      Files.delete(file);
+      // Already gone when an import of the same name started meanwhile found it repeated.
+      Files.deleteIfExists(file);
       var imported = files.find(fileId).orElseThrow();
       log.info(
           "Clearing File {} (sequence {}, Business Date {}) imported: {} Clearings",
@@ -163,7 +172,14 @@ class ClearingFileImports {
       }
       return new ImportResult.Imported(imported);
     }
-    return stopped(fileId, execution);
+    var refusal = refusal(execution);
+    if (refusal.isPresent()) {
+      files.refuse(header, refusal.get());
+      return refused(file, refusal.get());
+    }
+    log.error(
+        "The import of Clearing File {} stopped partway; importing it again restarts it", fileId);
+    return new ImportResult.Stopped(fileId);
   }
 
   // In major units for a person reading the log: 9850.00 USD.
@@ -173,25 +189,35 @@ class ClearingFileImports {
         + money.currency().getCurrencyCode();
   }
 
-  // A failed validate step posted nothing: the file is refused. A failure after it stopped the
-  // import partway, keeping the chunks it committed.
-  private static ImportResult stopped(String fileId, JobExecution execution) {
-    for (var step : execution.getStepExecutions()) {
-      if (step.getStatus() == BatchStatus.FAILED
-          && ClearingFileImportJob.VALIDATE.equals(step.getStepName())) {
-        var reason =
-            step.getFailureExceptions().stream()
-                .filter(MalformedClearingFileException.class::isInstance)
-                .map(Throwable::getMessage)
-                .findFirst()
-                .orElse("it couldn't be read.");
-        log.warn("Refused Clearing File {}: {}", fileId, reason);
-        return new ImportResult.Refused(reason);
-      }
-    }
-    log.error(
-        "The import of Clearing File {} stopped partway; importing it again restarts it", fileId);
-    return new ImportResult.Stopped(fileId);
+  // A check of the validate step that the file failed: nothing in it was posted. Any other failure,
+  // such as the database being unreachable, stopped the import instead, and importing the file
+  // again runs the validate step again.
+  private static Optional<String> refusal(JobExecution execution) {
+    return execution.getStepExecutions().stream()
+        .filter(step -> ClearingFileImportJob.VALIDATE.equals(step.getStepName()))
+        .flatMap(step -> step.getFailureExceptions().stream())
+        .filter(MalformedClearingFileException.class::isInstance)
+        .map(Throwable::getMessage)
+        .findFirst();
+  }
+
+  private ImportResult refused(Path file, String reason) throws IOException {
+    moveToFailed(file);
+    log.warn("Refused Clearing File {}: {}", file.getFileName(), reason);
+    return new ImportResult.Refused(reason);
+  }
+
+  private ImportResult repeated(Path file, String earlierFileId) throws IOException {
+    moveToFailed(file);
+    log.warn(
+        "Refused Clearing File {}: it repeats Clearing File {}", file.getFileName(), earlierFileId);
+    return new ImportResult.Repeated(earlierFileId);
+  }
+
+  // A refused file waits in failed/ until a person resolves it.
+  private void moveToFailed(Path file) throws IOException {
+    Files.createDirectories(failedFolder);
+    Files.move(file, failedFolder.resolve(file.getFileName()), StandardCopyOption.ATOMIC_MOVE);
   }
 
   /** How an import ended. */
@@ -202,10 +228,17 @@ class ClearingFileImports {
     /** No file has the name in the drop folder or in {@code processing/}. */
     record NotFound() implements ImportResult {}
 
-    /** The file doesn't follow the layout, so nothing was posted; the reason names the line. */
+    /**
+     * The file failed a check of the validate step, so nothing was posted, and it moved to {@code
+     * failed/}; the reason names the line and the field.
+     */
     record Refused(String reason) implements ImportResult {}
 
-    record AlreadyImported(String fileId) implements ImportResult {}
+    /**
+     * The file repeats one the platform imported or is importing, so nothing was posted, and it
+     * moved to {@code failed/}.
+     */
+    record Repeated(String earlierFileId) implements ImportResult {}
 
     /** An import of the file is running, or stopped without its end being recorded. */
     record Running(String fileId) implements ImportResult {}

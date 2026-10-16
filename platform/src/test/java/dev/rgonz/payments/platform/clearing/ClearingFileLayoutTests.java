@@ -138,7 +138,21 @@ class ClearingFileLayoutTests {
             "a record after the trailer",
             List.of(header, trailer, detail),
             "Line 3: a record follows the trailer."),
-        arguments("an empty file", List.of(), "Line 1: the file is empty."));
+        arguments("an empty file", List.of(), "Line 1: the file is empty."),
+        arguments(
+            "a trailer whose record count isn't the detail records'",
+            List.of(header, detail, trailer),
+            "Line 3: the record count (positions 3–10) isn't the number of detail records."),
+        arguments(
+            "a trailer whose amount total isn't the detail records'",
+            List.of(
+                header,
+                detail,
+                lines.get(2),
+                lines.get(3),
+                replace(trailer, 11, "000000001752346")),
+            "Line 5: the amount total (positions 11–25) isn't the sum of the detail records'"
+                + " amounts."));
   }
 
   // The record with the text at its 1-based position, as layout.md counts.

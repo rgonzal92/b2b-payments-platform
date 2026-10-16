@@ -4,6 +4,7 @@ import static dev.rgonz.payments.platform.clearing.TestClearingFiles.newId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -34,8 +35,10 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Date;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -46,11 +49,16 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import java.util.stream.Stream;
 import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -176,6 +184,8 @@ class ClearingFileImportTests {
 
     assertThat(restarted).hasStatus(201);
     assertThat(restarted).bodyJson().extractingPath("$.recordCount").isEqualTo(250);
+    // The restart read on after the first chunk: replayed, its 100 would be skipped.
+    assertThat(restarted).bodyJson().extractingPath("$.skippedCount").isEqualTo(0);
     assertThat(postedCount(clearings)).isEqualTo(250);
     assertThat(matchedCount(clearings)).isEqualTo(250);
     // Each Clearing debited the Buyer Receivable once, and cleared its card's Hold.
@@ -202,7 +212,7 @@ class ClearingFileImportTests {
         .isEqualTo(
             """
             {"id": "%s", "sequenceNumber": 7, "businessDate": "2026-10-15", "status": "IMPORTED",
-             "recordCount": 1,
+             "recordCount": 1, "skippedCount": 0,
              "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
                           "unknownCard": 0, "otherCurrency": 0, "againstReversedAuthorization": 0,
                           "afterHoldExpired": 0, "authorizationAlreadyCleared": 0},
@@ -397,6 +407,49 @@ class ClearingFileImportTests {
             """);
     assertThat(postedCount(clearings)).isEqualTo(1);
     assertThat(settlementEntriesFor(fileId)).hasSize(1);
+  }
+
+  @Test
+  void aValidateStepThatRunsAgainAfterItCommittedImportsTheFileOnce() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var fileId = newId("F", 16);
+    var clearings = List.of(clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000));
+    // The validate step commits; the import step after it fails, once.
+    var fault = new AtomicBoolean(true);
+    doAnswer(
+            posting -> {
+              if (fault.getAndSet(false)) {
+                throw new IllegalStateException("Test fault: the import step stops here.");
+              }
+              return posting.callRealMethod();
+            })
+        .when(journal)
+        .postClearing(any(), any(), any());
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, fileId, 20, clearings);
+    assertProblem(importFile(fileName, "ROLE_issuer-admin"), 500);
+    // As if the platform had stopped after the validate step committed, before Spring Batch
+    // recorded it complete, and a person had marked the run failed
+    // (runbooks/clearing-import-stopped.md).
+    jdbc.sql(
+            """
+            update batch.batch_step_execution set status = 'FAILED', exit_code = 'FAILED'
+             where step_name = 'validate'
+               and job_execution_id in (select job_execution_id
+                                          from batch.batch_job_execution_params
+                                         where parameter_name = 'fileId'
+                                           and parameter_value = :fileId)
+            """)
+        .param("fileId", fileId)
+        .update();
+
+    var restarted = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(restarted).hasStatus(201);
+    assertThat(restarted).bodyJson().extractingPath("$.status").isEqualTo("IMPORTED");
+    // The validate step ran twice, and the file was imported once.
+    verify(files, times(2)).receive(any(), any());
+    assertThat(postedCount(clearings)).isEqualTo(1);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 1_000_000);
   }
 
   @Test
@@ -811,18 +864,22 @@ class ClearingFileImportTests {
     assertThat(totals.get("debits")).isEqualTo(totals.get("credits"));
   }
 
-  @Test
-  void aFileWithoutATrailerIsRefusedAndPostsNothing() throws Exception {
+  // Each check of the validate step refuses the whole file: nothing is posted, the file waits in
+  // failed/, and its summary and the answer say which check failed, never with the PAN.
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("refusedFiles")
+  void aFileThatFailsAValidateCheckIsRefusedWholeAndPostsNothing(
+      String description, Function<Detail, List<String>> recordsAfterTheHeader, String reason)
+      throws Exception {
     var buyerId = buyerWithCreditLine(10_000_000);
     var charged = chargedCard(buyerId);
     var creditBefore = availableCredit(buyerId);
     var fileId = newId("F", 16);
-    var fileName =
-        TestClearingFiles.write(
-            DROP_FOLDER,
-            List.of(
-                TestClearingFiles.header(fileId, 9),
-                TestClearingFiles.detail(clearingOf(charged, newId("R", 20), CARD_AMOUNT))));
+    var clearing = clearingOf(charged, newId("R", 20), CARD_AMOUNT);
+    var lines = new ArrayList<String>();
+    lines.add(TestClearingFiles.header(fileId, 9));
+    lines.addAll(recordsAfterTheHeader.apply(clearing));
+    var fileName = TestClearingFiles.write(DROP_FOLDER, lines);
 
     var response = importFile(fileName, "ROLE_issuer-admin");
 
@@ -831,11 +888,233 @@ class ClearingFileImportTests {
         .bodyJson()
         .extractingPath("$.detail")
         .asString()
-        .contains("Line 2: the file ends without a trailer (92).")
+        .contains(reason)
         .doesNotContain(charged.pan());
+    assertThat(files.find(fileId))
+        .get()
+        .returns(ClearingFileSummary.Status.REFUSED, ClearingFileSummary::status)
+        .returns(reason, ClearingFileSummary::refusalReason);
+    assertThat(postedCount(List.of(clearing))).isZero();
     assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
         .isEqualTo(SingleUseCard.Status.AUTHORIZED);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertMovedToFailed(fileName);
+  }
+
+  // Without a readable header there's no file ID to record the refusal under: the answer says why.
+  @Test
+  void aFileWhoseHeaderCantBeReadIsRefusedIntoFailed() {
+    var fileName =
+        TestClearingFiles.write(
+            DROP_FOLDER, List.of("90NOT-A-HEADER", TestClearingFiles.trailer(0, 0, 0)));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertProblem(response, 422);
+    assertThat(response)
+        .bodyJson()
+        .extractingPath("$.detail")
+        .asString()
+        .contains("Line 1: the record is 14 characters long, not 120.");
+    assertMovedToFailed(fileName);
+  }
+
+  static Stream<Arguments> refusedFiles() {
+    return Stream.of(
+        arguments(
+            "a trailer whose record count isn't the file's",
+            records(
+                clearing ->
+                    List.of(
+                        TestClearingFiles.detail(clearing),
+                        TestClearingFiles.trailer(
+                            2, clearing.amountMinor(), clearing.amountMinor()))),
+            "Line 3: the record count (positions 3–10) isn't the number of detail records."),
+        arguments(
+            "a trailer whose amount total isn't the file's",
+            records(
+                clearing ->
+                    List.of(
+                        TestClearingFiles.detail(clearing),
+                        TestClearingFiles.trailer(
+                            1, clearing.amountMinor() + 1, clearing.amountMinor() + 1))),
+            "Line 3: the amount total (positions 11–25) isn't the sum of the detail records'"
+                + " amounts."),
+        arguments(
+            "a trailer in a currency the platform doesn't settle",
+            records(
+                clearing ->
+                    List.of(
+                        TestClearingFiles.detail(clearing).replace("USD", "EUR"),
+                        TestClearingFiles.trailer(List.of(clearing)).replace("USD", "EUR"))),
+            "Line 3: the currency (positions 41–43) isn't USD, the only currency the platform"
+                + " settles."),
+        arguments(
+            "a malformed detail record",
+            records(
+                clearing -> {
+                  var detail = TestClearingFiles.detail(clearing);
+                  return List.of(
+                      detail.substring(0, 41) + "TWELVE CENTS" + detail.substring(53),
+                      TestClearingFiles.trailer(List.of(clearing)));
+                }),
+            "Line 2: the amount (positions 42–53) isn't a number."),
+        arguments(
+            "no trailer",
+            records(clearing -> List.of(TestClearingFiles.detail(clearing))),
+            "Line 2: the file ends without a trailer (92)."));
+  }
+
+  // Gives a lambda its type, which it can't take from arguments(Object...).
+  private static Function<Detail, List<String>> records(Function<Detail, List<String>> records) {
+    return records;
+  }
+
+  @Test
+  void anImportedFileIsDeletedAndItsHashAndHeaderAndTrailerFiguresAreKept() {
+    var fileId = newId("F", 16);
+    // The same content whatever its file ID, so its hash is known: the runbook's command, which
+    // leaves out the header's file ID and each detail record's PAN,
+    //   awk 'NR == 1 { print substr($0, 23); next }
+    //        /^05/ { print substr($0, 1, 22) substr($0, 42); next } { print }' <file> | sha256sum
+    // gives the hash below over this file, whatever its PAN. Its card is one the vault doesn't
+    // know. The Network settles a figure of its own, which the trailer carries beside the amount
+    // total.
+    var fileName =
+        TestClearingFiles.write(
+            DROP_FOLDER,
+            List.of(
+                TestClearingFiles.header(fileId, 15),
+                TestClearingFiles.detail(
+                    new Detail(
+                        "NR-HASH-0000000001",
+                        "9900000000000010",
+                        125_000,
+                        "HASH00000001",
+                        "HASH01",
+                        ACCEPTOR_ID)),
+                TestClearingFiles.trailer(1, 125_000, 124_000)));
+
+    assertThat(importFile(fileName, "ROLE_issuer-admin")).hasStatus(201);
+
+    assertThat(DROP_FOLDER.resolve(fileName)).doesNotExist();
+    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();
+    assertThat(
+            jdbc.sql(
+                    """
+                    select sequence_number, business_date, record_count, amount_total_minor,
+                           net_settlement_amount_minor, totals_currency, content_hash
+                      from clearing.clearing_file
+                     where id = :id
+                    """)
+                .param("id", fileId)
+                .query()
+                .singleRow())
+        .containsEntry("sequence_number", 15L)
+        .containsEntry("business_date", Date.valueOf(LocalDate.of(2026, 10, 15)))
+        .containsEntry("record_count", 1L)
+        .containsEntry("amount_total_minor", 125_000L)
+        .containsEntry("net_settlement_amount_minor", 124_000L)
+        .containsEntry("totals_currency", "USD")
+        .containsEntry(
+            "content_hash", "91731a4f539bd52ffefa9d9768fb210eab0584f9049d5fbc9bf3c59a85da8bab");
+  }
+
+  // A refused file wasn't imported, so its ID isn't taken: the Network's corrected file may carry
+  // it again, as when a file cut short in transit is sent again whole.
+  @Test
+  void aCorrectedFileWithTheIdOfARefusedFileIsImported() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var clearing = clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000);
+    var fileId = newId("F", 16);
+    var cutShort =
+        TestClearingFiles.write(
+            DROP_FOLDER,
+            List.of(TestClearingFiles.header(fileId, 19), TestClearingFiles.detail(clearing)));
+    assertProblem(importFile(cutShort, "ROLE_issuer-admin"), 422);
+    var whole = TestClearingFiles.drop(DROP_FOLDER, fileId, 19, List.of(clearing));
+
+    var response = importFile(whole, "ROLE_issuer-admin");
+
+    assertThat(response).hasStatus(201);
+    assertThat(files.find(fileId))
+        .get()
+        .returns(ClearingFileSummary.Status.IMPORTED, ClearingFileSummary::status)
+        .returns(null, ClearingFileSummary::refusalReason);
+    assertThat(postedCount(List.of(clearing))).isEqualTo(1);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 1_000_000);
+    assertThat(DROP_FOLDER.resolve("processing").resolve(whole)).doesNotExist();
+  }
+
+  @Test
+  void aFileWithTheIdOfAnImportedFileIsRefusedAndPostsNothingTwice() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var imported = clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT);
+    var notImported = clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT);
+    var fileId = newId("F", 16);
+    var first = TestClearingFiles.drop(DROP_FOLDER, fileId, 13, List.of(imported));
+    assertThat(importFile(first, "ROLE_issuer-admin")).hasStatus(201);
+    var creditBefore = availableCredit(buyerId);
+    var again = TestClearingFiles.drop(DROP_FOLDER, fileId, 14, List.of(imported, notImported));
+
+    var response = importFile(again, "ROLE_issuer-admin");
+
+    assertProblem(response, 409);
+    assertThat(response).bodyJson().extractingPath("$.detail").asString().contains(fileId);
+    assertThat(postedCount(List.of(imported))).isEqualTo(1);
+    assertThat(postedCount(List.of(notImported))).isZero();
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertMovedToFailed(again);
+  }
+
+  @Test
+  void theContentOfAnImportedFileUnderANewFileIdIsRefusedByItsHashAndPostsNothingTwice()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var clearing = clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT);
+    var earlierFileId = newId("F", 16);
+    var first = TestClearingFiles.drop(DROP_FOLDER, earlierFileId, 16, List.of(clearing));
+    assertThat(importFile(first, "ROLE_issuer-admin")).hasStatus(201);
+    var creditBefore = availableCredit(buyerId);
+    var newFileId = newId("F", 16);
+    var again = TestClearingFiles.drop(DROP_FOLDER, newFileId, 16, List.of(clearing));
+
+    var response = importFile(again, "ROLE_issuer-admin");
+
+    assertProblem(response, 409);
+    assertThat(response).bodyJson().extractingPath("$.detail").asString().contains(earlierFileId);
+    assertThat(postedCount(List.of(clearing))).isEqualTo(1);
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(files.find(newFileId)).isEmpty();
+    assertMovedToFailed(again);
+  }
+
+  @Test
+  void aRecordWhoseNetworkRecordIdWasAlreadyImportedIsSkippedAndCountedNotPostedAgain()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var repeated = clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000);
+    var other = clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000);
+
+    // Repeated within the first file, and again in the second.
+    var first =
+        importFile(
+            TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 17, List.of(repeated, repeated)),
+            "ROLE_issuer-admin");
+    var second =
+        importFile(
+            TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 18, List.of(repeated, other)),
+            "ROLE_issuer-admin");
+
+    assertThat(first).hasStatus(201);
+    assertThat(first).bodyJson().extractingPath("$.recordCount").isEqualTo(2);
+    assertThat(first).bodyJson().extractingPath("$.skippedCount").isEqualTo(1);
+    assertThat(second).hasStatus(201);
+    assertThat(second).bodyJson().extractingPath("$.skippedCount").isEqualTo(1);
+    assertThat(postedCount(List.of(repeated))).isEqualTo(1);
+    assertThat(postedCount(List.of(other))).isEqualTo(1);
+    // The Buyer Receivable holds each card's cleared amount once, and neither Hold counts.
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 2 * 1_000_000);
   }
 
   @Test
@@ -878,6 +1157,12 @@ class ClearingFileImportTests {
 
     assertProblem(response, 403);
     assertThat(DROP_FOLDER.resolve(fileName)).exists();
+  }
+
+  // A refused or repeated file waits in failed/ for a person, out of processing/.
+  private static void assertMovedToFailed(String fileName) {
+    assertThat(DROP_FOLDER.resolve("failed").resolve(fileName)).exists();
+    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();
   }
 
   private static void assertProblem(MvcTestResult response, int status) {

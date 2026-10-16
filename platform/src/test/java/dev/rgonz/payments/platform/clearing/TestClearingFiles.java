@@ -103,8 +103,12 @@ public final class TestClearingFiles {
 
   /** A trailer that totals the Clearings, with the Network's own net settlement amount. */
   public static String trailer(List<Detail> details, long netSettlementMinor) {
-    return record(
-        "92%08d%015d%015dUSD".formatted(details.size(), total(details), netSettlementMinor));
+    return trailer(details.size(), total(details), netSettlementMinor);
+  }
+
+  /** A trailer with these figures, in USD, whether or not they total the file's records. */
+  public static String trailer(long recordCount, long amountTotal, long netSettlementAmount) {
+    return record("92%08d%015d%015dUSD".formatted(recordCount, amountTotal, netSettlementAmount));
   }
 
   private static long total(List<Detail> details) {

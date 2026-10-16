@@ -322,7 +322,8 @@ paths:
         Issuer staff only (role `issuer-admin`). Every Clearing File the platform received, newest first by when it
         received them, a page at a time: pass a page's `nextCursor` as `cursor` for the next page. Every page also
         shows the gaps in the Network's sequence numbers (`missingSequenceNumbers`), so a file that never arrived
-        stands out. A `limit` outside 1 to 100, or a `cursor` no page gave, is `400`.
+        stands out. A refused file is listed too, with why it was refused. A `limit` outside 1 to 100, or a `cursor`
+        that can't be read, is `400`.
       parameters:
         - name: cursor
           in: query
@@ -361,11 +362,14 @@ paths:
         Issuer staff only (role `issuer-admin`). Imports the named file from the platform's drop folder at once,
         instead of waiting for the next check of the folder (every 30 seconds), and answers when the import is done.
         Every Clearing is posted to the journal and recorded with how it matched its card's Authorization (the
-        summary counts each outcome); its card becomes `CLEARED`, and so does the card's Hold if it is still open.
-        Then the file is settled at its trailer's net settlement amount, and deleted. The file's own ID makes a repeat
-        harmless, so there is no `Idempotency-Key`: a file already imported answers `409`. An import that stopped
-        partway keeps what it committed and answers `500`; importing the same file name again restarts it where it
-        stopped.
+        summary counts each outcome); its card becomes `CLEARED`, and so does the card's Hold if it is still open. A
+        record whose Network record ID was already imported is skipped and counted. Then the file is settled at its
+        trailer's net settlement amount, and deleted. The file's ID and content make a repeat harmless, so there is no
+        `Idempotency-Key`: a file whose ID or content an imported file already had answers `409`, naming that file. A
+        file that fails a check (its layout, its trailer's record count, amount total or currency) answers `422` with
+        the check, and nothing in it is posted; either file moves to the drop folder's `failed/` folder. An import that
+        stopped partway keeps what it committed and answers `500`; importing the same file name again restarts it where
+        it stopped.
       requestBody:
         required: true
         content:
@@ -744,7 +748,7 @@ components:
     ClearingFile:
       type: object
       description: A Clearing File the platform received, as its header and its Clearings describe it.
-      required: [id, sequenceNumber, businessDate, status, recordCount, outcomes]
+      required: [id, sequenceNumber, businessDate, status, skippedCount, outcomes]
       properties:
         id:
           type: string
@@ -761,12 +765,27 @@ components:
           type: string
           description: >-
             `IMPORTING` while its Clearings are being posted, or when an import of it stopped partway (importing it
-            again restarts it); `IMPORTED` once every Clearing in it is recorded.
-          enum: [IMPORTING, IMPORTED]
+            again restarts it); `IMPORTED` once every Clearing in it is recorded; `REFUSED` when it failed a check
+            (its layout, its trailer's record count, amount total or currency) and nothing in it was posted; a
+            corrected file sent under its ID replaces it. Only the list and the detail show a `REFUSED` file: its
+            import answered `422`.
+          enum: [IMPORTING, IMPORTED, REFUSED]
+        refusalReason:
+          type: string
+          description: >-
+            Which check refused the file, by line and field, never a value; null unless `status` is `REFUSED`. See
+            `docs/runbooks/clearing-file-refused.md`.
         recordCount:
           type: integer
           format: int64
-          description: The number of Clearings in the file.
+          description: >-
+            The number of Clearings in the file; null for a `REFUSED` file, whose records may not all have been read.
+        skippedCount:
+          type: integer
+          format: int64
+          description: >-
+            How many of them were skipped, and not posted, because their Network record ID was already imported,
+            earlier in the file or in another file.
         outcomes:
           $ref: '#/components/schemas/ClearingOutcomeCounts'
         settlement:

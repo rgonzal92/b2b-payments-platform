@@ -35,6 +35,7 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 @AutoConfigureMockMvc
 class ClearingFilesApiTests {
 
+  private static final String ISSUER_ADMIN = "ROLE_issuer-admin";
   private static final Path DROP_FOLDER = newDropFolder();
 
   @DynamicPropertySource
@@ -58,7 +59,7 @@ class ClearingFilesApiTests {
     var middle = imported(2);
     var newest = imported(3);
 
-    var firstPage = list("limit=2");
+    var firstPage = list("limit=2", ISSUER_ADMIN);
 
     assertThat(firstPage).hasStatusOk();
     assertThat(firstPage)
@@ -69,7 +70,7 @@ class ClearingFilesApiTests {
     String cursor = JsonPath.read(firstPage.getResponse().getContentAsString(), "$.nextCursor");
     assertThat(cursor).isNotBlank();
 
-    var lastPage = list("limit=2&cursor=" + cursor);
+    var lastPage = list("limit=2&cursor=" + cursor, ISSUER_ADMIN);
 
     assertThat(lastPage).hasStatusOk();
     assertThat(lastPage)
@@ -83,7 +84,7 @@ class ClearingFilesApiTests {
   @Test
   void aPageOfNoFilesOrMoreThanAHundredOrACursorTheListDidntGiveIsABadRequest() {
     for (var query : List.of("limit=0", "limit=101", "cursor=not-a-cursor")) {
-      assertProblem(list(query), 400);
+      assertProblem(list(query, ISSUER_ADMIN), 400);
     }
   }
 
@@ -93,7 +94,7 @@ class ClearingFilesApiTests {
     imported(2);
     imported(4);
 
-    var response = list("limit=20");
+    var response = list("limit=20", ISSUER_ADMIN);
 
     assertThat(response).hasStatusOk();
     assertThat(response)
@@ -109,17 +110,42 @@ class ClearingFilesApiTests {
     imported(2);
     imported(3);
 
-    var response = list("limit=20");
+    var response = list("limit=20", ISSUER_ADMIN);
 
     assertThat(response).hasStatusOk();
     assertThat(response).bodyJson().extractingPath("$.missingSequenceNumbers").asArray().isEmpty();
   }
 
   @Test
+  void aRefusedFileIsListedWithWhyAndItsSequenceNumberStaysMissing() {
+    imported(1);
+    var refusedId = newId("F", 16);
+    // A header and nothing after it: no trailer.
+    var refused =
+        TestClearingFiles.write(DROP_FOLDER, List.of(TestClearingFiles.header(refusedId, 2)));
+    assertProblem(importFile(refused), 422);
+    imported(3);
+
+    var response = list("limit=20", ISSUER_ADMIN);
+
+    assertThat(response).hasStatusOk();
+    assertThat(response)
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"items": [{}, {"id": "%s", "sequenceNumber": 2, "status": "REFUSED",
+                            "refusalReason": "Line 1: the file ends without a trailer (92).",
+                            "recordCount": null}, {}],
+             "missingSequenceNumbers": [2]}
+            """
+                .formatted(refusedId));
+  }
+
+  @Test
   void oneFileShowsTheSummaryItsImportAnswered() {
     var fileId = imported(7);
 
-    var response = file(fileId, "ROLE_issuer-admin");
+    var response = file(fileId, ISSUER_ADMIN);
 
     assertThat(response).hasStatusOk();
     assertThat(response)
@@ -127,7 +153,7 @@ class ClearingFilesApiTests {
         .isEqualTo(
             """
             {"id": "%s", "sequenceNumber": 7, "businessDate": "2026-10-15", "status": "IMPORTED",
-             "recordCount": 0,
+             "recordCount": 0, "skippedCount": 0, "refusalReason": null,
              "outcomes": {"matched": 0, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
                           "unknownCard": 0, "otherCurrency": 0, "againstReversedAuthorization": 0,
                           "afterHoldExpired": 0, "authorizationAlreadyCleared": 0},
@@ -140,7 +166,7 @@ class ClearingFilesApiTests {
 
   @Test
   void aFileIdNoFileHasIsNotFound() {
-    var response = file("NO-SUCH-FILE", "ROLE_issuer-admin");
+    var response = file("NO-SUCH-FILE", ISSUER_ADMIN);
 
     assertProblem(response, 404);
   }
@@ -149,12 +175,7 @@ class ClearingFilesApiTests {
   void onlyIssuerStaffMayReadTheFiles() {
     var fileId = imported(1);
 
-    assertProblem(
-        mvc.get()
-            .uri("/v1/clearing-files")
-            .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_erp")))
-            .exchange(),
-        403);
+    assertProblem(list("limit=20", "ROLE_erp"), 403);
     assertProblem(file(fileId, "ROLE_approver"), 403);
   }
 
@@ -175,25 +196,27 @@ class ClearingFilesApiTests {
   private String imported(long sequenceNumber) {
     var fileId = newId("F", 16);
     var fileName = TestClearingFiles.drop(DROP_FOLDER, fileId, sequenceNumber, List.of());
-    var response =
-        mvc.post()
-            .uri("/v1/clearing-files")
-            .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_issuer-admin")))
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(
-                """
-                {"fileName": "%s"}
-                """
-                    .formatted(fileName))
-            .exchange();
-    assertThat(response).hasStatus(201);
+    assertThat(importFile(fileName)).hasStatus(201);
     return fileId;
   }
 
-  private MvcTestResult list(String query) {
+  private MvcTestResult importFile(String fileName) {
+    return mvc.post()
+        .uri("/v1/clearing-files")
+        .with(jwt().authorities(new SimpleGrantedAuthority(ISSUER_ADMIN)))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content(
+            """
+            {"fileName": "%s"}
+            """
+                .formatted(fileName))
+        .exchange();
+  }
+
+  private MvcTestResult list(String query, String authority) {
     return mvc.get()
         .uri("/v1/clearing-files?" + query)
-        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_issuer-admin")))
+        .with(jwt().authorities(new SimpleGrantedAuthority(authority)))
         .exchange();
   }
 

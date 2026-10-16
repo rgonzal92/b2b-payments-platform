@@ -24,11 +24,12 @@ A page holds at most 100 files, newest first; pass its `nextCursor` as `cursor` 
 For each missing number, look for a file with that `sequenceNumber` in the list (every file the platform received is there, whatever its status):
 
 - **`IMPORTING`:** the platform has the file, and its import is running or stopped partway: see [`clearing-import-stopped.md`](clearing-import-stopped.md). Importing it again fills the number.
-- **Refused:** the file failed a check and nothing in it was posted. The Network has to send a corrected file; the refusal runbook (#50) says how to tell it what was wrong.
-- **None:** the platform never took the file in. Look in the drop folder (`var/clearing/` in local development):
+- **`REFUSED`:** the file failed a check, its `refusalReason` says which, and nothing in it was posted. The Network has to send a corrected file: see [`clearing-file-refused.md`](clearing-file-refused.md).
+- **None:** the platform never recorded the file. Look in the drop folder (`var/clearing/` in local development):
   - a file in the folder itself waits for the next check, every 30 seconds;
   - a name starting with `.` is a file the Network is still writing, which waits for its rename;
-  - a file in `processing/` is being imported, or its import stopped before the file was recorded: see [`clearing-import-stopped.md`](clearing-import-stopped.md).
+  - a file in `processing/` is being imported, or its import stopped before the file was recorded: see [`clearing-import-stopped.md`](clearing-import-stopped.md);
+  - a file in `failed/` was refused without a readable header, so it has no file ID to record ([`clearing-file-refused.md`](clearing-file-refused.md)), or it repeats a file already imported ([`clearing-file-arrived-twice.md`](clearing-file-arrived-twice.md)). Where its first line is a header (`90`), positions 23–30 hold its sequence number: `head -c 30 var/clearing/failed/<file name>; echo`.
 
   Nothing there means the file never arrived.
 
