@@ -28,6 +28,20 @@ record ClearingFileSummary(
     outcomes = Map.copyOf(outcomes);
   }
 
+  /** This summary with its recorded Clearings counted by outcome. */
+  ClearingFileSummary withOutcomes(Map<ClearingOutcome, Long> outcomes) {
+    return new ClearingFileSummary(
+        id,
+        sequenceNumber,
+        businessDate,
+        status,
+        recordCount,
+        skippedCount,
+        outcomes,
+        settlement,
+        refusalReason);
+  }
+
   enum Status {
     /** Its Clearings are being posted, or an import of it stopped partway. */
     IMPORTING,

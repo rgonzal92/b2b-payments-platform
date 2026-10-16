@@ -1,11 +1,19 @@
 package dev.rgonz.payments.platform.clearing;
 
 import dev.rgonz.payments.platform.shared.Money;
+import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
+import java.util.Base64;
 import java.util.Currency;
 import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -17,6 +25,24 @@ import org.springframework.stereotype.Repository;
  */
 @Repository
 class ClearingFiles {
+
+  // A file with its Settlement, once it has one.
+  private static final String SUMMARY =
+      """
+      select f.id, f.sequence_number, f.business_date, f.status, f.record_count, f.skipped_count,
+             f.refusal_reason, f.received_at,
+             s.amount_minor, s.imported_total_minor, s.currency, s.matched
+        from clearing.clearing_file f
+        left join clearing.settlement s on s.file_id = f.id
+      """;
+  private static final String FILE = SUMMARY + " where f.id = :id";
+  // Keyset paging: a page starts after the earlier page's last file, compared on the ordering
+  // columns, which clearing_file_received_idx keeps in order, so it never reads and skips the files
+  // before it, as OFFSET would.
+  private static final String PAGE = " order by f.received_at desc, f.id desc limit :limit";
+  private static final String FIRST_PAGE = SUMMARY + PAGE;
+  private static final String NEXT_PAGE =
+      SUMMARY + " where (f.received_at, f.id) < (:receivedAt, :id)" + PAGE;
 
   private final JdbcClient jdbc;
 
@@ -154,52 +180,161 @@ class ClearingFiles {
 
   /** The file with its Settlement, once it has one. */
   Optional<ClearingFileSummary> find(String fileId) {
-    // Counted first, not from inside the row mapper, which would hold a second connection.
-    var outcomes = outcomes(fileId);
-    return jdbc.sql(
-            """
-            select f.id, f.sequence_number, f.business_date, f.status, f.record_count,
-                   f.skipped_count, f.refusal_reason,
-                   s.amount_minor, s.imported_total_minor, s.currency, s.matched
-              from clearing.clearing_file f
-              left join clearing.settlement s on s.file_id = f.id
-             where f.id = :id
-            """)
-        .param("id", fileId)
-        .query(
-            (row, rowNumber) ->
-                new ClearingFileSummary(
-                    row.getString("id"),
-                    row.getLong("sequence_number"),
-                    row.getObject("business_date", LocalDate.class),
-                    ClearingFileSummary.Status.valueOf(row.getString("status")),
-                    row.getObject("record_count", Long.class),
-                    row.getLong("skipped_count"),
-                    outcomes,
-                    settlement(row),
-                    row.getString("refusal_reason")))
-        .optional();
+    var rows = jdbc.sql(FILE).param("id", fileId).query(ClearingFiles::row).list();
+    return withOutcomes(rows).stream().findFirst();
   }
 
-  // How many of the file's Clearings ended with each outcome; zero for an outcome none had.
-  private Map<ClearingOutcome, Long> outcomes(String fileId) {
-    var outcomes = new EnumMap<ClearingOutcome, Long>(ClearingOutcome.class);
-    for (var outcome : ClearingOutcome.values()) {
-      outcomes.put(outcome, 0L);
+  /**
+   * A page of the files, newest first by when the platform received them, ties broken by file ID:
+   * the first {@code limit} files, or the {@code limit} after an earlier page's last file.
+   *
+   * @param after the position of the earlier page's last file; null for the first page
+   */
+  Page list(Position after, int limit) {
+    var query =
+        after == null
+            ? jdbc.sql(FIRST_PAGE)
+            : jdbc.sql(NEXT_PAGE)
+                .param("receivedAt", after.receivedAt().atOffset(ZoneOffset.UTC))
+                .param("id", after.fileId());
+    // One file more than the page holds tells whether another page follows.
+    var rows = query.param("limit", limit + 1).query(ClearingFiles::row).list();
+    var page = rows.subList(0, Math.min(limit, rows.size()));
+    var next = rows.size() > limit ? page.getLast().position() : null;
+    return new Page(withOutcomes(page), next);
+  }
+
+  /**
+   * The Network's sequence numbers between the lowest and the highest of the imported files' that
+   * no imported file has, lowest first: the first {@code limit} of them. A file still importing, or
+   * refused, doesn't fill its number.
+   */
+  List<Long> missingSequenceNumbers(int limit) {
+    // Each imported number and the next one up mark a gap between them, and only the first
+    // `limit` numbers of each gap are listed: the work stays one row per imported number however
+    // far apart two numbers are, where a series from the lowest to the highest would not.
+    return jdbc.sql(
+            """
+            with imported as (
+              select distinct sequence_number from clearing.clearing_file where status = :imported),
+            gaps as (
+              select first_missing, last_missing
+                from (select sequence_number + 1 as first_missing,
+                             lead(sequence_number) over (order by sequence_number) - 1 as last_missing
+                        from imported) as runs
+               where last_missing >= first_missing)
+            select n
+              from gaps
+             cross join lateral
+                   generate_series(first_missing, least(last_missing, first_missing + :limit - 1)) as n
+             order by n
+             limit :limit
+            """)
+        .param("imported", ClearingFileSummary.Status.IMPORTED.name())
+        .param("limit", limit)
+        .query(Long.class)
+        .list();
+  }
+
+  /**
+   * A page of files.
+   *
+   * @param next the position of the page's last file, to ask for the page after it; null on the
+   *     last page
+   */
+  record Page(List<ClearingFileSummary> files, Position next) {
+
+    Page {
+      files = List.copyOf(files);
+    }
+  }
+
+  /** Where a file stands in the list: when the platform received it, and its ID. */
+  record Position(Instant receivedAt, String fileId) {
+
+    /** The position as a cursor, opaque to callers: its fields, in base64url. */
+    String cursor() {
+      var fields = receivedAt + " " + fileId;
+      return Base64.getUrlEncoder()
+          .withoutPadding()
+          .encodeToString(fields.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The position a cursor names.
+     *
+     * @throws IllegalArgumentException when the cursor isn't one {@link #cursor()} could make
+     */
+    static Position of(String cursor) {
+      try {
+        var fields = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+        var separator = fields.indexOf(' ');
+        return new Position(
+            Instant.parse(fields.substring(0, separator)), fields.substring(separator + 1));
+      } catch (IndexOutOfBoundsException | DateTimeParseException e) {
+        throw new IllegalArgumentException("Not a Clearing File list cursor", e);
+      }
+    }
+  }
+
+  // A file as its row has it, its Clearings not yet counted: they're counted for all the rows at
+  // once afterwards, not from inside the row mapper, which would hold a second connection.
+  private record Row(ClearingFileSummary file, Instant receivedAt) {
+
+    Position position() {
+      return new Position(receivedAt, file.id());
+    }
+  }
+
+  private static Row row(ResultSet row, int rowNumber) throws SQLException {
+    var file =
+        new ClearingFileSummary(
+            row.getString("id"),
+            row.getLong("sequence_number"),
+            row.getObject("business_date", LocalDate.class),
+            ClearingFileSummary.Status.valueOf(row.getString("status")),
+            row.getObject("record_count", Long.class),
+            row.getLong("skipped_count"),
+            Map.of(),
+            settlement(row),
+            row.getString("refusal_reason"));
+    return new Row(file, row.getObject("received_at", OffsetDateTime.class).toInstant());
+  }
+
+  private List<ClearingFileSummary> withOutcomes(List<Row> rows) {
+    if (rows.isEmpty()) {
+      return List.of();
+    }
+    var outcomes = outcomes(rows.stream().map(row -> row.file().id()).toList());
+    return rows.stream()
+        .map(row -> row.file().withOutcomes(outcomes.get(row.file().id())))
+        .toList();
+  }
+
+  // How many of each file's Clearings ended with each outcome; zero for an outcome none had.
+  private Map<String, Map<ClearingOutcome, Long>> outcomes(List<String> fileIds) {
+    var outcomes = new HashMap<String, Map<ClearingOutcome, Long>>();
+    for (var fileId : fileIds) {
+      var counts = new EnumMap<ClearingOutcome, Long>(ClearingOutcome.class);
+      for (var outcome : ClearingOutcome.values()) {
+        counts.put(outcome, 0L);
+      }
+      outcomes.put(fileId, counts);
     }
     jdbc.sql(
             """
-            select outcome, count(*) as clearings
+            select file_id, outcome, count(*) as clearings
               from clearing.clearing
-             where file_id = :fileId
-             group by outcome
+             where file_id in (:fileIds)
+             group by file_id, outcome
             """)
-        .param("fileId", fileId)
+        .param("fileIds", fileIds)
         // A block: an expression lambda would also fit query's ResultSetExtractor overload.
         .query(
             row -> {
-              outcomes.put(
-                  ClearingOutcome.valueOf(row.getString("outcome")), row.getLong("clearings"));
+              outcomes
+                  .get(row.getString("file_id"))
+                  .put(ClearingOutcome.valueOf(row.getString("outcome")), row.getLong("clearings"));
             });
     return outcomes;
   }
