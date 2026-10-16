@@ -22,7 +22,7 @@ select s.file_id, f.sequence_number, f.business_date, s.amount_minor, s.imported
  order by s.settled_at desc;
 ```
 
-What the Network Settlement Payable holds in all, which is the sum of those gaps once every file is settled:
+What the Network Settlement Payable holds in all, per currency; once every file is settled it's the sum of those gaps, plus any posted Clearings in a currency other than their file's trailer:
 
 ```sql
 select a.currency,
@@ -47,8 +47,8 @@ select outcome, cleared_currency, count(*) as clearings, count(journal_entry_id)
 
 Compare the number of Clearings with the file's `record_count` (`select record_count from clearing.clearing_file where id = '<file ID>';`). The usual explanations:
 
-- **A Clearing the file carries but the platform didn't post.** Until #51 posts every outcome, a Clearing recorded `UNMATCHED` isn't posted, so every file holding one settles mismatched by its amount: expected, nothing to ask the Network. A record repeating a Network record ID that an earlier file brought is posted with the earlier file only, so the Network may be settling it twice.
-- **A Clearing in another currency than the trailer's.** M3 settles one currency; a posted Clearing in another one isn't counted.
+- **A Clearing the file carries but the platform didn't post.** Until #51 posts every outcome, a Clearing recorded `UNMATCHED` isn't posted, so every file holding one settles mismatched by its amount: expected, nothing to ask the Network. Once #51 skips a record repeating a Network record ID that an earlier file brought, rather than stopping the import, that record is posted with the earlier file only, and the Network may be settling it twice.
+- **A Clearing in another currency than the trailer's.** M3 settles one currency: a posted Clearing in another one isn't counted in `imported_total_minor`, and it makes the Settlement mismatched even when the totals agree (the outcome query above shows its currency).
 - **The Network's figure carries something the detail records don't**, such as fees or an adjustment from an earlier day.
 
 ## Ask the Network

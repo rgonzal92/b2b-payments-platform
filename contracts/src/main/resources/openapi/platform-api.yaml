@@ -273,9 +273,9 @@ paths:
         instead of waiting for the next check of the folder (every 30 seconds), and answers when the import is done.
         Each Clearing that matches its approved Authorization is posted to the journal, and its Hold and its card
         become `CLEARED`; then the file is settled at its trailer's net settlement amount, and deleted. The file's own
-        ID makes a repeat harmless, so
-        there is no `Idempotency-Key`: a file already imported answers `409`. An import that stopped partway keeps
-        what it committed and answers `500`; importing the same file name again restarts it where it stopped.
+        ID makes a repeat harmless, so there is no `Idempotency-Key`: a file already imported answers `409`. An import
+        that stopped partway keeps what it committed and answers `500`; importing the same file name again restarts it
+        where it stopped.
       requestBody:
         required: true
         content:

@@ -77,13 +77,17 @@ public final class TestClearingFiles {
 
   /** A trailer that totals the Clearings, whose net settlement amount is their total. */
   public static String trailer(List<Detail> details) {
-    return trailer(details, details.stream().mapToLong(Detail::amountMinor).sum());
+    return trailer(details, total(details));
   }
 
   /** A trailer that totals the Clearings, with the Network's own net settlement amount. */
   public static String trailer(List<Detail> details, long netSettlementMinor) {
-    var total = details.stream().mapToLong(Detail::amountMinor).sum();
-    return record("92%08d%015d%015dUSD".formatted(details.size(), total, netSettlementMinor));
+    return record(
+        "92%08d%015d%015dUSD".formatted(details.size(), total(details), netSettlementMinor));
+  }
+
+  private static long total(List<Detail> details) {
+    return details.stream().mapToLong(Detail::amountMinor).sum();
   }
 
   /** A new ID of letters and digits, as the Network gives files, records and requests. */

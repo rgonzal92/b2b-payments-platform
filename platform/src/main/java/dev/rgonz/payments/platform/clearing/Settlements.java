@@ -32,33 +32,43 @@ class Settlements {
    * caller's transaction, the settle step's.
    */
   void settle(String fileId, Money networkFigure) {
-    // Every Clearing with a Journal Entry counts, whichever Account it debited. Only the trailer's
-    // currency: M3 has one, and a sum across currencies would mean nothing.
-    var importedTotal =
+    // Every Clearing with a Journal Entry counts, whichever Account it debited. The total is in the
+    // trailer's currency, as a sum across currencies would mean nothing; M3 settles one currency,
+    // so a posted Clearing in another one leaves the Settlement unmatched rather than unseen.
+    var posted =
         jdbc.sql(
                 """
-                select coalesce(sum(cleared_amount_minor), 0) from clearing.clearing
+                select coalesce(sum(cleared_amount_minor)
+                                filter (where cleared_currency = :currency), 0) as total,
+                       count(*) filter (where cleared_currency <> :currency) as in_other_currencies
+                  from clearing.clearing
                  where file_id = :fileId and journal_entry_id is not null
-                   and cleared_currency = :currency
                 """)
             .param("fileId", fileId)
             .param("currency", networkFigure.currency().getCurrencyCode())
-            .query(Long.class)
+            .query(
+                (row, rowNumber) ->
+                    new PostedClearings(row.getLong("total"), row.getLong("in_other_currencies")))
             .single();
+    var matched = posted.total() == networkFigure.minorUnits() && posted.inOtherCurrencies() == 0;
     var journalEntryId =
         networkFigure.minorUnits() == 0 ? null : journal.postSettlement(fileId, networkFigure);
     jdbc.sql(
             """
             insert into clearing.settlement
-                   (file_id, amount_minor, imported_total_minor, currency, journal_entry_id)
-            values (:fileId, :amount, :importedTotal, :currency, :journalEntryId)
+                   (file_id, amount_minor, imported_total_minor, currency, matched,
+                    journal_entry_id)
+            values (:fileId, :amount, :importedTotal, :currency, :matched, :journalEntryId)
             on conflict (file_id) do nothing
             """)
         .param("fileId", fileId)
         .param("amount", networkFigure.minorUnits())
-        .param("importedTotal", importedTotal)
+        .param("importedTotal", posted.total())
         .param("currency", networkFigure.currency().getCurrencyCode())
+        .param("matched", matched)
         .param("journalEntryId", journalEntryId)
         .update();
   }
+
+  private record PostedClearings(long total, long inOtherCurrencies) {}
 }

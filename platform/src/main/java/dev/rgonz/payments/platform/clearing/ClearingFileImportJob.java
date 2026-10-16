@@ -1,8 +1,10 @@
 package dev.rgonz.payments.platform.clearing;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.builder.JobBuilder;
@@ -70,10 +72,7 @@ class ClearingFileImportJob {
             (contribution, chunkContext) -> {
               var parameters = contribution.getStepExecution().getJobParameters();
               var clearings = new AtomicLong();
-              ClearingFileLayout.Envelope envelope;
-              try (var lines = ClearingFileLayout.open(Path.of(parameter(parameters, FILE)))) {
-                envelope = ClearingFileLayout.read(lines, clearing -> clearings.incrementAndGet());
-              }
+              var envelope = readFile(parameters, clearing -> clearings.incrementAndGet());
               if (!envelope.header().fileId().equals(parameter(parameters, FILE_ID))) {
                 throw new MalformedClearingFileException(
                     1, "the file ID isn't the one its import started with");
@@ -111,10 +110,7 @@ class ClearingFileImportJob {
         .tasklet(
             (contribution, chunkContext) -> {
               var parameters = contribution.getStepExecution().getJobParameters();
-              FileTrailer trailer;
-              try (var lines = ClearingFileLayout.open(Path.of(parameter(parameters, FILE)))) {
-                trailer = ClearingFileLayout.read(lines, clearing -> {}).trailer();
-              }
+              var trailer = readFile(parameters, clearing -> {}).trailer();
               settlements.settle(parameter(parameters, FILE_ID), trailer.netSettlementAmount());
               return RepeatStatus.FINISHED;
             },
@@ -161,6 +157,14 @@ class ClearingFileImportJob {
   @Bean
   ExecutionContextSerializer executionContextSerializer() {
     return new JacksonExecutionContextStringSerializer();
+  }
+
+  // Reads the whole file where it waits during its import, handing each Clearing on.
+  private static ClearingFileLayout.Envelope readFile(
+      JobParameters parameters, Consumer<ClearingRecord> eachClearing) throws IOException {
+    try (var lines = ClearingFileLayout.open(Path.of(parameter(parameters, FILE)))) {
+      return ClearingFileLayout.read(lines, eachClearing);
+    }
   }
 
   private static String parameter(JobParameters parameters, String name) {

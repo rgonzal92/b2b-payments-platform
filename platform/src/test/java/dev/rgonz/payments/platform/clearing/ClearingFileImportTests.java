@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 import com.jayway.jsonpath.JsonPath;
@@ -106,10 +108,10 @@ class ClearingFileImportTests {
   @Autowired Vault vault;
   @Autowired Suppliers suppliers;
   @Autowired ClearingFileImports imports;
-  @Autowired Settlements settlements;
 
-  // The real journal, which the restart test makes fail once.
+  // The real journal and file records, which the restart tests make fail once.
   @MockitoSpyBean Journal journal;
+  @MockitoSpyBean ClearingFiles files;
 
   @LocalGrpcServerPort int grpcPort;
 
@@ -372,7 +374,7 @@ class ClearingFileImportTests {
 
     assertProblem(stopped, 500);
     assertThat(postedCount(clearings)).isEqualTo(1);
-    assertThat(settlementEntriesFor(fileId)).isZero();
+    assertThat(settlementEntriesFor(fileId)).isEmpty();
 
     var restarted = importFile(fileName, "ROLE_issuer-admin");
 
@@ -385,13 +387,54 @@ class ClearingFileImportTests {
             {"settlement": {"amount": {"minorUnits": 1000000, "currency": "USD"}, "matched": true}}
             """);
     assertThat(postedCount(clearings)).isEqualTo(1);
-    assertThat(settlementEntriesFor(fileId)).isEqualTo(1);
+    assertThat(settlementEntriesFor(fileId)).hasSize(1);
+  }
 
-    // A settle step that committed but stopped before Spring Batch recorded it complete runs
-    // again on the restart: it settles nothing more.
-    settlements.settle(fileId, new Money(1_000_000, USD));
+  @Test
+  void aSettleStepThatRunsAgainAfterItCommittedSettlesTheFileOnce() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var fileId = newId("F", 16);
+    var clearings = List.of(clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000));
+    // The settle step commits; the complete step after it fails, once.
+    var fault = new AtomicBoolean(true);
+    doAnswer(
+            marking -> {
+              if (fault.getAndSet(false)) {
+                throw new IllegalStateException("Test fault: the complete step stops here.");
+              }
+              return marking.callRealMethod();
+            })
+        .when(files)
+        .markImported(fileId);
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, fileId, 19, clearings);
+    assertProblem(importFile(fileName, "ROLE_issuer-admin"), 500);
+    assertThat(settlementEntriesFor(fileId)).hasSize(1);
+    // As if the platform had stopped after the settle step committed, before Spring Batch recorded
+    // it complete, and a person had marked the run failed (runbooks/clearing-import-stopped.md).
+    jdbc.sql(
+            """
+            update batch.batch_step_execution set status = 'FAILED', exit_code = 'FAILED'
+             where step_name = 'settle'
+               and job_execution_id in (select job_execution_id
+                                          from batch.batch_job_execution_params
+                                         where parameter_name = 'fileId'
+                                           and parameter_value = :fileId)
+            """)
+        .param("fileId", fileId)
+        .update();
 
-    assertThat(settlementEntriesFor(fileId)).isEqualTo(1);
+    var restarted = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(restarted).hasStatus(201);
+    assertThat(restarted)
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"settlement": {"amount": {"minorUnits": 1000000, "currency": "USD"}, "matched": true}}
+            """);
+    // The settle step ran twice, and settled once.
+    verify(journal, times(2)).postSettlement(eq(fileId), any());
+    assertThat(settlementEntriesFor(fileId)).hasSize(1);
     assertThat(networkSettlementPayableFor(fileId)).isZero();
   }
 
@@ -412,7 +455,7 @@ class ClearingFileImportTests {
                             "matched": true}}
             """);
     // A Journal Entry can't move nothing.
-    assertThat(settlementEntriesFor(fileId)).isZero();
+    assertThat(settlementEntriesFor(fileId)).isEmpty();
   }
 
   @Test
@@ -619,18 +662,7 @@ class ClearingFileImportTests {
         .single();
   }
 
-  private long settlementEntriesFor(String fileId) {
-    return jdbc.sql(
-            """
-            select count(*) from ledger.journal_entry
-             where kind = 'SETTLEMENT' and idempotency_key = :fileId
-            """)
-        .param("fileId", fileId)
-        .query(Long.class)
-        .single();
-  }
-
-  private UUID settlementEntryFor(String fileId) {
+  private List<UUID> settlementEntriesFor(String fileId) {
     return jdbc.sql(
             """
             select id from ledger.journal_entry
@@ -638,7 +670,13 @@ class ClearingFileImportTests {
             """)
         .param("fileId", fileId)
         .query(UUID.class)
-        .single();
+        .list();
+  }
+
+  private UUID settlementEntryFor(String fileId) {
+    var entries = settlementEntriesFor(fileId);
+    assertThat(entries).hasSize(1);
+    return entries.getFirst();
   }
 
   // What the Issuer still owes the Network for this file: the Network Settlement Payable's credits
