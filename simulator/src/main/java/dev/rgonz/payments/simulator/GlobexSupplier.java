@@ -3,6 +3,7 @@ package dev.rgonz.payments.simulator;
 import dev.rgonz.payments.contracts.client.model.Money;
 import dev.rgonz.payments.contracts.client.model.RemittanceAdvice;
 import dev.rgonz.payments.contracts.client.model.SingleUseCardDetails;
+import dev.rgonz.payments.simulator.GlobexAcquirer.Authorization;
 import io.micrometer.observation.ObservationRegistry;
 import java.time.OffsetDateTime;
 import java.util.Map;
@@ -24,8 +25,8 @@ import org.springframework.web.client.RestClientResponseException;
 
 /**
  * Globex, the Supplier on Acme's demo Invoices: receives Remittance Advice at its remittance
- * address and opens each card link once. Logs only a card's last four digits, never its PAN,
- * security code or link.
+ * address, opens each card link once, keeps the card's details in memory, and charges the card
+ * through its Acquirer. Logs only a card's last four digits, never its PAN, security code or link.
  */
 @RestController
 class GlobexSupplier {
@@ -36,12 +37,14 @@ class GlobexSupplier {
   private static final Logger log = LoggerFactory.getLogger(GlobexSupplier.class);
 
   private final RestClient platform;
+  private final GlobexAcquirer acquirer;
   private final Set<String> receivedAdvice = ConcurrentHashMap.newKeySet();
   private final Map<UUID, ReceivedCard> cardsByInvoice = new ConcurrentHashMap<>();
 
   // Untraced: a trace would record each request's URL, and here the URL is the card link.
-  GlobexSupplier(RestClient.Builder platform) {
+  GlobexSupplier(RestClient.Builder platform, GlobexAcquirer acquirer) {
     this.platform = platform.observationRegistry(ObservationRegistry.NOOP).build();
+    this.acquirer = acquirer;
   }
 
   /**
@@ -62,9 +65,17 @@ class GlobexSupplier {
     return ResponseEntity.ok().build();
   }
 
-  /** The card Globex received for the Invoice, if it has one: for demos, never with its PAN. */
+  /** The card Globex received for the Invoice, if it has one. */
   Optional<ReceivedCard> cardFor(UUID invoiceId) {
     return Optional.ofNullable(cardsByInvoice.get(invoiceId));
+  }
+
+  /**
+   * Charges the card Globex received for the Invoice, for its full amount, through Globex's
+   * Acquirer; empty when Globex has no card for the Invoice.
+   */
+  Optional<Authorization> charge(UUID invoiceId) {
+    return cardFor(invoiceId).map(acquirer::charge);
   }
 
   // A plain GET with no sign-in: the link is the credential. The link and the error's message stay
@@ -87,20 +98,41 @@ class GlobexSupplier {
       return;
     }
     Objects.requireNonNull(card, "the platform's card details");
-    var lastFour = card.getPan().substring(card.getPan().length() - 4);
-    cardsByInvoice.put(
-        advice.getInvoiceId(),
+    var received =
         new ReceivedCard(
-            advice.getInvoiceNumber(), lastFour, card.getExpiresAt(), card.getAmount()));
+            advice.getInvoiceNumber(),
+            card.getPan(),
+            card.getSecurityCode(),
+            card.getExpiresAt(),
+            card.getAmount());
+    cardsByInvoice.put(advice.getInvoiceId(), received);
     log.info(
         "Globex received the card ending {} for {}, {} {} minor units",
-        lastFour,
+        received.lastFour(),
         advice.getInvoiceNumber(),
         card.getAmount().getCurrency(),
         card.getAmount().getMinorUnits());
   }
 
-  /** What Globex keeps of a card it received: enough to show, nothing to charge it with. */
+  /**
+   * A card Globex received through its link, with what it needs to charge it, kept in memory only.
+   * {@code toString} leaves out the PAN and security code.
+   */
   record ReceivedCard(
-      String invoiceNumber, String lastFour, OffsetDateTime expiresAt, Money amount) {}
+      String invoiceNumber,
+      String pan,
+      String securityCode,
+      OffsetDateTime expiresAt,
+      Money amount) {
+
+    String lastFour() {
+      return pan.substring(pan.length() - 4);
+    }
+
+    @Override
+    public String toString() {
+      return "ReceivedCard[invoiceNumber=%s, lastFour=%s, expiresAt=%s, amount=%s]"
+          .formatted(invoiceNumber, lastFour(), expiresAt, amount);
+    }
+  }
 }

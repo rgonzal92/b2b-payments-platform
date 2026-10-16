@@ -4,9 +4,11 @@ import dev.rgonz.payments.contracts.client.model.Decision;
 import dev.rgonz.payments.contracts.client.model.Invoice;
 import dev.rgonz.payments.contracts.client.model.Money;
 import dev.rgonz.payments.contracts.client.model.Payment;
+import dev.rgonz.payments.simulator.GlobexAcquirer.Authorization;
 import dev.rgonz.payments.simulator.GlobexSupplier.ReceivedCard;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -16,9 +18,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Runs M1's core path in one call, for demos: Acme's ERP submits an Invoice from Globex, Acme's
- * Approvers approve it, and the demo waits for the platform to pay it, then shows what Globex
- * received. Never shows a PAN or security code.
+ * Runs the core path in one call, for demos: Acme's ERP submits an Invoice from Globex, Acme's
+ * Approvers approve it, the demo waits for the platform to pay it, and Globex charges the card it
+ * received; then it shows what Globex received and the Issuer's answer to the Charge. Never shows a
+ * PAN or security code.
  */
 @RestController
 class AcmeDemo {
@@ -41,8 +44,8 @@ class AcmeDemo {
 
   /**
    * Submits an Invoice for {@code minorUnits} US cents ($12,400 unless given), approved by one of
-   * Acme's Approvers, or two when the amount is above Acme's Approval Threshold, and waits for its
-   * Payment.
+   * Acme's Approvers, or two when the amount is above Acme's Approval Threshold, waits for its
+   * Payment, and has Globex charge the card once the Payment is complete.
    */
   @PostMapping(DEMO_PATH)
   Summary run(@RequestParam(defaultValue = "1240000") long minorUnits) throws InterruptedException {
@@ -54,9 +57,15 @@ class AcmeDemo {
       approvers.approve(submitted.getId(), 2);
     }
     var invoice = awaitPayment(submitted.getId());
-    var summary = Summary.of(invoice, globex.cardFor(invoice.getId()).orElse(null));
+    // Globex charges the card as soon as the Payment is complete, by which time it has the card.
+    var charge =
+        completed(invoice.getPayment()) ? globex.charge(invoice.getId()).orElse(null) : null;
+    var summary = Summary.of(invoice, globex.cardFor(invoice.getId()).orElse(null), charge);
     log.info(
-        "The demo Invoice {} ended with its Payment {}", invoice.getId(), summary.paymentState());
+        "The demo Invoice {} ended with its Payment {} and its Charge {}",
+        invoice.getId(),
+        summary.paymentState(),
+        charge == null ? "not made" : charge.responseCode());
     return summary;
   }
 
@@ -73,14 +82,18 @@ class AcmeDemo {
   }
 
   private static boolean settled(Payment payment) {
-    return payment != null
-        && (payment.getState() == Payment.StateEnum.COMPLETED
-            || payment.getState() == Payment.StateEnum.FAILED);
+    return completed(payment)
+        || (payment != null && payment.getState() == Payment.StateEnum.FAILED);
+  }
+
+  private static boolean completed(Payment payment) {
+    return payment != null && payment.getState() == Payment.StateEnum.COMPLETED;
   }
 
   /**
    * What the demo did and what came of it. {@code paymentState} is null when no Payment appeared in
-   * time; {@code globexReceived} is null until Globex has opened its card link.
+   * time; {@code globexReceived} is null until Globex has opened its card link; {@code charge} is
+   * null unless the Payment completed and Globex had its card to charge.
    */
   record Summary(
       UUID invoiceId,
@@ -89,9 +102,10 @@ class AcmeDemo {
       List<String> approvedBy,
       Payment.StateEnum paymentState,
       String failureReason,
-      ReceivedCard globexReceived) {
+      CardShown globexReceived,
+      Authorization charge) {
 
-    static Summary of(Invoice invoice, ReceivedCard globexReceived) {
+    static Summary of(Invoice invoice, ReceivedCard globexReceived, Authorization charge) {
       var payment = invoice.getPayment();
       return new Summary(
           invoice.getId(),
@@ -103,7 +117,16 @@ class AcmeDemo {
               .toList(),
           payment == null ? null : payment.getState(),
           payment == null ? null : payment.getFailureReason(),
-          globexReceived);
+          globexReceived == null ? null : CardShown.of(globexReceived),
+          charge);
+    }
+  }
+
+  /** What the demo shows of the card Globex received: never its PAN or security code. */
+  record CardShown(String invoiceNumber, String lastFour, OffsetDateTime expiresAt, Money amount) {
+
+    static CardShown of(ReceivedCard card) {
+      return new CardShown(card.invoiceNumber(), card.lastFour(), card.expiresAt(), card.amount());
     }
   }
 }

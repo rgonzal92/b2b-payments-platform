@@ -33,10 +33,11 @@ import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.web.client.RestClient;
 
 /**
- * The demo runs M1's core path in one call: Acme's ERP submits an Invoice from Globex, Acme's
- * Approvers approve it, and the demo waits for its Payment, against a stub Keycloak and platform.
- * Like the platform, the stub delivers the Remittance Advice to Globex before the Payment shows
- * {@code COMPLETED}, and serves the card link.
+ * The demo runs the core path in one call: Acme's ERP submits an Invoice from Globex, Acme's
+ * Approvers approve it, the demo waits for its Payment, and Globex charges the card it received,
+ * against a stub Keycloak, platform and {@code IssuerAuthorization} gRPC server. Like the platform,
+ * the stub delivers the Remittance Advice to Globex before the Payment shows {@code COMPLETED}, and
+ * serves the card link.
  */
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -55,22 +56,25 @@ class AcmeDemoTests {
 
   static final List<Recorded> platformRequests = new CopyOnWriteArrayList<>();
   static final StubPlatform platform = new StubPlatform();
+  static final StubIssuer issuer = new StubIssuer();
 
   @DynamicPropertySource
   static void pointAtStub(DynamicPropertyRegistry registry) {
     var base = "http://localhost:" + platform.server.getAddress().getPort();
     registry.add(
         "spring.security.oauth2.client.provider.keycloak.token-uri", () -> base + "/token");
-    for (var client : List.of("acme-erp", "acme-approver-1", "acme-approver-2")) {
+    for (var client : List.of("acme-erp", "acme-approver-1", "acme-approver-2", "network")) {
       registry.add(
           "spring.security.oauth2.client.registration." + client + ".client-secret", () -> "test");
     }
     registry.add("simulator.platform-url", () -> base);
+    registry.add("simulator.platform-grpc-address", issuer::address);
   }
 
   @AfterAll
   static void stopStub() {
     platform.server.stop(0);
+    issuer.stop();
   }
 
   @LocalServerPort int port;
@@ -80,11 +84,14 @@ class AcmeDemoTests {
   void resetStub() {
     platformRequests.clear();
     platform.reset(port);
+    issuer.reset();
   }
 
   @Test
-  void anInvoiceAboveAcmesThresholdIsApprovedTwiceAndTheSummaryShowsGlobexsCardWithoutItsPan(
+  void anInvoiceAboveAcmesThresholdIsApprovedTwicePaidAndGlobexsChargeOnItsCardApproved(
       CapturedOutput output) {
+    issuer.answerWith("00", "AB12CD");
+
     var demo = mvc.post().uri("/demo/invoices").exchange();
 
     assertThat(demo).hasStatusOk();
@@ -102,11 +109,15 @@ class AcmeDemoTests {
                 "lastFour": "7899",
                 "expiresAt": "2026-11-15T12:00:00Z",
                 "amount": {"minorUnits": 1240000, "currency": "USD"}
-              }
+              },
+              "charge": {"approved": true, "responseCode": "00", "authorizationCode": "AB12CD"}
             }
             """
                 .formatted(platform.invoiceId, platform.invoiceNumber));
     assertThat(demo).bodyText().doesNotContain(PAN).doesNotContain("securityCode");
+    assertThat(issuer.received)
+        .singleElement()
+        .satisfies(charge -> assertThat(charge.request().getAmountMinor()).isEqualTo(1_240_000));
     var invoice = "/v1/invoices/" + platform.invoiceId;
     assertThat(platformRequests)
         .startsWith(
@@ -151,9 +162,11 @@ class AcmeDemoTests {
             {
               "paymentState": "FAILED",
               "failureReason": "Not enough Available Credit to place the Hold.",
-              "globexReceived": null
+              "globexReceived": null,
+              "charge": null
             }
             """);
+    assertThat(issuer.received).isEmpty();
     // The demo stops reading the Invoice once its Payment has failed.
     assertThat(platformRequests).filteredOn(request -> request.method().equals("GET")).hasSize(2);
   }
