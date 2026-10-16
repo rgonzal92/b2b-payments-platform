@@ -170,12 +170,12 @@ class CorePathEndToEndTests {
               "approvedBy": ["service-account-acme-approver-1", "service-account-acme-approver-2"],
               "paymentState": "COMPLETED",
               "globexReceived": {"amount": {"minorUnits": 1240000, "currency": "USD"}},
-              "charge": {"approved": true, "responseCode": "00"}
+              "authorization": {"approved": true, "responseCode": "00"}
             }
             """);
     String invoiceNumber = JsonPath.read(summary, "$.invoiceNumber");
     assertThat(json).extractingPath("$.globexReceived.invoiceNumber").isEqualTo(invoiceNumber);
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
-    assertThat(json).extractingPath("$.charge.authorizationCode").asString().hasSize(6);
+    assertThat(json).extractingPath("$.authorization.authorizationCode").asString().hasSize(6);
   }
 }

@@ -110,7 +110,7 @@ class AcmeDemoTests {
                 "expiresAt": "2026-11-15T12:00:00Z",
                 "amount": {"minorUnits": 1240000, "currency": "USD"}
               },
-              "charge": {"approved": true, "responseCode": "00", "authorizationCode": "AB12CD"}
+              "authorization": {"approved": true, "responseCode": "00", "authorizationCode": "AB12CD"}
             }
             """
                 .formatted(platform.invoiceId, platform.invoiceNumber));
@@ -163,7 +163,7 @@ class AcmeDemoTests {
               "paymentState": "FAILED",
               "failureReason": "Not enough Available Credit to place the Hold.",
               "globexReceived": null,
-              "charge": null
+              "authorization": null
             }
             """);
     assertThat(issuer.received).isEmpty();

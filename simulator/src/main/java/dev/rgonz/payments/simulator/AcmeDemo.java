@@ -58,14 +58,16 @@ class AcmeDemo {
     }
     var invoice = awaitPayment(submitted.getId());
     // Globex charges the card as soon as the Payment is complete, by which time it has the card.
-    var charge =
+    var authorization =
         completed(invoice.getPayment()) ? globex.charge(invoice.getId()).orElse(null) : null;
-    var summary = Summary.of(invoice, globex.cardFor(invoice.getId()).orElse(null), charge);
+    var summary = Summary.of(invoice, globex.cardFor(invoice.getId()).orElse(null), authorization);
     log.info(
-        "The demo Invoice {} ended with its Payment {} and its Charge {}",
+        "The demo Invoice {} ended with its Payment {} and {}",
         invoice.getId(),
         summary.paymentState(),
-        charge == null ? "not made" : charge.responseCode());
+        authorization == null
+            ? "no Charge"
+            : "its Charge answered " + authorization.responseCode());
     return summary;
   }
 
@@ -92,8 +94,9 @@ class AcmeDemo {
 
   /**
    * What the demo did and what came of it. {@code paymentState} is null when no Payment appeared in
-   * time; {@code globexReceived} is null until Globex has opened its card link; {@code charge} is
-   * null unless the Payment completed and Globex had its card to charge.
+   * time; {@code globexReceived} is null until Globex has opened its card link; {@code
+   * authorization}, the Issuer's answer to Globex's Charge, is null unless the Payment completed
+   * and Globex had its card to charge.
    */
   record Summary(
       UUID invoiceId,
@@ -103,9 +106,9 @@ class AcmeDemo {
       Payment.StateEnum paymentState,
       String failureReason,
       CardShown globexReceived,
-      Authorization charge) {
+      Authorization authorization) {
 
-    static Summary of(Invoice invoice, ReceivedCard globexReceived, Authorization charge) {
+    static Summary of(Invoice invoice, ReceivedCard globexReceived, Authorization authorization) {
       var payment = invoice.getPayment();
       return new Summary(
           invoice.getId(),
@@ -118,7 +121,7 @@ class AcmeDemo {
           payment == null ? null : payment.getState(),
           payment == null ? null : payment.getFailureReason(),
           globexReceived == null ? null : CardShown.of(globexReceived),
-          charge);
+          authorization);
     }
   }
 

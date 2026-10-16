@@ -119,10 +119,8 @@ class GlobexAcquirerTests {
     acquirer.charge(card);
 
     var requestId = issuer.received.getFirst().request().getRetrievalReferenceNumber();
-    assertThat(card.toString())
-        .contains("7899")
-        .doesNotContain(PAN)
-        .doesNotContainPattern(securityCodeAfterItsName());
+    // The card's other details hold no "321", so the security code mustn't appear anywhere in it.
+    assertThat(card.toString()).contains("7899").doesNotContain(PAN).doesNotContain(SECURITY_CODE);
     assertThat(output)
         .contains(requestId)
         .contains("7899")

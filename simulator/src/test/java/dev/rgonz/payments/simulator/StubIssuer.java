@@ -56,7 +56,7 @@ final class StubIssuer {
           }
         };
     // Hands the call's authorization metadata to the service, which records it with the request.
-    var metadata =
+    var passAuthorizationOn =
         new ServerInterceptor() {
           @Override
           public <Q, R> ServerCall.Listener<Q> interceptCall(
@@ -69,7 +69,7 @@ final class StubIssuer {
     try {
       server =
           NettyServerBuilder.forAddress(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))
-              .addService(ServerInterceptors.intercept(service, metadata))
+              .addService(ServerInterceptors.intercept(service, passAuthorizationOn))
               .build()
               .start();
     } catch (IOException e) {
