@@ -18,7 +18,7 @@ final class TestKeycloak {
   private static final String CLIENT_SECRET = "test-only-secret";
 
   private static final KeycloakContainer keycloak =
-      // Same image as compose.yaml: change both together.
+      // Same image as compose.yaml and e2e's CorePathEndToEndTests: change all three together.
       new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
           .withRealmImportFile("/keycloak/payments-realm.json")
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)

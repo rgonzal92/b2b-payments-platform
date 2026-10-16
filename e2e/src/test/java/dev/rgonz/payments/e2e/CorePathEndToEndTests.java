@@ -38,12 +38,12 @@ class CorePathEndToEndTests {
 
   @Container
   static final PostgreSQLContainer postgres =
-      // Same tag as compose.yaml: change both together.
+      // Same tag as compose.yaml and the platform's TestcontainersConfiguration: change all three.
       new PostgreSQLContainer(DockerImageName.parse("postgres:18.6"));
 
   @Container
   static final KeycloakContainer keycloak =
-      // Same image as compose.yaml: change both together.
+      // Same image as compose.yaml and the platform's TestKeycloak: change all three together.
       new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
           .withRealmImportFile("/keycloak/payments-realm.json")
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)
@@ -59,7 +59,7 @@ class CorePathEndToEndTests {
   static void startBothApps() {
     var platformPort = TestSocketUtils.findAvailableTcpPort();
     simulatorPort = TestSocketUtils.findAvailableTcpPort();
-    var realm = keycloak.getAuthServerUrl() + "/realms/payments";
+    var issuerUri = keycloak.getAuthServerUrl() + "/realms/payments";
 
     platform =
         start(
@@ -69,7 +69,7 @@ class CorePathEndToEndTests {
             "spring.datasource.url=" + postgres.getJdbcUrl(),
             "spring.datasource.username=" + postgres.getUsername(),
             "spring.datasource.password=" + postgres.getPassword(),
-            "spring.security.oauth2.resourceserver.jwt.issuer-uri=" + realm,
+            "spring.security.oauth2.resourceserver.jwt.issuer-uri=" + issuerUri,
             // TEST-ONLY keys, not secrets: the same all-0x01, 0x02 and 0x03 bytes as the
             // platform's own tests.
             "vault.encryption-key=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
@@ -83,7 +83,7 @@ class CorePathEndToEndTests {
             "server.port=" + simulatorPort,
             "simulator.platform-url=http://localhost:" + platformPort,
             "spring.security.oauth2.client.provider.keycloak.token-uri="
-                + realm
+                + issuerUri
                 + "/protocol/openid-connect/token",
             "spring.security.oauth2.client.registration.issuer-admin.client-secret="
                 + CLIENT_SECRET,
@@ -107,9 +107,12 @@ class CorePathEndToEndTests {
         Stream.concat(
                 Stream.of(
                     "spring.config.location=" + ownApplicationProperties(application),
-                    // No OTLP receiver runs here, and Boot pushes metrics to localhost:4318 by
-                    // default.
+                    // No OTLP receiver runs here: export nothing. Metrics would otherwise go to
+                    // localhost:4318 by default, and any OTEL_EXPORTER_OTLP_* variable set in the
+                    // environment would turn traces and logs on.
                     "management.otlp.metrics.export.enabled=false",
+                    "management.tracing.export.enabled=false",
+                    "management.logging.export.otlp.enabled=false",
                     // Logback is set up once per JVM, by the first app to start, so every line
                     // would carry the platform's name; the logger's package tells the apps apart.
                     "logging.include-application-name=false"),
