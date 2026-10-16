@@ -1,6 +1,8 @@
 package dev.rgonz.payments.platform.vault;
 
 import java.security.SecureRandom;
+import java.util.random.RandomGenerator;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,11 +16,18 @@ class CardSecrets implements Vault {
 
   private final JdbcClient jdbc;
   private final VaultCrypto crypto;
-  private final SecureRandom random = new SecureRandom();
+  private final RandomGenerator random;
 
+  @Autowired
   CardSecrets(JdbcClient jdbc, VaultCrypto crypto) {
+    this(jdbc, crypto, new SecureRandom());
+  }
+
+  // Tests pass their own draws, to force a PAN another card already has.
+  CardSecrets(JdbcClient jdbc, VaultCrypto crypto, RandomGenerator random) {
     this.jdbc = jdbc;
     this.crypto = crypto;
+    this.random = random;
   }
 
   @Override
