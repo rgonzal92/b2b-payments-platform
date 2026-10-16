@@ -45,8 +45,8 @@ class AcmeErpTests {
 
   @Test
   void submitsInvoicesAsAcmesErpEachUnderANewIdempotencyKey() {
-    acmeErp.submitInvoice();
-    acmeErp.submitInvoice();
+    acmeErp.submitInvoice(1_240_000);
+    acmeErp.submitInvoice(1_240_000);
 
     assertThat(platformRequests).hasSize(2);
     var first = platformRequests.getFirst();

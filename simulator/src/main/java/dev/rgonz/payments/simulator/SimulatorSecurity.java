@@ -1,5 +1,6 @@
 package dev.rgonz.payments.simulator;
 
+import static dev.rgonz.payments.simulator.AcmeDemo.DEMO_PATH;
 import static dev.rgonz.payments.simulator.GlobexSupplier.ADVICE_PATH;
 
 import org.springframework.context.annotation.Bean;
@@ -19,9 +20,10 @@ class SimulatorSecurity {
   @Bean
   SecurityFilterChain open(HttpSecurity http) throws Exception {
     return http.authorizeHttpRequests(requests -> requests.anyRequest().permitAll())
-        // The platform POSTs Remittance Advice server to server, without cookies: there is no
-        // session for a forged cross-site request to ride on.
-        .csrf(csrf -> csrf.ignoringRequestMatchers(ADVICE_PATH)) // NOSONAR java:S4502, see above
+        // The platform POSTs Remittance Advice server to server, and the demo is started with curl,
+        // both without cookies: the simulator signs nobody in, so there is no session for a forged
+        // cross-site request to ride on.
+        .csrf(csrf -> csrf.ignoringRequestMatchers(ADVICE_PATH, DEMO_PATH)) // NOSONAR java:S4502
         .build();
   }
 
