@@ -3,10 +3,13 @@ package dev.rgonz.payments.platform.ledger;
 import dev.rgonz.payments.contracts.server.CreditApi;
 import dev.rgonz.payments.contracts.server.model.CreditDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
+import dev.rgonz.payments.contracts.server.model.RepaymentDto;
+import dev.rgonz.payments.contracts.server.model.RepaymentRequestDto;
 import dev.rgonz.payments.contracts.server.model.SignedMoneyDto;
 import dev.rgonz.payments.platform.buyers.BuyerDirectory;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import java.time.ZoneOffset;
 import java.util.Currency;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -49,7 +52,24 @@ class CreditController implements CreditApi {
     return ResponseEntity.ok(
         new CreditDto()
             .creditLine(toDto(credit.creditLine()))
+            .openHolds(toDto(credit.openHolds()))
+            .buyerReceivable(toDto(credit.buyerReceivable()))
             .availableCredit(toSignedDto(credit.availableCredit())));
+  }
+
+  @Override
+  @PreAuthorize("hasRole('issuer-admin')")
+  public ResponseEntity<RepaymentDto> recordRepayment(
+      UUID buyerId, String idempotencyKey, RepaymentRequestDto request) {
+    var repayment =
+        creditLines.repay(
+            new BuyerId(buyerId), idempotencyKey, request.getMinorUnits(), request.getCurrency());
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .body(
+            new RepaymentDto()
+                .id(repayment.id())
+                .amount(toDto(repayment.amount()))
+                .postedAt(repayment.postedAt().atOffset(ZoneOffset.UTC)));
   }
 
   private static ErrorResponseException notFound(String detail) {

@@ -4,8 +4,10 @@ import dev.rgonz.payments.platform.ledger.JournalEntry.Line;
 import dev.rgonz.payments.platform.ledger.JournalEntry.Side;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import java.time.OffsetDateTime;
 import java.util.Currency;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -34,6 +36,45 @@ class JournalEntries implements Journal {
             List.of(
                 new Line(Account.buyerReceivable(buyerId), Side.DEBIT, amount),
                 new Line(Account.networkSettlementPayable(), Side.CREDIT, amount))));
+  }
+
+  // Posts a Repayment's Journal Entry, debiting Issuer Cash and crediting the Buyer's Receivable,
+  // and returns the Repayment its idempotency key stands for. Runs in the caller's transaction.
+  Repayment postRepayment(String idempotencyKey, BuyerId buyerId, Money amount) {
+    post(
+        new JournalEntry(
+            JournalEntry.Kind.REPAYMENT,
+            idempotencyKey,
+            List.of(
+                new Line(Account.issuerCash(), Side.DEBIT, amount),
+                new Line(Account.buyerReceivable(buyerId), Side.CREDIT, amount))));
+    return findRepayment(idempotencyKey).orElseThrow();
+  }
+
+  // The Repayment posted under this idempotency key, read from its Buyer Receivable line.
+  Optional<Repayment> findRepayment(String idempotencyKey) {
+    return jdbc.sql(
+            """
+            select e.id, e.posted_at, a.buyer_id, l.amount_minor, a.currency
+              from ledger.journal_entry e
+              join ledger.journal_line l on l.entry_id = e.id
+              join ledger.account a on a.id = l.account_id
+             where e.kind = :kind
+               and e.idempotency_key = :idempotencyKey
+               and a.kind = 'BUYER_RECEIVABLE'
+            """)
+        .param("kind", JournalEntry.Kind.REPAYMENT.name())
+        .param("idempotencyKey", idempotencyKey)
+        .query(
+            (row, rowNumber) ->
+                new Repayment(
+                    row.getObject("id", UUID.class),
+                    new BuyerId(row.getObject("buyer_id", UUID.class)),
+                    new Money(
+                        row.getLong("amount_minor"),
+                        Currency.getInstance(row.getString("currency"))),
+                    row.getObject("posted_at", OffsetDateTime.class).toInstant()))
+        .optional();
   }
 
   // Posts the entry and returns its ID; an entry of the same kind and idempotency key posted before
