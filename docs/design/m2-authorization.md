@@ -1,6 +1,6 @@
 # M2: Authorization
 
-**Status:** approved 2026-10-16.
+**Status:** approved 2026-10-16; amended 2026-10-16 for a Reversal that arrives before its Authorization.
 
 ## Problem
 
@@ -11,7 +11,7 @@ M1 ends with Globex holding a Single-Use Card it can't use: nothing can charge a
 1. Globex charges its Single-Use Card through the simulator's Acquirer and Network roles; the Network asks the platform over gRPC and gets an approval. The demo endpoint does all of M1 plus the Charge in one call.
 2. Each Authorization rule declines with its own response code: wrong Supplier, amount above the card's, a second Charge, an expired or cancelled card, a wrong security code. Every decline leaves the card and the Hold unchanged.
 3. The same Authorization request sent twice (same request ID) gets the same answer, and only one Authorization is recorded.
-4. When the platform doesn't answer within 1 second, the Network declines the Charge and sends a Reversal; the Reversal cancels the platform's Authorization, the card can be charged again, and its Hold stays. A Reversal for an unknown or declined Authorization is acknowledged and changes nothing.
+4. When the platform doesn't answer within 1 second, the Network declines the Charge and sends a Reversal; the Reversal cancels the platform's Authorization, even one the platform approves after the Reversal arrives; the card can be charged again, and its Hold stays. A Reversal for a declined Authorization is acknowledged and changes nothing.
 5. A Single-Use Card nobody charged within 30 days expires: its Hold is released and its Payment ends `EXPIRED`.
 6. Only the Network can call the Authorization service: a call without a valid Network token is refused.
 7. The end-to-end test runs the core path through the running simulator: both apps, real Keycloak and PostgreSQL, from Invoice to approved Charge.
@@ -52,7 +52,7 @@ For a Single-Use Card the Hold was placed at issuance, so Authorization checks t
 
 - **An approval** records the Authorization, moves the card to `AUTHORIZED` and answers `00` with an authorization code. The Hold is untouched: Clearing (M3) turns it into posted spend.
 - **The same request ID twice** returns the stored answer (a unique constraint, not check-then-insert), whatever the rules would say now.
-- **A Reversal** names the original request ID. If it approved, the Authorization becomes `REVERSED` and the card goes back to `ACTIVE`; otherwise nothing changes. Reversals are idempotent too.
+- **A Reversal** names the original request ID. If it approved, the Authorization becomes `REVERSED` and the card goes back to `ACTIVE`; if it declined, nothing changes. If the platform hasn't seen that request ID yet (the Network gave up while the Authorization was still running), it records the request ID as reversed, so the late Authorization hits the unique constraint and answers `05` (do not honour) instead of approving a Charge the Network already declined. Reversals are idempotent too.
 - **The PAN stays out of everything but `vault`:** `authorization` hands the PAN and security code straight to `vault` (`cardFor(pan)`, `securityCodeMatches(token, code)`), never stores or logs them, and tracing records the RPC name only. ADR-0004 gains `authorization` beside `suppliers` as a module that handles a PAN in memory.
 
 ### A Supplier's Acceptor ID
@@ -82,6 +82,7 @@ The 100 ms latency target is measured in M4 with Gatling; the 7-day no-Clearing 
 - **Credit check at Authorization:** for a Single-Use Card the credit was reserved at issuance (ADR-0011); checking again could decline a Charge on an approved, funded Invoice.
 - **Matching the Supplier by name:** names differ between ERP and Acquirer records; an exact Acceptor ID is the only reliable lock.
 - **No authentication on the Network link until M7:** every caller of the platform already proves who it is; gRPC shouldn't be the exception.
+- **Ignoring a Reversal for an unknown request ID:** when the platform is slow, the Reversal can commit before the Authorization it cancels; the late approval would then stand for a Charge the Network declined, and the card would stay `AUTHORIZED` for good.
 - **End-to-end test against container images:** building images in CI adds minutes and a buildpack setup M6 brings anyway; two apps in one JVM test the same path.
 
 ## Risks
