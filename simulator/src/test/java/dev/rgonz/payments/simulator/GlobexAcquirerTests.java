@@ -1,6 +1,7 @@
 package dev.rgonz.payments.simulator;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import com.sun.net.httpserver.HttpServer;
 import dev.rgonz.payments.contracts.client.model.Money;
@@ -9,6 +10,7 @@ import dev.rgonz.payments.simulator.GlobexSupplier.ReceivedCard;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.Base64;
 import org.junit.jupiter.api.AfterAll;
@@ -93,6 +95,20 @@ class GlobexAcquirerTests {
     var authorization = acquirer.charge(card(OffsetDateTime.parse("2026-11-15T12:00:00Z")));
 
     assertThat(authorization).isEqualTo(new Authorization(false, "57", null));
+  }
+
+  @Test
+  void anAuthorizationApprovedWithinTheNetworksDeadlineComesBackAsSentAndIsNotReversed() {
+    issuer.answerWith("00", "AB12CD");
+
+    var authorization = acquirer.charge(card(OffsetDateTime.parse("2026-11-15T12:00:00Z")));
+
+    assertThat(authorization).isEqualTo(new Authorization(true, "00", "AB12CD"));
+    // A Reversal would go out in the background: none arrives for a while after the answer.
+    await()
+        .during(Duration.ofMillis(300))
+        .atMost(Duration.ofSeconds(1))
+        .until(issuer.reversals::isEmpty);
   }
 
   @Test
