@@ -12,7 +12,7 @@ public class TestcontainersConfiguration {
   @Bean
   @ServiceConnection
   PostgreSQLContainer postgresContainer() {
-    // Same tag as compose.yaml: change both together.
+    // Same tag as compose.yaml and e2e's CorePathEndToEndTests: change all three together.
     return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6"));
   }
 }

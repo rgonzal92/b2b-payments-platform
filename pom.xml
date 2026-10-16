@@ -33,6 +33,7 @@
 		<module>contracts</module>
 		<module>platform</module>
 		<module>simulator</module>
+		<module>e2e</module>
 	</modules>
 
 	<properties>

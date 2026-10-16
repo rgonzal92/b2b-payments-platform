@@ -43,7 +43,7 @@ You need Java 25 (Corretto), Docker running, OpenSSL, and ports 5432, 3000, 4317
 6. Keycloak's admin console is at <http://localhost:8180>: user `admin`, password `KEYCLOAK_ADMIN_PASSWORD` from `.env`.
 7. Stopping an app leaves the stack running for the other. Stop the stack with `docker compose down`. If only part of it is running, run `docker compose up -d` before starting an app: Spring Boot starts the stack only when none of it is running.
 
-Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own throwaway PostgreSQL and Keycloak.
+Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own throwaway PostgreSQL and Keycloak. Among them, the end-to-end test starts both apps in one JVM and runs the demo through them; `./mvnw -B -pl e2e -am verify` builds and tests the two apps, then runs it.
 
 ## Roadmap
 
