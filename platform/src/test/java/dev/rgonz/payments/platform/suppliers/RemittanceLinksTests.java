@@ -8,6 +8,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.cards.CardExpiryJob;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
@@ -31,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.restclient.test.autoconfigure.AutoConfigureMockRestServiceServer;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.http.client.MockClientHttpRequest;
@@ -58,6 +60,7 @@ class RemittanceLinksTests {
   @Autowired RemittanceAdvices remittanceAdvices;
   @Autowired JdbcClient jdbc;
   @Autowired ObservationRegistry observations;
+  @Autowired ApplicationContext context;
   @MockitoSpyBean RemittanceAdviceLinks links;
 
   @Test
@@ -160,6 +163,27 @@ class RemittanceLinksTests {
   }
 
   @Test
+  void theLinkOfAnExpiredCardIsGone() {
+    // Issued in 2020, so running the expiry job at its expiry expires no other test's card.
+    var card = issuedCard(Instant.parse("2020-01-01T00:00:00Z"));
+    var link = deliveredLink(card, Instant.now());
+
+    CardExpiryJob.runAt(context, card.expiresAt());
+
+    assertThat(mvc.get().uri(link).exchange()).hasStatus(410);
+  }
+
+  @Test
+  void theUnusedLinkOfAnAuthorizedCardStillOpens() {
+    var card = issuedCard();
+    var link = deliveredLink(card, Instant.now());
+
+    cards.authorize(card.cardToken());
+
+    assertThat(mvc.get().uri(link).exchange()).hasStatusOk();
+  }
+
+  @Test
   void ofTwoOpensAtTheSameTimeExactlyOneShowsTheCard() throws Exception {
     var link = deliveredLink(issuedCard(), Instant.now());
     // Each open waits until the other arrives, so both reach the link at once.
@@ -186,8 +210,12 @@ class RemittanceLinksTests {
     assertThat(statuses).containsExactlyInAnyOrder(200, 410);
   }
 
-  // A new Supplier for each card, so tests don't share one.
   private SingleUseCard issuedCard() {
+    return issuedCard(Instant.now());
+  }
+
+  // A new Supplier for each card, so tests don't share one.
+  private SingleUseCard issuedCard(Instant now) {
     var buyerId = new BuyerId(UUID.randomUUID());
     var supplier =
         suppliers
@@ -196,7 +224,7 @@ class RemittanceLinksTests {
                 new SupplierOnInvoice(
                     "TAX-" + UUID.randomUUID(), "Globex", GLOBEX, "GLOBEX-01", null))
             .supplier();
-    return cards.issueSingleUse(UUID.randomUUID(), buyerId, supplier.id(), AMOUNT, Instant.now());
+    return cards.issueSingleUse(UUID.randomUUID(), buyerId, supplier.id(), AMOUNT, now);
   }
 
   // Delivers the card's Remittance Advice as of now and returns the link the Supplier received.

@@ -28,7 +28,7 @@ payables worker (step 3, inside the Payment's transaction)
             2xx → Payment COMPLETED; anything else → retried, then card cancelled
 
 Supplier: GET /v1/remittance-links/{token}             (no sign-in)
-  no advice with link_token_hash = sha256(token)? 404; its card cancelled? 410
+  no advice with link_token_hash = sha256(token)? 404; its card not ACTIVE or AUTHORIZED? 410
   update suppliers.remittance_advice set link_used_at = now()
    where link_token_hash = sha256(token) and link_used_at is null and link_expires_at > now()
   returning …                                          ── no row: 410
