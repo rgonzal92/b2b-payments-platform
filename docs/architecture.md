@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** planned; nothing is built yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 foundations are built (both apps, local stack, CI); none of the modules below exist yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 

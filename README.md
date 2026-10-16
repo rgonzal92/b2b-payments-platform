@@ -4,7 +4,7 @@ Companies pay their suppliers by card: the platform issues a single-use virtual 
 
 It's a learning project modelled on a senior payments engineering role (virtual cards, payables, event-driven services). Every significant decision is recorded with its reasoning, so the docs matter as much as the code.
 
-> **Status:** design complete, nothing built yet. See the [roadmap](#roadmap).
+> **Status:** M0 (foundations) is done: both apps build, run locally with telemetry, and pass CI. No business features yet. See the [roadmap](#roadmap).
 
 ## How a payment works
 
@@ -46,7 +46,7 @@ Tests need Docker but not the stack: `./mvnw verify` starts its own throwaway Po
 
 | # | What works at the end | Status |
 |---|---|---|
-| M0 | Project skeleton, local stack in Docker Compose, CI with secret scanning and SonarQube | Planned |
+| M0 | Project skeleton, local stack in Docker Compose, CI with secret scanning and SonarQube | Done |
 | M1 | Invoice → approvals → payment saga → single-use card in the vault → remittance link | Planned |
 | M2 | The network simulator charges the card over gRPC; authorization rules, credit holds, reversals | Planned |
 | M3 | The daily clearing file is processed by Spring Batch; daily settlement with the network | Planned |
