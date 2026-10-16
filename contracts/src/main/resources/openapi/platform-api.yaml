@@ -97,7 +97,7 @@ paths:
     get:
       tags: [Credit]
       operationId: getCredit
-      summary: Read a Buyer's Credit Line and Available Credit
+      summary: Read a Buyer's Credit Line, open Holds, Buyer Receivable and Available Credit
       description: >-
         Issuer staff only (role `issuer-admin`). A Buyer whose Credit Line was never set answers `404`,
         like an unknown Buyer.
@@ -110,7 +110,7 @@ paths:
             format: uuid
       responses:
         '200':
-          description: The Buyer's Credit Line and Available Credit.
+          description: The Buyer's Credit Line, open Holds, Buyer Receivable and Available Credit.
           content:
             application/json:
               schema:
@@ -122,6 +122,56 @@ paths:
         '403':
           $ref: '#/components/responses/Problem'
         '404':
+          $ref: '#/components/responses/Problem'
+  /v1/buyers/{buyerId}/repayments:
+    post:
+      tags: [Credit]
+      operationId: recordRepayment
+      summary: Record a Buyer's Repayment
+      description: >-
+        Issuer staff only (role `issuer-admin`). Records money the Buyer paid the Issuer: it debits Issuer Cash and
+        credits the Buyer Receivable, so Available Credit rises by the amount. An amount of zero or less, in another
+        currency than the Credit Line's, or above the Buyer Receivable (what the Buyer owes for cleared Charges) is
+        `422`. A Buyer whose Credit Line was never set answers `404`, like an unknown Buyer. Repeating a request with
+        the same `Idempotency-Key` returns the original response and posts nothing; reusing a key with a different
+        request (another Buyer or amount) is `422`.
+      parameters:
+        - name: buyerId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A new random value per Repayment, such as a UUID; resend the same value when retrying.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepaymentRequest'
+      responses:
+        '201':
+          description: The Repayment was posted, or this is the replay of an earlier response to the same key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Repayment'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '422':
           $ref: '#/components/responses/Problem'
   /v1/invoices:
     post:
@@ -404,12 +454,44 @@ components:
         A Buyer's Credit Line, and its Available Credit: the Credit Line minus the Buyer Receivable (what the Buyer
         owes for cleared Charges) and minus open Holds. Available Credit is negative when the Credit Line was lowered
         below what is owed and held; a new Hold is placed only when Available Credit covers its amount.
-      required: [creditLine, availableCredit]
+      required: [creditLine, openHolds, buyerReceivable, availableCredit]
       properties:
         creditLine:
           $ref: '#/components/schemas/Money'
+        openHolds:
+          $ref: '#/components/schemas/Money'
+        buyerReceivable:
+          $ref: '#/components/schemas/Money'
         availableCredit:
           $ref: '#/components/schemas/SignedMoney'
+    RepaymentRequest:
+      type: object
+      description: >-
+        The amount the Buyer repaid, in integer minor units with its currency. Unlike Money it takes any whole number
+        and any three-letter code, so an amount of zero or less, or in another currency than the Credit Line's, is
+        refused with `422` like an amount above the Buyer Receivable.
+      required: [minorUnits, currency]
+      properties:
+        minorUnits:
+          type: integer
+          format: int64
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+    Repayment:
+      type: object
+      description: A Buyer's payment to the Issuer that reduced its Buyer Receivable, as the journal posted it.
+      required: [id, amount, postedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The ID of the Repayment's Journal Entry.
+        amount:
+          $ref: '#/components/schemas/Money'
+        postedAt:
+          type: string
+          format: date-time
     InvoiceSupplier:
       type: object
       description: The Supplier as an Invoice names it.

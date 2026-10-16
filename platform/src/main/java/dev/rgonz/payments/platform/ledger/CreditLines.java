@@ -7,17 +7,22 @@ import java.sql.SQLException;
 import java.util.Currency;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.ErrorResponseException;
 
 @Repository
 class CreditLines implements Holds {
 
   private final JdbcClient jdbc;
+  private final JournalEntries journal;
 
-  CreditLines(JdbcClient jdbc) {
+  CreditLines(JdbcClient jdbc, JournalEntries journal) {
     this.jdbc = jdbc;
+    this.journal = journal;
   }
 
   /** Sets the Buyer's Credit Line, replacing any it has; true when the Buyer had none before. */
@@ -53,22 +58,64 @@ class CreditLines implements Holds {
         .map(creditLine -> credit(buyerId, creditLine));
   }
 
+  /**
+   * Records the Buyer's Repayment of the amount, as Issuer staff sent it: posts its Journal Entry,
+   * which debits Issuer Cash and credits the Buyer Receivable, and returns it. The Idempotency-Key
+   * is the entry's: sent again with the same Buyer and amount, it returns the first Repayment and
+   * posts nothing. Empty when the Buyer has no Credit Line; answers 422 for an amount of zero or
+   * less, in another currency than the Credit Line's, above the Buyer Receivable, or a key already
+   * used for another Buyer or amount.
+   */
+  @Transactional
+  Optional<Repayment> repay(
+      BuyerId buyerId, String idempotencyKey, long minorUnits, String currency) {
+    // The same lock as placing a Hold, so two Repayments can't both repay the last of what the
+    // Buyer owes.
+    var creditLine = lockCreditLine(buyerId);
+    if (creditLine.isEmpty()) {
+      return Optional.empty();
+    }
+    var credit = credit(buyerId, creditLine.get());
+    // A key already posted gives back its Repayment and posts nothing. Looked up before the checks,
+    // so a resend isn't refused for the balance its own first posting lowered.
+    var repayment =
+        journal
+            .findRepayment(idempotencyKey)
+            .orElseGet(() -> checkAndPost(credit, buyerId, idempotencyKey, minorUnits, currency));
+    // Also catches another Buyer's Repayment that posted this key first: postRepayment returns it.
+    if (!repayment.isFor(buyerId, minorUnits, currency)) {
+      throw refused("This Idempotency-Key was already used for a different request.");
+    }
+    return Optional.of(repayment);
+  }
+
+  private Repayment checkAndPost(
+      Credit credit, BuyerId buyerId, String idempotencyKey, long minorUnits, String currency) {
+    if (minorUnits <= 0) {
+      throw refused("A Repayment's amount must be more than zero.");
+    }
+    // Compared as sent, so a code that isn't a currency at all is refused the same way.
+    if (!currency.equals(credit.creditLine().currency().getCurrencyCode())) {
+      throw refused("A Repayment must be in the currency of the Buyer's Credit Line.");
+    }
+    var amount = new Money(minorUnits, credit.creditLine().currency());
+    if (amount.isMoreThan(credit.buyerReceivable())) {
+      throw refused("A Repayment can't be more than the Buyer Receivable, what the Buyer owes.");
+    }
+    return journal.postRepayment(idempotencyKey, buyerId, amount);
+  }
+
+  private static ErrorResponseException refused(String detail) {
+    return new ErrorResponseException(
+        HttpStatus.UNPROCESSABLE_CONTENT,
+        ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, detail),
+        null);
+  }
+
   @Override
   @Transactional
   public Outcome place(UUID holdId, BuyerId buyerId, Money amount) {
-    // Locking the Buyer's Credit Line row makes Holds for one Buyer take turns until each
-    // transaction ends, so two can't both take the last of its credit.
-    var creditLine =
-        jdbc.sql(
-                """
-                select amount_minor, currency
-                  from ledger.credit_line
-                 where buyer_id = :buyerId
-                   for update
-                """)
-            .param("buyerId", buyerId.value())
-            .query(CreditLines::toMoney)
-            .optional();
+    var creditLine = lockCreditLine(buyerId);
     if (creditLine.isEmpty()) {
       // A Buyer without a Credit Line has no credit: a refusal like any other, not an error.
       return Outcome.INSUFFICIENT_CREDIT;
@@ -144,8 +191,24 @@ class CreditLines implements Holds {
         .orElse(false);
   }
 
-  // A statement of its own: after place's lock, it sees what other transactions committed while
-  // that one waited (READ COMMITTED); a subquery inside the locking statement would not. One
+  // Locking the Buyer's Credit Line row makes Holds and Repayments for one Buyer take turns until
+  // each transaction ends, so two can't both take the last of its credit, or repay the last of what
+  // it owes. Empty when the Buyer has no Credit Line.
+  private Optional<Money> lockCreditLine(BuyerId buyerId) {
+    return jdbc.sql(
+            """
+            select amount_minor, currency
+              from ledger.credit_line
+             where buyer_id = :buyerId
+               for update
+            """)
+        .param("buyerId", buyerId.value())
+        .query(CreditLines::toMoney)
+        .optional();
+  }
+
+  // A statement of its own: after the lock, it sees what other transactions committed while this
+  // one waited (READ COMMITTED); a subquery inside the locking statement would not. One
   // statement for both sums: a Clearing that commits between two statements would clear its Hold
   // in one read and miss its Buyer Receivable debit in the other.
   private Credit credit(BuyerId buyerId, Money creditLine) {

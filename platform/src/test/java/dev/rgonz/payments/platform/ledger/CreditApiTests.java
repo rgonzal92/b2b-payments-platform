@@ -4,6 +4,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.shared.BuyerId;
+import dev.rgonz.payments.platform.shared.Money;
+import java.util.Currency;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -22,6 +25,8 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 class CreditApiTests {
 
   @Autowired MockMvcTester mvc;
+  @Autowired Holds holds;
+  @Autowired Journal journal;
 
   @Test
   void issuerStaffSetABuyersCreditLine() {
@@ -66,6 +71,29 @@ class CreditApiTests {
             """
             {"creditLine": {"minorUnits": 10000000, "currency": "USD"},
              "availableCredit": {"minorUnits": 10000000, "currency": "USD"}}
+            """);
+  }
+
+  @Test
+  void theCreditShowsTheOpenHoldsAndTheBuyerReceivableBesideAvailableCredit() {
+    var buyerId = existingBuyer();
+    putCreditLine(buyerId, ISSUER_ADMIN, usd(10_000_000));
+    var usd = Currency.getInstance("USD");
+    holds.place(UUID.randomUUID(), new BuyerId(buyerId), new Money(500_000, usd));
+    journal.postClearing(
+        UUID.randomUUID().toString(), new BuyerId(buyerId), new Money(1_240_000, usd));
+
+    var response = getCredit(buyerId, ISSUER_ADMIN);
+
+    assertThat(response).hasStatus(200);
+    assertThat(response)
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"creditLine": {"minorUnits": 10000000, "currency": "USD"},
+             "openHolds": {"minorUnits": 500000, "currency": "USD"},
+             "buyerReceivable": {"minorUnits": 1240000, "currency": "USD"},
+             "availableCredit": {"minorUnits": 8260000, "currency": "USD"}}
             """);
   }
 
