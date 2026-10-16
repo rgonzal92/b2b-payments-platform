@@ -203,10 +203,19 @@ class CorePathEndToEndTests {
             .retrieve()
             .body(String.class);
 
+    // The Charge's Clearing posted (importedTotal), and the Network's trailer settles exactly that.
     assertThat(new JsonContent(imported))
         .isLenientlyEqualTo(
             """
-            {"status": "IMPORTED", "recordCount": 1}
+            {
+              "status": "IMPORTED",
+              "recordCount": 1,
+              "settlement": {
+                "amount": {"minorUnits": 1240000, "currency": "USD"},
+                "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
+                "matched": true
+              }
+            }
             """);
     // The platform deletes a file once it has imported it: the shared drop folder is empty again.
     try (var left = Files.walk(dropFolder)) {
