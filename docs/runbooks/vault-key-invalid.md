@@ -33,3 +33,13 @@ The vault finds the card for a Charge by the PAN's HMAC under the hash key, neve
    All `14` with no card, while `cards.card` holds `ACTIVE` cards that should have been charged, points at the hash key.
 2. Look for what changed `VAULT_HASH_KEY`: a hand edit of `.env`, or an environment variable of the same name overriding it. Restore the key the cards were issued under and restart the platform; the next Charge finds its card.
 3. If that key is lost, the stored hashes can't be recomputed without decrypting every PAN under the encryption key and hashing it again under the new key; nothing does that yet (M7 replaces the keys with envelope encryption). In local development, drop the demo cards with the database (`docker compose down -v`).
+
+## Every Charge on a known card fails `UNKNOWN`
+
+**Signals:** `Authorize` fails with gRPC status `UNKNOWN` for cards the vault finds, while unknown PANs still answer `14`; no new rows appear in `"authorization".authorizations` for those requests; Suppliers opening a card link get `500`; the platform started without complaint.
+
+The vault checks a Charge's security code by decrypting the stored one under the encryption key ([`docs/learning/authorization-message.md`](../learning/authorization-message.md)). A different but valid `VAULT_ENCRYPTION_KEY` passes the startup check, finds cards through their hashes as before, but can't decrypt what the old key encrypted: AES-GCM's authentication tag doesn't match, the vault throws, and the transaction rolls back, so nothing is recorded. The Network treats `UNKNOWN` as no answer, not as a decline. Spring gRPC logs the exception only at `DEBUG`, so the platform's log shows nothing at the default level.
+
+1. Confirm it: set `logging.level.org.springframework.grpc=DEBUG` and look for `Card data failed to decrypt or was tampered with.` on the next Charge; cards issued since the change decrypt, older ones don't.
+2. Look for what changed `VAULT_ENCRYPTION_KEY` (a hand edit of `.env`, or an environment variable of the same name), restore the key the cards were issued under and restart the platform.
+3. If that key is lost, the cards issued under it can't be charged or shown to their Suppliers again. In local development, drop the demo cards with the database (`docker compose down -v`).

@@ -3,9 +3,9 @@ package dev.rgonz.payments.platform.authorization;
 import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.contracts.network.AuthorizationResponse;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
-import dev.rgonz.payments.platform.shared.Money;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
-import java.util.Currency;
+import java.time.Instant;
 import java.util.Objects;
 import org.springframework.grpc.server.service.GrpcService;
 
@@ -25,14 +25,25 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
   @Override
   public void authorize(
       AuthorizationRequest request, StreamObserver<AuthorizationResponse> responseObserver) {
+    // Without a request ID there is nothing to record the answer under, or to answer a resend with.
+    if (request.getRetrievalReferenceNumber().isBlank()) {
+      responseObserver.onError(
+          Status.INVALID_ARGUMENT
+              .withDescription("retrieval_reference_number (DE 37) is required.")
+              .asRuntimeException());
+      return;
+    }
     var authorization =
         authorizations.authorize(
             new Charge(
                 request.getRetrievalReferenceNumber(),
                 request.getPrimaryAccountNumber(),
-                new Money(
-                    request.getAmountMinor(), Currency.getInstance(request.getCurrencyCode())),
-                request.getCardAcceptorId()));
+                request.getSecurityCode(),
+                request.getExpirationDate(),
+                request.getAmountMinor(),
+                request.getCurrencyCode(),
+                request.getCardAcceptorId()),
+            Instant.now());
     responseObserver.onNext(
         AuthorizationResponse.newBuilder()
             .setRetrievalReferenceNumber(request.getRetrievalReferenceNumber())

@@ -20,10 +20,21 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
 
   enum ResponseCode {
     APPROVED("00"),
+    /** The amount isn't positive. */
+    INVALID_AMOUNT("13"),
     /** No card the Issuer issued has the PAN. */
     INVALID_CARD("14"),
-    /** The card can't be charged: it isn't ACTIVE (#31 adds the expiry checks). */
-    EXPIRED_CARD("54");
+    /**
+     * The card can't be charged: it's cancelled or expired, or the request's expiry isn't the
+     * card's or has passed.
+     */
+    EXPIRED_CARD("54"),
+    /** The card already has an approved Authorization. */
+    NOT_PERMITTED("57"),
+    /** The amount is above the card's, or in another currency. */
+    EXCEEDS_AMOUNT("61"),
+    /** The security code isn't the card's. */
+    SECURITY_CODE_MISMATCH("N7");
 
     private final String code;
 
@@ -33,6 +44,16 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
 
     String code() {
       return code;
+    }
+
+    /** The response code with this DE 39 value, such as one recorded earlier. */
+    static ResponseCode of(String code) {
+      for (var responseCode : values()) {
+        if (responseCode.code.equals(code)) {
+          return responseCode;
+        }
+      }
+      throw new IllegalArgumentException("No response code " + code + ".");
     }
   }
 

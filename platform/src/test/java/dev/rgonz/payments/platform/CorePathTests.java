@@ -17,6 +17,9 @@ import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
 import io.grpc.netty.NettyChannelBuilder;
 import java.io.UnsupportedEncodingException;
 import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -135,6 +138,11 @@ class CorePathTests {
             .getContentAsString();
     String pan = JsonPath.read(opened, "$.pan");
     String securityCode = JsonPath.read(opened, "$.securityCode");
+    // DE 14, the expiry month as printed on the card.
+    var expirationDate =
+        DateTimeFormatter.ofPattern("yyMM")
+            .withZone(ZoneOffset.UTC)
+            .format(OffsetDateTime.parse(JsonPath.read(opened, "$.expiresAt")));
     String cardToken =
         JsonPath.read(
             invoice(erpToken, invoiceId).getResponse().getContentAsString(),
@@ -143,7 +151,8 @@ class CorePathTests {
     // The Network charges the card with what the Supplier read: the PAN and security code pass
     // through authorization on their way to the vault.
     var requestId = UUID.randomUUID().toString();
-    assertThat(charge(requestId, pan, securityCode).getResponseCode()).isEqualTo("00");
+    assertThat(charge(requestId, pan, securityCode, expirationDate).getResponseCode())
+        .isEqualTo("00");
 
     assertThat(columnsOutsideTheVaultHolding(pan)).isEmpty();
     assertThat(columnsOutsideTheVaultHoldingTheSecurityCode(securityCode)).isEmpty();
@@ -273,7 +282,8 @@ class CorePathTests {
   }
 
   // The Network's Authorization request for the whole Invoice, signed in as the Network.
-  private AuthorizationResponse charge(String requestId, String pan, String securityCode) {
+  private AuthorizationResponse charge(
+      String requestId, String pan, String securityCode, String expirationDate) {
     var channel = NettyChannelBuilder.forAddress("127.0.0.1", grpcPort).usePlaintext().build();
     try {
       return IssuerAuthorizationGrpc.newBlockingStub(channel)
@@ -284,6 +294,7 @@ class CorePathTests {
               AuthorizationRequest.newBuilder()
                   .setPrimaryAccountNumber(pan)
                   .setSecurityCode(securityCode)
+                  .setExpirationDate(expirationDate)
                   .setAmountMinor(AMOUNT)
                   .setCurrencyCode("USD")
                   .setRetrievalReferenceNumber(requestId)
