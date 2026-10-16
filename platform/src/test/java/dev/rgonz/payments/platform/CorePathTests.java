@@ -14,8 +14,13 @@ import com.jayway.jsonpath.Option;
 import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.contracts.network.AuthorizationResponse;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
+import dev.rgonz.payments.platform.clearing.TestClearingFiles;
 import io.grpc.netty.NettyChannelBuilder;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.io.UnsupportedEncodingException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -52,7 +57,8 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
  * M1's core path end to end, with real Keycloak tokens and PostgreSQL: Issuer staff set up Acme and
  * its Credit Line, Acme's ERP submits an Invoice above the Approval Threshold, two Approvers
  * approve it, the Payment saga's worker pays it on its schedule, and the Supplier opens its card
- * link once. Only the Supplier's remittance address is stubbed.
+ * link once. Only the Supplier's remittance address is stubbed. The PAN check goes on to the
+ * Network's Charge and its Clearing File.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -67,9 +73,12 @@ class CorePathTests {
   // Acme's ERP names it on the Invoice, and the Network carries it on Globex's Charge.
   private static final String GLOBEX_ACCEPTOR_ID = "GLOBEX000000001";
 
+  private static final Path DROP_FOLDER = newDropFolder();
+
   @DynamicPropertySource
   static void issuer(DynamicPropertyRegistry registry) {
     registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", TestKeycloak::issuerUri);
+    registry.add("clearing.drop-folder", DROP_FOLDER::toString);
   }
 
   @Autowired MockMvcTester mvc;
@@ -121,8 +130,8 @@ class CorePathTests {
 
   @Test
   @ExtendWith(OutputCaptureExtension.class)
-  void noTableOutsideTheVaultAndNoLogLineHoldsThePanOnceTheCardIsCharged(CapturedOutput output)
-      throws Exception {
+  void noTableOutsideTheVaultAndNoLogLineHoldsThePanOnceTheCardIsChargedAndCleared(
+      CapturedOutput output) throws Exception {
     setUpAcme();
     var deliveries = supplierAccepts();
     var erpToken = clientCredentialsToken("acme-erp");
@@ -152,22 +161,59 @@ class CorePathTests {
     String paymentId = JsonPath.read(deliveries.getFirst(), "$.id");
     // The Network charges the card with what the Supplier read: the PAN and security code pass
     // through authorization on their way to the vault.
-    var requestId = UUID.randomUUID().toString();
-    assertThat(charge(requestId, pan, securityCode, expirationDate).getResponseCode())
-        .isEqualTo("00");
+    var requestId = TestClearingFiles.newId("Q", 12);
+    var charged = charge(requestId, pan, securityCode, expirationDate);
+    assertThat(charged.getResponseCode()).isEqualTo("00");
+    // The Network clears the Charge in its Clearing File, PAN and all; Issuer staff import it, and
+    // the PAN passes through clearing on its way to the vault.
+    var fileId = TestClearingFiles.newId("F", 16);
+    var networkRecordId = TestClearingFiles.newId("R", 20);
+    var fileName =
+        TestClearingFiles.drop(
+            DROP_FOLDER,
+            fileId,
+            1,
+            List.of(
+                new TestClearingFiles.Detail(
+                    networkRecordId,
+                    pan,
+                    AMOUNT,
+                    requestId,
+                    charged.getAuthorizationCode(),
+                    GLOBEX_ACCEPTOR_ID)));
+    var imported =
+        mvc.post()
+            .uri("/v1/clearing-files")
+            .header("Authorization", "Bearer " + clientCredentialsToken("simulator-issuer-admin"))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(
+                """
+                {"fileName": "%s"}
+                """
+                    .formatted(fileName))
+            .exchange();
+    assertThat(imported).hasStatus(201);
 
     assertThat(columnsOutsideTheVaultHolding(pan)).isEmpty();
     assertThat(columnsOutsideTheVaultHoldingTheSecurityCode(securityCode)).isEmpty();
-    // The same search finds a value that is stored outside the vault, such as the Card Token.
+    // The same search finds a value that is stored outside the vault, such as the Card Token, in
+    // clearing's and ledger's tables too, and reaches into the import job's saved step state.
     assertThat(columnsOutsideTheVaultHolding(cardToken))
         .contains(
             "cards.card.card_token",
             "suppliers.remittance_advice.card_token",
-            "\"authorization\".authorizations.card_token");
-    // The worker's log lines, and the gRPC call's, from their own threads, were captured too.
+            "\"authorization\".authorizations.card_token",
+            "clearing.clearing.card_token");
+    assertThat(columnsOutsideTheVaultHolding(networkRecordId))
+        .contains("clearing.clearing.network_record_id", "ledger.journal_entry.idempotency_key");
+    assertThat(columnsOutsideTheVaultHolding("clearingRecordReader.read.count"))
+        .contains("batch.batch_step_execution_context.short_context");
+    // The worker's log lines, the gRPC call's and the import's, from their own threads, were
+    // captured too.
     assertThat(output)
         .contains("Payment " + paymentId + " is COMPLETED")
         .contains("Authorization " + requestId + " answered 00")
+        .contains("Clearing File " + fileId + " (sequence 1, Business Date 2026-10-15) imported")
         .doesNotContain(pan);
     // Three digits alone turn up in any log (timestamps, ports), so this looks for the security
     // code where a logged request, response or DTO would put it: after its name.
@@ -377,4 +423,12 @@ class CorePathTests {
   }
 
   private record Column(String table, String name, String type) {}
+
+  private static Path newDropFolder() {
+    try {
+      return Files.createTempDirectory("clearing-drop-folder");
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+  }
 }

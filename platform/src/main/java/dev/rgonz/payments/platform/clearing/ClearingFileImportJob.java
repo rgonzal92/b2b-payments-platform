@@ -9,7 +9,9 @@ import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.job.parameters.JobParameters;
+import org.springframework.batch.core.repository.ExecutionContextSerializer;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.repository.dao.JacksonExecutionContextStringSerializer;
 import org.springframework.batch.core.step.Step;
 import org.springframework.batch.core.step.builder.StepBuilder;
 import org.springframework.batch.infrastructure.repeat.RepeatStatus;
@@ -127,6 +129,14 @@ class ClearingFileImportJob {
   ClearingRecordWriter clearingRecordWriter(
       @Value("#{jobParameters['fileId']}") String fileId, Clearings clearings) {
     return new ClearingRecordWriter(fileId, clearings);
+  }
+
+  // What a step saved, such as how many Clearings the reader read, kept as JSON in the job
+  // repository instead of Spring Batch's default base64 Java serialization: a person (the runbook)
+  // and the "no PAN outside the vault" check can both read it.
+  @Bean
+  ExecutionContextSerializer executionContextSerializer() {
+    return new JacksonExecutionContextStringSerializer();
   }
 
   private static String parameter(JobParameters parameters, String name) {
