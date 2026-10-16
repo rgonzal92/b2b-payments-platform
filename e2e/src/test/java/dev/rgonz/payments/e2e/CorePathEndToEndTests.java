@@ -10,7 +10,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -21,6 +23,7 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.json.JsonContent;
 import org.springframework.test.util.TestSocketUtils;
 import org.springframework.web.client.RestClient;
@@ -218,8 +221,7 @@ class CorePathEndToEndTests {
 
     // One import, the platform's 201 and its summary: the Charge's Clearing matched its
     // Authorization, which moves the card to CLEARED, and the file is settled at the Network's
-    // figure, exactly what was posted. A Settlement of more than zero always has its Journal Entry
-    // (clearing.settlement's settlement_posted_check), so it is posted.
+    // figure, exactly what was posted.
     var clearedJson = new JsonContent(cleared);
     assertThat(clearedJson).extractingPath("$.imports").asArray().hasSize(1);
     assertThat(clearedJson)
@@ -245,6 +247,15 @@ class CorePathEndToEndTests {
             """);
     String fileId = JsonPath.read(cleared, "$.imports[0].summary.id");
     assertThat(clearedJson).extractingPath("$.fileName").isEqualTo(fileId + ".txt");
+    // The books, which no API shows until M9: the Clearing debited Acme's Buyer Receivable and
+    // credited the Network Settlement Payable, and the Settlement was posted, paying that Payable
+    // out of Issuer Cash.
+    assertThat(balancesByAccountKind())
+        .containsExactlyInAnyOrderEntriesOf(
+            Map.of(
+                "BUYER_RECEIVABLE", 1_240_000L,
+                "NETWORK_SETTLEMENT_PAYABLE", 0L,
+                "ISSUER_CASH", -1_240_000L));
     // The Hold became posted spend: Acme owes the cleared amount, and its Available Credit counts
     // that instead of the Hold.
     assertThat(acmesCredit())
@@ -260,6 +271,24 @@ class CorePathEndToEndTests {
     try (var left = Files.walk(dropFolder)) {
       assertThat(left.filter(Files::isRegularFile)).isEmpty();
     }
+  }
+
+  // Each kind of Account's balance in the platform's journal, its debits less its credits.
+  private static Map<String, Long> balancesByAccountKind() {
+    return platform
+        .getBean(JdbcClient.class)
+        .sql(
+            """
+            select a.kind,
+                   sum(case l.side when 'DEBIT' then l.amount_minor else -l.amount_minor end)
+              from ledger.journal_line l
+              join ledger.account a on a.id = l.account_id
+             group by a.kind
+            """)
+        .query((row, rowNumber) -> Map.entry(row.getString(1), row.getLong(2)))
+        .list()
+        .stream()
+        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
   }
 
   // Acme's credit, as Issuer staff read it: signed in through Keycloak as the simulator's

@@ -33,8 +33,9 @@ class NetworkClearingFiles {
   private static final DateTimeFormatter DATE = DateTimeFormatter.BASIC_ISO_DATE;
   private static final String ID_CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   // The demo's Clearing above its authorized amount: $100.00 more than the Charge.
-  private static final long ABOVE_AUTHORIZED_BY = 10_000;
-  // The demo's Clearing with no Authorization: an approval's authorization code has six characters
+  private static final Money ABOVE_AUTHORIZED_BY =
+      new Money().minorUnits(10_000L).currency(Money.CurrencyEnum.USD);
+  // The demo's Clearing with no Authorization: an approved Authorization's code has six characters
   // (DE 38 in issuer_authorization.proto), so no Authorization has this one.
   private static final String NO_AUTHORIZATION_CODE = "NONE";
   // The demo's unknown PAN: from the Issuer's made-up 990000 range, with its Luhn check digit, but
@@ -83,53 +84,25 @@ class NetworkClearingFiles {
   /** Writes the file as {@link #write(LocalDate)} does, changed by the demo's edge cases. */
   synchronized Optional<WrittenFile> write(LocalDate businessDate, Set<EdgeCase> edgeCases) {
     var sending =
-        unsent.stream().filter(clearing -> !clearing.chargeDate().isAfter(businessDate)).toList();
+        unsent.stream()
+            .filter(waiting -> !waiting.clearing().chargeDate().isAfter(businessDate))
+            .toList();
     if (sending.isEmpty()) {
       return Optional.empty();
     }
-    var records = new ArrayList<>(sending);
-    if (edgeCases.contains(EdgeCase.ABOVE_AUTHORIZED_AMOUNT)) {
-      records.set(0, records.getFirst().raisedBy(ABOVE_AUTHORIZED_BY));
-    }
-    var first = sending.getFirst().clearing();
-    if (edgeCases.contains(EdgeCase.NO_AUTHORIZATION)) {
-      records.add(
-          Unsent.of(
-              newNetworkRecordId(),
-              new Clearing(
-                  first.pan(),
-                  first.amount(),
-                  randomId(12),
-                  NO_AUTHORIZATION_CODE,
-                  first.acceptorId(),
-                  first.chargeDate())));
-    }
-    if (edgeCases.contains(EdgeCase.UNKNOWN_PAN)) {
-      records.add(
-          Unsent.of(
-              newNetworkRecordId(),
-              new Clearing(
-                  UNKNOWN_PAN,
-                  first.amount(),
-                  randomId(12),
-                  first.authorizationCode(),
-                  first.acceptorId(),
-                  first.chargeDate())));
-    }
-    if (edgeCases.contains(EdgeCase.DUPLICATE_RECORD)) {
-      records.add(records.getFirst());
-    }
+    var details = changedBy(edgeCases, sending);
     var fileId = "NET-" + businessDate.format(DATE) + "-" + randomId(7);
     // One currency, USD, the only one the contract's Money has.
-    var currency = records.getFirst().amount().getCurrency().getValue();
-    var total = records.stream().mapToLong(clearing -> clearing.amount().getMinorUnits()).sum();
+    var currency = details.getFirst().clearing().amount().getCurrency().getValue();
+    var total =
+        details.stream().mapToLong(detail -> detail.clearing().amount().getMinorUnits()).sum();
     var file = new StringBuilder();
     file.append(record("90", an(fileId, 20), n(sequenceNumber + 1, 8), businessDate.format(DATE)));
-    records.forEach(clearing -> file.append(clearing.detailRecord()));
+    details.forEach(detail -> file.append(detail.detailRecord()));
     // The simulator charges no fees: the net settlement amount is the records' total.
     var amountTotal = edgeCases.contains(EdgeCase.WRONG_TRAILER_TOTAL) ? total + 1 : total;
     file.append(
-        record("92", n(records.size(), 8), n(amountTotal, 15), n(total, 15), an(currency, 3)));
+        record("92", n(details.size(), 8), n(amountTotal, 15), n(total, 15), an(currency, 3)));
     var written = new WrittenFile(fileId + ".txt", file.toString());
     deliver(written);
     sequenceNumber++;
@@ -138,10 +111,43 @@ class NetworkClearingFiles {
         "The Network wrote Clearing File {} for {}: {} Clearings, {} {} minor units",
         written.name(),
         businessDate,
-        records.size(),
+        details.size(),
         currency,
         total);
     return Optional.of(written);
+  }
+
+  // The file's detail records: the Clearings it sends, changed by the demo's edge cases.
+  private List<Unsent> changedBy(Set<EdgeCase> edgeCases, List<Unsent> sending) {
+    var details = new ArrayList<>(sending);
+    var first = sending.getFirst();
+    if (edgeCases.contains(EdgeCase.ABOVE_AUTHORIZED_AMOUNT)) {
+      details.set(0, first.raisedBy(ABOVE_AUTHORIZED_BY));
+    }
+    if (edgeCases.contains(EdgeCase.NO_AUTHORIZATION)) {
+      details.add(another(first.clearing(), first.clearing().pan(), NO_AUTHORIZATION_CODE));
+    }
+    if (edgeCases.contains(EdgeCase.UNKNOWN_PAN)) {
+      details.add(another(first.clearing(), UNKNOWN_PAN, first.clearing().authorizationCode()));
+    }
+    if (edgeCases.contains(EdgeCase.DUPLICATE_RECORD)) {
+      details.add(details.getFirst());
+    }
+    return details;
+  }
+
+  // Another Clearing like this one, on this PAN under this authorization code, with a Network
+  // record ID and retrieval reference number of its own.
+  private Unsent another(Clearing like, String pan, String authorizationCode) {
+    return Unsent.of(
+        newNetworkRecordId(),
+        new Clearing(
+            pan,
+            like.amount(),
+            randomId(12),
+            authorizationCode,
+            like.acceptorId(),
+            like.chargeDate()));
   }
 
   /**
@@ -252,7 +258,7 @@ class NetworkClearingFiles {
     DUPLICATE_RECORD,
     /** The first Clearing is for $100.00 more than the Charge the Issuer authorized. */
     ABOVE_AUTHORIZED_AMOUNT,
-    /** An extra Clearing on the first one's card, under an authorization code no approval has. */
+    /** An extra Clearing on the first one's card, under a code no Authorization has. */
     NO_AUTHORIZATION,
     /** An extra Clearing on a Luhn-valid PAN from the Issuer's range that no card has. */
     UNKNOWN_PAN,
@@ -293,19 +299,14 @@ class NetworkClearingFiles {
               clearing.chargeDate().format(DATE)));
     }
 
-    Money amount() {
-      return clearing.amount();
-    }
-
-    LocalDate chargeDate() {
-      return clearing.chargeDate();
-    }
-
-    // The same Clearing, under the same Network record ID, for more.
-    Unsent raisedBy(long minorUnits) {
+    // The same Clearing, under the same Network record ID, for more in its own currency.
+    Unsent raisedBy(Money more) {
+      if (more.getCurrency() != clearing.amount().getCurrency()) {
+        throw new IllegalArgumentException("A Clearing is raised only in its own currency");
+      }
       var amount =
           new Money()
-              .minorUnits(clearing.amount().getMinorUnits() + minorUnits)
+              .minorUnits(clearing.amount().getMinorUnits() + more.getMinorUnits())
               .currency(clearing.amount().getCurrency());
       return of(
           networkRecordId,

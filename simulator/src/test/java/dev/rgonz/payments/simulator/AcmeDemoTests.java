@@ -360,8 +360,18 @@ class AcmeDemoTests {
     return record.substring(from - 1, to);
   }
 
-  /** A Clearing File import as the stub received it: the file named, and its content then. */
-  record Import(String fileName, String content) {}
+  /**
+   * A Clearing File import as the stub received it: the file named, and its content then. {@code
+   * toString} leaves out the content, which holds PANs, so a failed assertion doesn't print them.
+   */
+  record Import(String fileName, String content) {
+
+    @Override
+    public String toString() {
+      return "Import[fileName=%s, content %s]"
+          .formatted(fileName, content == null ? "absent" : "of " + content.length() + " chars");
+    }
+  }
 
   /** How the stub answers an import: the status and body the platform would send. */
   record ImportAnswer(int status, String body) {

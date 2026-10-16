@@ -432,7 +432,7 @@ sequenceDiagram
     DEMO->>NET: send the file again
     NET->>DROP: NET-….txt, as it was
     DEMO->>PLT: POST /v1/clearing-files {fileName}
-    PLT-->>DEMO: 409, it repeats the imported file
+    PLT-->>DEMO: 409, it repeats the imported file (422 again if the first was refused)
   end
   DEMO-->>You: the file's name and the platform's answer to each import
 ```
@@ -447,10 +447,10 @@ sequenceDiagram
   |---|---|---|
   | `duplicateRecord` | the first detail record again at the end, under its Network record ID | skips the repeat (`skippedCount`); the Network settles it twice, so the Settlement is mismatched |
   | `aboveAuthorizedAmount` | the first Clearing $100.00 above its Charge | `aboveAuthorizedAmount`, all of it posted |
-  | `noAuthorization` | an extra Clearing on the first one's card, authorization code `NONE` (an approval's has six characters) | `noAuthorization`, posted to the card's Buyer |
+  | `noAuthorization` | an extra Clearing on the first one's card, authorization code `NONE` (an approved Authorization's has six characters) | `noAuthorization`, posted to the card's Buyer |
   | `unknownPan` | an extra Clearing on `9900000000000000002`: Luhn-valid, from the 990000 range, 19 digits where the Issuer's PANs have 16 | `unknownCard`, posted to Clearing Suspense |
   | `wrongTrailerTotal` | the trailer's amount total one cent more than the records' | refuses the file whole: `422` |
-  | `sameFileTwice` | the same file delivered again, as it was, once the first import has taken it | the second import answers `409` |
+  | `sameFileTwice` | the same file delivered again, as it was, once the first import has taken it | the second import answers `409`; `422` again after a refused first import, as a refused file doesn't count |
 
   An extra Clearing is otherwise the first one's, under its own Network record ID and retrieval reference number. The trailer stays true to the records except under `wrongTrailerTotal`, and its net settlement amount is their total. The switches combine, change a file but never make one (with nothing to clear the answer is `204` whatever they say), and a Clearing sent under one counts as sent, even in a refused file. Sending a file again uses no sequence number.
 - **In memory only:** restarting the simulator loses the Clearings not yet sent, and the sequence number starts again at 1, like the Acquirer's STANs. The file holds PANs, as the Network's file does; the Network logs a file by its name, Business Date, count and total only.
@@ -462,7 +462,7 @@ sequenceDiagram
 - **A crash at each Payment state** (`PaymentSagaTests`): the platform stops mid-step after `STARTED`, `HOLD_PLACED` and `CARD_ISSUED`, and the next pass completes the Payment with one Hold and one card.
 - **Module boundaries:** `ModularityTests` (Spring Modulith's verification, and only `cards`, `suppliers`, `authorization` and `clearing` using `vault`).
 - **The simulator's roles and the demo** against stub Keycloak and platform servers, and a stub `IssuerAuthorization` gRPC server: after the Payment completes, the demo's Summary shows the Charge's answer; the clearing-file call writes the Network's file with the Charge in it, asks the platform to import it with `simulator-issuer-admin`'s token and answers with the file's name and the platform's summary as sent, its Settlement included, and with nothing left to clear answers `204`, writes nothing and imports nothing, whatever the switches. Each switch that changes the file makes one import of a file showing its change, and the answer carries the platform's response as sent, a `422`'s Problem Details included; `sameFileTwice` imports the same file, back in the drop folder, twice, and shows the `201` and the `409`. Neither answer nor the logs show any PAN in the file, the unknown one included (`AcmeDemoTests`).
-- **The core path through both apps** (`e2e`, `CorePathEndToEndTests`): the platform and the simulator run in one JVM against real PostgreSQL and Keycloak. The simulator's demo endpoint takes an Invoice through two approvals to a completed Payment, Globex opens the card through its link and charges it, and the platform approves the Charge (`00`, a six-character authorization code). The demo's clearing-file call then has the Network write its file into a temporary drop folder both apps share, and Issuer staff import it through the platform: one import, `201`, one Clearing, `IMPORTED`, its outcome `matched`, the file settled matched at the Charge's amount (a Settlement above zero always has its Journal Entry), and the file gone from the folder. Acme's credit, read as Issuer staff before and after, shows the Charge's Hold turned into its Buyer Receivable, Available Credit unchanged. `docs/learning/testcontainers.md` explains how two apps share one JVM.
+- **The core path through both apps** (`e2e`, `CorePathEndToEndTests`): the platform and the simulator run in one JVM against real PostgreSQL and Keycloak. The simulator's demo endpoint takes an Invoice through two approvals to a completed Payment, Globex opens the card through its link and charges it, and the platform approves the Charge (`00`, a six-character authorization code). The demo's clearing-file call then has the Network write its file into a temporary drop folder both apps share, and Issuer staff import it through the platform: one import, `201`, one Clearing, `IMPORTED`, its outcome `matched`, the file settled matched at the Charge's amount, and the file gone from the folder. The journal, which no API shows until M9, read from the platform's database, shows the Settlement posted: the Buyer Receivable owes the Charge's amount, the Network Settlement Payable is back to zero, and Issuer Cash paid it out. Acme's credit, read as Issuer staff before and after, shows the Charge's Hold turned into its Buyer Receivable, Available Credit unchanged. `docs/learning/testcontainers.md` explains how two apps share one JVM.
 
 ## How the Network link is proven
 

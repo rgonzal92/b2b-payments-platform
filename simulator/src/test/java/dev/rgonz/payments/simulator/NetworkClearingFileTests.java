@@ -285,7 +285,7 @@ class NetworkClearingFileTests {
   }
 
   @Test
-  void aClearingWithNoAuthorizationIsAnExtraOneOnTheFirstClearingsCardUnderACodeNoApprovalHas()
+  void aClearingWithNoAuthorizationIsAnExtraOneOnTheFirstClearingsCardUnderACodeNoneHas()
       throws IOException {
     issuer.answerWith("00", "AB12CD");
     acquirer.charge(card(1_240_000));
@@ -299,7 +299,7 @@ class NetworkClearingFileTests {
     assertThat(cleared).containsAllEntriesOf(clearingOf(charge, "AB12CD"));
     // The same card (one the Issuer issued), amount, Supplier and day, with its own Network record
     // ID and retrieval reference number, and an authorization code of four characters, where an
-    // approval's has six (the .proto's DE 38).
+    // approved Authorization's has six (the .proto's DE 38).
     var extra = Layout.read(lines.get(2));
     var expected = new HashMap<>(clearingOf(charge, "NONE"));
     expected.remove("retrievalReferenceNumber");
