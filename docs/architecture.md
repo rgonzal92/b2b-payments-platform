@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 foundations are built, and M1 is under way: `shared`, `buyers`, `ledger` (Credit Lines and Holds so far), `suppliers`, `payables` (Invoice intake, approvals and the Payment saga's first two steps so far), `cards` (Single-Use Cards) and `vault` exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 foundations are built, and M1 is under way: `shared`, `buyers`, `ledger` (Credit Lines and Holds so far), `suppliers` (with Remittance Advice), `payables` (Invoice intake, approvals and the Payment saga), `cards` (Single-Use Cards) and `vault` exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -24,7 +24,8 @@ flowchart LR
   erp -- "Invoices (REST)" --> platform
   buyerStaff -- "approve Invoices (REST)" --> platform
   issuerStaff -- "set up Buyers, resolve Breaks (REST)" --> platform
-  platform -- "Remittance Advice link" --> supplier
+  platform -- "Remittance Advice (POST to its remittance address)" --> supplier
+  supplier -- "opens the card link once (REST, no sign-in)" --> platform
   supplier -- "charges card" --> acquirer
   acquirer --> network
   network -- "Authorization, Reversal (gRPC)" --> platform
@@ -47,10 +48,10 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 |---|---|---|
 | `shared` | `Money`, `BuyerId`; open to every module | |
 | `buyers` | Buyer profiles, Approval Thresholds | |
-| `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice delivery | |
+| `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice and their one-time card links | `cards`, `vault` |
 | `payables` | Invoices and their Idempotency-Keys, approvals, Payments (runs the Payment saga) | `buyers`, `ledger`, `cards`, `suppliers` |
-| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far | `vault` |
-| `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards` may call it | |
+| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel) | `vault` |
+| `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards` and `suppliers` may call it | |
 | `authorization` | Authorization rules; answers the Network | `cards`, `ledger` |
 | `ledger` | Credit Lines, Holds, postings, Available Credit (ADR-0005) | `buyers` |
 | `clearing` | Clearing File processing, Settlement | `ledger` |
@@ -59,7 +60,7 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card, or `ledger` asking `buyers` whether a Buyer exists before setting its Credit Line. The callee answers through a public type in its module's top-level package (`buyers.BuyerDirectory`); the rest of the module stays package-private.
-- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places and releases Holds through `ledger.Holds` and issues cards through `cards.Cards`, inside the worker's transaction, so each step and the Payment's new state commit together. `cards` asks `vault.Vault` for a new PAN by Card Token, in that same transaction, and gets back only its last four digits; `ModularityTests` fails if any module other than `cards` uses `vault`.
+- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places and releases Holds through `ledger.Holds` and issues cards through `cards.Cards`, inside the worker's transaction, so each step and the Payment's new state commit together. `cards` asks `vault.Vault` for a new PAN by Card Token, in that same transaction, and gets back only its last four digits. The saga delivers the Remittance Advice through `suppliers.RemittanceAdvices`, and when delivery fails for good it cancels the card through `cards.Cards`. When a Supplier opens its link, `suppliers` asks `cards.Cards` for the card (status, expiry) and `vault.Vault` for its PAN and security code. `ModularityTests` fails if any module other than `cards` and `suppliers` uses `vault`.
 - **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008). The first is `payables.InvoiceApproved` (Invoice, Buyer, Supplier, amount), published by the approval that completes an Invoice; the Payment saga's listener starts a Payment from it. Publications whose listener didn't complete are delivered again when the platform starts, so a listener must cope with the same event twice.
 - **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`. Spring Modulith's event publication registry keeps its one table, `event_publication`, in a `modulith` schema it creates at startup.
 
@@ -122,7 +123,7 @@ sequenceDiagram
 | 2. Issue the card and store its PAN | `cards`, `vault` | Release the Hold |
 | 3. Send the Remittance Advice | `suppliers` | Cancel the card, release the Hold |
 
-Steps 1 (#17) and 2 (#18) are built; a Payment stops at `CARD_ISSUED` until the Remittance Advice arrives (#19).
+All three steps are built: the Hold (#17), the card (#18) and the Remittance Advice (#19).
 
 ```mermaid
 stateDiagram-v2
@@ -133,16 +134,20 @@ stateDiagram-v2
   HOLD_PLACED --> HOLD_PLACED: technical error, retried after 10, 20, 40, 80 s
   HOLD_PLACED --> CARD_ISSUED: Single-Use Card issued
   HOLD_PLACED --> FAILED: the fifth technical error; the Hold is released
-  CARD_ISSUED --> [*]: Remittance Advice (#19)
+  CARD_ISSUED --> CARD_ISSUED: technical error (no 2xx in time), retried after 10, 20, 40, 80 s
+  CARD_ISSUED --> COMPLETED: the Supplier answers the Remittance Advice with a 2xx
+  CARD_ISSUED --> FAILED: the fifth technical error; the card is cancelled and the Hold released
+  COMPLETED --> [*]
   FAILED --> [*]
 ```
 
 - **The state row (ADR-0014):** each Payment is a row in `payables.payment` with its state, failure reason, failed attempts at the current step and the time its next step is due. `GET /v1/invoices/{invoiceId}` shows the state and any failure reason.
 - **Starting:** `PaymentSaga.start` is an `@ApplicationModuleListener` for `InvoiceApproved`. It runs asynchronously after the approval commits and inserts the Payment unless the Invoice already has one, so a redelivered event changes nothing.
 - **The worker:** `PaymentWorkerSchedule` calls `PaymentSaga.runDueSteps` every second (`payables.payment-worker.enabled=false` turns it off for tests that drive it by hand). Each pass claims up to ten due Payments, one per transaction, with `select ... for update skip locked`, so workers on other threads or instances skip Payments already claimed. In that transaction it runs the step and saves the Payment's new state, so a crash rolls both back. A technical error rolls the transaction back too, and a new transaction counts the failed attempt unless another worker has moved the Payment on meanwhile.
-- **Placing a Hold (`ledger.Holds`):** locks the Buyer's Credit Line row, returns the existing Hold if one has the Payment's ID, sums the open Holds in a separate statement, and inserts the Hold only if the amount fits in Available Credit. A Buyer without a Credit Line has no credit. Holds live in `ledger.hold`.
-- **Issuing the card (`cards.Cards`):** returns the Payment's card if it has one; otherwise draws a Card Token, has `vault` generate and store the PAN, and stores the card in `cards.card`, locked to the Invoice's Supplier and amount and valid for 30 days. Placing the Hold makes this step due at once, so one worker pass usually runs both steps, each in its own transaction.
-- **Compensation:** the transaction that records a step's fifth technical error also undoes the steps before it. Card issuance failing for good releases the Hold (`Holds.release`, which deletes its row and is harmless to repeat) as the Payment becomes `FAILED`, so Available Credit comes back at once.
+- **Placing a Hold (`ledger.Holds`):** locks the Buyer's Credit Line row, returns the existing Hold if one has the Payment's ID, sums the open Holds in a separate statement, and inserts the Hold only if the amount fits in Available Credit. A Buyer without a Credit Line has no credit. Holds live in `ledger.hold`; a released Hold keeps its row, marked `RELEASED` with its release time, and placing it again checks Available Credit afresh.
+- **Issuing the card (`cards.Cards`):** returns the Payment's card if it has one; otherwise draws a Card Token, has `vault` generate and store the PAN, and stores the card in `cards.card`, locked to the Invoice's Supplier and amount and valid for 30 days. Placing the Hold makes this step due at once.
+- **Delivering the Remittance Advice (`suppliers.RemittanceAdvices`):** records the advice and POSTs it to the Supplier's remittance address (see [Remittance Advice](#remittance-advice)); a 2xx answer completes the Payment. Issuing the card makes this step due at once, so one worker pass usually runs all three steps, each in its own transaction.
+- **Compensation:** the transaction that records a step's fifth technical error also undoes the steps before it, so Available Credit comes back as the Payment becomes `FAILED`. Card issuance failing for good releases the Hold (`Holds.release`, which marks it `RELEASED` and is harmless to repeat). Delivery failing for good cancels the card (`Cards.cancel`, status `CANCELLED`, harmless to repeat), so its link shows nothing, and releases the Hold.
 - **Available Credit** is the Credit Line minus open Holds (posted spend arrives in M3). It is negative when Issuer staff lower a Credit Line below the open Holds, and no new Hold is placed until Available Credit covers its amount again.
 - **What to do when a Payment is stuck:** [`runbooks/payment-stuck.md`](runbooks/payment-stuck.md). How the saga and the worker work: [`learning/sagas.md`](learning/sagas.md).
 
@@ -153,12 +158,48 @@ A Single-Use Card's data is split between two modules so the PAN lives in exactl
 | | `cards.card` | `vault.card_secret` |
 |---|---|---|
 | Key | Card Token: 16 random bytes, base64url | the same Card Token |
-| Stores | Payment (unique), Buyer, Supplier and amount the card is locked to, last four digits, issue and expiry times, status (`ACTIVE`; cancellation arrives with #19) | the PAN and the security code, each AES-256-GCM-encrypted under a fresh nonce with the Card Token as associated data; the PAN's HMAC-SHA-256 hash, unique |
-| Read by | `payables` (the Invoice shows Card Token, last four digits, expiry) | nobody yet; the remittance link (#19) |
+| Stores | Payment (unique), Buyer, Supplier and amount the card is locked to, last four digits, issue and expiry times, status (`ACTIVE`, or `CANCELLED` when its Remittance Advice couldn't be delivered) | the PAN and the security code, each AES-256-GCM-encrypted under a fresh nonce with the Card Token as associated data; the PAN's HMAC-SHA-256 hash, unique |
+| Read by | `payables` (the Invoice shows Card Token, last four digits, expiry); `suppliers` (status and expiry, when a link is opened) | `suppliers`, when a Supplier opens its link: the PAN and security code, decrypted, never stored outside the vault |
 
 - **PANs** are synthetic: 16 digits, `990000` followed by nine random digits and a Luhn check digit. A PAN whose hash another card already has is drawn again.
 - **Keys:** two separate 256-bit keys, one to encrypt and one to hash, come from `vault.encryption-key` and `vault.hash-key` (`VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` in `.env`, written by `scripts/init-env.sh`). The platform doesn't start when either is missing or isn't 32 bytes ([`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md)). M7 replaces them with envelope encryption.
 - **How it works and why:** [`learning/card-vault.md`](learning/card-vault.md).
+
+## Remittance Advice
+
+The saga's third step tells the Supplier which Invoice is paid and hands it the Single-Use Card, through a link that shows the card's details once.
+
+```mermaid
+sequenceDiagram
+  participant PAY as payables (worker)
+  participant SUP as suppliers
+  participant SPL as Supplier's remittance address
+  participant CRD as cards
+  participant VLT as vault
+
+  PAY->>SUP: deliver the advice (in the worker's transaction)
+  SUP->>SUP: record it with its link's hash (commits on its own)
+  SUP->>SPL: POST RemittanceAdvice, Idempotency-Key = Payment ID
+  SPL-->>SUP: 2xx
+  SUP-->>PAY: delivered: the Payment is COMPLETED
+  SPL->>SUP: GET /v1/remittance-links/{token} (no sign-in)
+  SUP->>SUP: mark the link used, in the statement that reads it
+  SUP->>CRD: the card (status, expiry)
+  SUP->>VLT: its PAN and security code
+  SUP-->>SPL: card details, Cache-Control: no-store
+```
+
+| | `suppliers.remittance_advice` |
+|---|---|
+| Key | the Payment's ID: one advice per Payment |
+| Stores | the Invoice's ID and number, the Supplier, the amount, the Card Token; the SHA-256 of the link's token (unique); the link's expiry, 7 days after the first attempt, and when it was used |
+| Never stores | the link's token, the PAN or the security code |
+
+- **The link's token** is HMAC-SHA-256 of the Payment's ID under `remittance.link-key` (`REMITTANCE_LINK_KEY` in `.env`, written by `scripts/init-env.sh`), base64url-encoded: 256 bits nobody can work out without the key, and the same on every delivery attempt, so a retry after a crash sends the link the Supplier may already hold. The platform doesn't start without the key. The link is `platform.public-url` + `/v1/remittance-links/{token}`.
+- **Delivery** records the advice in a transaction of its own before the POST, so the link works the moment the Supplier receives it; a second attempt finds the record and sends the same advice. The POST goes through Spring's `RestClient` (2-second connect and 5-second read timeouts, no redirects). Anything but a 2xx is a technical error for the saga to retry; the error names only the status, never the Supplier's answer.
+- **Opening** a link hashes the token and runs one `update ... returning` that sets `link_used_at` only if it is unset and the link hasn't expired, so of two opens at once exactly one shows the card. A token with no record answers `404`; a used or expired link, or one whose card is cancelled, `410`. The PAN and security code come from `vault` for that answer only. Nothing logs the token, the PAN or the security code.
+- **The Supplier's address** is the remittance address on the first Invoice naming its tax ID (see Invoice intake in the M1 design). The simulator plays the Supplier Globex at `http://localhost:8081/globex/remittance-advice`: it drops repeated advice by `Idempotency-Key`, opens each link once, and logs only the last four digits.
+- **How it works and why:** [`learning/one-time-links.md`](learning/one-time-links.md). When delivery keeps failing: [`runbooks/payment-stuck.md`](runbooks/payment-stuck.md).
 
 ## Quality targets
 

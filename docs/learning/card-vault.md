@@ -34,7 +34,7 @@ payables (worker transaction)
 - `VaultCrypto` does the cryptography with the JDK's `javax.crypto` (`AES/GCM/NoPadding`, `HmacSHA256`): no extra library. A `Cipher` and a `Mac` aren't thread-safe, so each call gets its own.
 - The keys come from `vault.encryption-key` and `vault.hash-key`, mapped from `VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` in `.env`. `VaultCrypto` is built at startup and throws when a key is missing, isn't base64 or isn't exactly 32 bytes, so the platform fails fast with a message naming the property, never its value.
 - Everything joins the worker's transaction, so the card, its PAN and the Payment's new state commit together. A crash mid-step leaves no PAN behind for a card that doesn't exist.
-- `ModularityTests.onlyCardsUsesTheVault` fails the build if any module but `cards` depends on `vault`.
+- `ModularityTests.onlyCardsAndSuppliersUseTheVault` fails the build if any module but `cards` and `suppliers` depends on `vault`. `suppliers` asks `Vault.cardDetails(cardToken)` for the PAN and security code, decrypted, only to answer a Supplier opening its Remittance Advice link once ([`one-time-links.md`](one-time-links.md)); it stores neither.
 
 ## Gotchas we hit
 
@@ -44,4 +44,5 @@ payables (worker transaction)
 - **PostgreSQL rounds timestamps to microseconds.** The first test compared the card's expiry with the worker's `now` plus 30 days and was off by one microsecond: PostgreSQL rounds rather than truncates. `cards` now truncates `now` to microseconds itself, so the card returned at issuance equals the one read back later.
 - **A test properties file can hide the real one.** `src/test/resources/application.properties` would replace the main file on the test classpath. The fixed test-only keys live in `src/test/resources/config/application.properties`, which Spring Boot loads on top of the main file. Every byte of each test key is the same (`0x01`, `0x02`), so they're obviously fake and gitleaks' entropy check ignores them.
 - **"Only cards may use the vault" isn't an allowed-dependency rule.** Spring Modulith's `allowedDependencies` restricts what a module may depend on, not who may depend on it, so the rule is a test over Modulith's module model instead.
+- **A forced PAN collision needs a random source the test controls.** `CardSecrets` takes a `RandomGenerator` in a second constructor; `CardSecretsTests` hands it scripted draws that repeat the first card's PAN for the second card, then checks the second card gets the next PAN drawn.
 - **A test proves the vault joins the caller's transaction.** If `vault` committed on its own (`REQUIRES_NEW`), a crash after the PAN was stored but before the card was would leave an orphaned PAN. `PaymentSagaTests` stops the platform mid-step and checks no PAN is left without its card; with `REQUIRES_NEW` it failed.
