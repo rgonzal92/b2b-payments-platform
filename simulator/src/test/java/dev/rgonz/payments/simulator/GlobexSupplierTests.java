@@ -33,7 +33,8 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 @ExtendWith(OutputCaptureExtension.class)
 class GlobexSupplierTests {
 
-  private static final String TOKEN = "dGVzdC1vbmx5LWxpbmstdG9rZW4tbm90LWEtc2VjcmV0";
+  // A made-up link token, low in entropy so secret scanners pass it by.
+  private static final String TOKEN = "test-only-link-token";
   private static final String PAN = "9900001234567899";
 
   static final AtomicInteger linkOpens = new AtomicInteger();

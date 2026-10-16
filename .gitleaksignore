@@ -1,0 +1,5 @@
+# False positives (docs/runbooks/leaked-secret.md). Each line is a finding's fingerprint from the secrets job's log.
+
+# A made-up Remittance Advice link token in a simulator test fixture (the base64 of a "test-only" phrase), not a
+# credential. A later commit replaced it with a low-entropy value.
+fffe9e8706a8bfb35d7f6709fa6cb26b98ecd16b:simulator/src/test/java/dev/rgonz/payments/simulator/GlobexSupplierTests.java:generic-api-key:32
