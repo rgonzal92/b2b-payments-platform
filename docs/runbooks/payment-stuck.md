@@ -1,10 +1,20 @@
 # A Payment is stuck
 
-**Signals:** an approved Invoice shows no `payment` on `GET /v1/invoices/{invoiceId}` for more than a few seconds; a Payment stays `STARTED`, `HOLD_PLACED` or `CARD_ISSUED`; the platform logs `Payment … failed its step for technical reasons (n of 5 attempts)`; a Payment is `FAILED` with "Placing the Hold failed 5 times for technical reasons.", "Issuing the Single-Use Card failed 5 times for technical reasons." or "Delivering the Remittance Advice failed 5 times for technical reasons."
+**Signals:** an approved Invoice shows no `payment` on `GET /v1/invoices/{invoiceId}` for more than a few seconds; the simulator's demo (`POST /demo/invoices`) answers with a `paymentState` other than `COMPLETED`, or none; a Payment stays `STARTED`, `HOLD_PLACED` or `CARD_ISSUED`; the platform logs `Payment … failed its step for technical reasons (n of 5 attempts)`; a Payment is `FAILED` with "Placing the Hold failed 5 times for technical reasons.", "Issuing the Single-Use Card failed 5 times for technical reasons." or "Delivering the Remittance Advice failed 5 times for technical reasons."
 
 How a Payment moves (details in [`docs/learning/sagas.md`](../learning/sagas.md)): the approval that completes an Invoice publishes `InvoiceApproved`; a listener inserts the Payment as `STARTED` a moment later; a worker in the platform claims due Payments every second, places the Hold (`HOLD_PLACED`), issues the Single-Use Card (`CARD_ISSUED`), then POSTs the Remittance Advice to the Supplier's remittance address (`COMPLETED` on a 2xx answer). A technical error is retried after 10, 20, 40 and 80 seconds, and the fifth fails the Payment; failing at card issuance also releases the Hold, and failing to deliver the Remittance Advice also cancels the card and releases the Hold. Not enough Available Credit fails it at once.
 
-Every query below runs against the development database: `docker compose exec postgres psql -U payments payments`.
+Every query below runs against the development database: `docker compose exec postgres psql -U payments payments`. Start with where every Payment stands; on a healthy platform no state has a Payment due more than a second or two ago:
+
+```sql
+select state, count(*), min(next_attempt_at) as due_longest
+  from payables.payment
+ group by state;
+```
+
+## Restarting the platform is safe
+
+Stopping the platform, even with Payments under way, strands none of them. A stop mid-step rolls back that step's transaction, and the next pass after the restart runs the step again, so a Payment completes with exactly one Hold and one card (`PaymentSagaTests` stops the platform during each step to prove it). The one thing a stop leaves behind is a Remittance Advice's record, which commits before the POST (ADR-0014): a Payment stopped at `CARD_ISSUED` after the Supplier received the advice delivers it again on restart, with the same link and `Idempotency-Key`, and the Supplier drops the repeat. Restarting is also what delivers an `InvoiceApproved` whose listener failed (next section).
 
 ## The Invoice is approved but has no Payment
 
@@ -33,7 +43,7 @@ select id, invoice_id, state, attempts, next_attempt_at
 
 - **`next_attempt_at` is in the future and `attempts` is above zero:** the step failed for technical reasons and waits for its retry. Find the cause in the logs by the Payment's ID (`Payment <id> failed its step for technical reasons`). It fails for good on the fifth attempt. Card issuance has no business refusal, so a `HOLD_PLACED` Payment's errors are always technical, usually the database. A `CARD_ISSUED` Payment's errors are usually the Supplier's: see the next section.
 - **`next_attempt_at` is in the past:** the worker isn't running, is stuck waiting for a lock, or can't claim the row.
-  1. Check that `payables.payment-worker.enabled` isn't `false` in the platform's configuration or environment.
+  1. Check that `payables.payment-worker.enabled` isn't `false` in the platform's configuration or environment. A running worker leaves one trace a second in Grafana: under **Explore**, **Tempo**, the TraceQL query `{name="task paymentWorkerSchedule.runDueSteps"}` lists them. None in the last minute means it isn't running; one that lasts seconds means a step is waiting (on a lock, or a Supplier).
   2. Check whether the worker is waiting for a lock. Placing a Hold waits, without a time limit, for the Buyer's Credit Line row; while it waits, the worker runs nothing else on that platform instance, so every Payment stalls behind it:
 
      ```sql

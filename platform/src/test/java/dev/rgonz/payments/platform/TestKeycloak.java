@@ -23,7 +23,8 @@ final class TestKeycloak {
           .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET);
 
-  // Testcontainers stops it when the test JVM exits.
+  // Started on first use and never stopped: Ryuk, Testcontainers' clean-up container, removes it
+  // once the test JVM exits (CI turns Ryuk off and throws the whole runner away instead).
   static {
     keycloak.start();
   }
