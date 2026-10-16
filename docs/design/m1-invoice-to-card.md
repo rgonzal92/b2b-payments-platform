@@ -57,7 +57,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
   - Keys are kept per Buyer, so one Buyer reusing another's key gets its own Invoice, never the other's response.
   - A refused request (`409`, a validation `400`) stores nothing under its key; resending it is refused the same way.
   - A token whose `buyer_id` is missing or names no known Buyer is `403`, checked through `buyers`.
-  - A Supplier's name and remittance address come from the first Invoice naming its tax ID, and a Supplier Relationship's reference from that Buyer's first Invoice to it. Later Invoices don't change them, and a different name or address on a later Invoice is ignored without an error. This stops any Buyer's ERP redirecting Remittance Advice for a Supplier others already use, but the first ERP to name a tax ID sets the address every later Buyer's Remittance Advice goes to. Neither "first wins" nor "last wins" is safe on its own: Issuer staff verifying Supplier details closes that gap, and isn't built yet. (Open for the owner's sign-off.)
+  - A Supplier's name and remittance address come from the first Invoice naming its tax ID, and a Supplier Relationship's reference from that Buyer's first Invoice to it. Later Invoices don't change them, and a different name or address on a later Invoice is ignored without an error. This stops any Buyer's ERP redirecting Remittance Advice for a Supplier others already use, but the first ERP to name a tax ID sets the address every later Buyer's Remittance Advice goes to. Neither "first wins" nor "last wins" is safe on its own: Issuer staff verifying Supplier details closes that gap, and isn't built yet. (Approved by the owner; Supplier verification belongs to the Supplier acceptance milestone.)
 
 ### Approvals
 
@@ -71,7 +71,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
   - The Invoice stays `RECEIVED` until it is `APPROVED` or `REJECTED`; above the threshold its first approval shows only in its `decisions`, so no partly-approved state is needed.
   - Neither action takes an `Idempotency-Key`: the same Approver approving again changes nothing and returns the Invoice. A rejection is final, so every later decision, the same Approver's repeated rejection included, is `409`; a client unsure whether its rejection arrived reads the Invoice.
   - An Approver may reject an Invoice they approved while it still awaits a second approval; the record then shows both of their decisions.
-  - An approved Invoice takes no new decisions (`409`), a rejection included, because its Payment may already be under way. (Open for the owner's sign-off: the ticket names only a new Approver's approval.)
+  - An approved Invoice takes no new decisions (`409`), a rejection included, because its Payment may already be under way. (Approved by the owner: the ticket named only a new Approver's approval.)
   - Concurrent decisions on one Invoice take turns on its row lock (`select ... for update`), so two Approvers can't both be counted as the first.
   - `InvoiceApproved` carries the Invoice, Buyer, Supplier and amount, which is what the saga needs to place the Hold and issue the card.
 
