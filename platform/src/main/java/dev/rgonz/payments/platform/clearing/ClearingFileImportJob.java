@@ -21,10 +21,10 @@ import org.springframework.transaction.PlatformTransactionManager;
 /**
  * The Clearing File import, a Spring Batch job run once per file, keyed by the file's ID: Spring
  * Batch refuses to run a file whose import completed again, and restarts one that stopped from the
- * last chunk it committed. Steps run in order: {@code validate}, {@code import}, {@code complete}.
- * Every step's transaction is the platform's own DataSource transaction, which the job repository
- * shares, so a chunk's Journal Entries, Holds, cards and Clearings, and the record of how far the
- * step got, commit together.
+ * last chunk it committed. Steps run in order: {@code validate}, {@code import}, {@code settle},
+ * {@code complete}. Every step's transaction is the platform's own DataSource transaction, which
+ * the job repository shares, so a chunk's Journal Entries, Holds, cards and Clearings, and the
+ * record of how far the step got, commit together.
  */
 @Configuration(proxyBeanMethods = false)
 class ClearingFileImportJob {
@@ -47,10 +47,12 @@ class ClearingFileImportJob {
       JobRepository jobRepository,
       Step validateClearingFile,
       Step importClearings,
+      Step settleClearingFile,
       Step completeClearingFile) {
     return new JobBuilder(NAME, jobRepository)
         .start(validateClearingFile)
         .next(importClearings)
+        .next(settleClearingFile)
         .next(completeClearingFile)
         .build();
   }
@@ -98,8 +100,29 @@ class ClearingFileImportJob {
         .build();
   }
 
-  // The file becomes IMPORTED in the same transaction that records the step complete. #52's settle
-  // step goes before it.
+  // Once every Clearing is recorded, the file is settled at its trailer's net settlement amount, in
+  // one transaction. The file still waits in processing/, so its trailer is read from it again.
+  @Bean
+  Step settleClearingFile(
+      JobRepository jobRepository,
+      PlatformTransactionManager transactionManager,
+      Settlements settlements) {
+    return new StepBuilder("settle", jobRepository)
+        .tasklet(
+            (contribution, chunkContext) -> {
+              var parameters = contribution.getStepExecution().getJobParameters();
+              FileTrailer trailer;
+              try (var lines = ClearingFileLayout.open(Path.of(parameter(parameters, FILE)))) {
+                trailer = ClearingFileLayout.read(lines, clearing -> {}).trailer();
+              }
+              settlements.settle(parameter(parameters, FILE_ID), trailer.netSettlementAmount());
+              return RepeatStatus.FINISHED;
+            },
+            transactionManager)
+        .build();
+  }
+
+  // The file becomes IMPORTED in the same transaction that records the step complete.
   @Bean
   Step completeClearingFile(
       JobRepository jobRepository,
