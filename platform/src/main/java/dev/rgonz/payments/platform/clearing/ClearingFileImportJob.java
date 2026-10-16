@@ -36,9 +36,6 @@ class ClearingFileImportJob {
   /** Where the file waits during its import: not identifying, so it names no new run. */
   static final String FILE = "file";
 
-  /** The file's {@link ClearingFileLayout#contentHash}: not identifying either. */
-  static final String CONTENT_HASH = "contentHash";
-
   /** The first step: its failure means the file was refused and nothing posted. */
   static final String VALIDATE = "validate";
 
@@ -70,15 +67,16 @@ class ClearingFileImportJob {
         .tasklet(
             (contribution, chunkContext) -> {
               var parameters = contribution.getStepExecution().getJobParameters();
+              var file = Path.of(parameter(parameters, FILE));
               ClearingFileLayout.Envelope envelope;
-              try (var lines = ClearingFileLayout.open(Path.of(parameter(parameters, FILE)))) {
+              try (var lines = ClearingFileLayout.open(file)) {
                 envelope = ClearingFileLayout.read(lines, clearing -> {});
               }
               if (!envelope.header().fileId().equals(parameter(parameters, FILE_ID))) {
                 throw new MalformedClearingFileException(
                     1, "the file ID isn't the one its import started with");
               }
-              files.receive(envelope, parameter(parameters, CONTENT_HASH));
+              files.receive(envelope, ClearingFileLayout.contentHash(file));
               return RepeatStatus.FINISHED;
             },
             transactionManager)

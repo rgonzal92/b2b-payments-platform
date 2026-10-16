@@ -335,9 +335,13 @@ class ClearingFileImportTests {
   @Test
   void anImportedFileIsDeletedAndItsHashAndHeaderAndTrailerFiguresAreKept() {
     var fileId = newId("F", 16);
-    // The same content whatever its file ID, so its hash is known: `tail -c +23 <file> | sha256sum`
-    // over this file gives the hash below. Its card is one the vault doesn't know. The Network
-    // settles a figure of its own, which the trailer carries beside the amount total.
+    // The same content whatever its file ID, so its hash is known: the runbook's command, which
+    // leaves out the header's file ID and each detail record's PAN,
+    //   awk 'NR == 1 { print substr($0, 23); next }
+    //        /^05/ { print substr($0, 1, 22) substr($0, 42); next } { print }' <file> | sha256sum
+    // gives the hash below over this file, whatever its PAN. Its card is one the vault doesn't
+    // know. The Network settles a figure of its own, which the trailer carries beside the amount
+    // total.
     var fileName =
         TestClearingFiles.write(
             DROP_FOLDER,
@@ -375,7 +379,7 @@ class ClearingFileImportTests {
         .containsEntry("net_settlement_amount_minor", 124_000L)
         .containsEntry("totals_currency", "USD")
         .containsEntry(
-            "content_hash", "eec2dfdddd1cdd636feec674c8dc18e1e6060fde00cd7fe6bec15afb7be660dc");
+            "content_hash", "91731a4f539bd52ffefa9d9768fb210eab0584f9049d5fbc9bf3c59a85da8bab");
   }
 
   @Test

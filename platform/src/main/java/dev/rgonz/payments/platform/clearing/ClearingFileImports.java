@@ -129,8 +129,7 @@ class ClearingFileImports {
 
   private ImportResult run(FileHeader header, Path file) throws IOException {
     var fileId = header.fileId();
-    var contentHash = ClearingFileLayout.contentHash(file);
-    var earlier = files.repeatedBy(fileId, contentHash);
+    var earlier = files.repeatedBy(fileId, ClearingFileLayout.contentHash(file));
     if (earlier.isPresent()) {
       return repeated(file, earlier.get());
     }
@@ -138,7 +137,6 @@ class ClearingFileImports {
         new JobParametersBuilder()
             .addString(ClearingFileImportJob.FILE_ID, fileId)
             .addString(ClearingFileImportJob.FILE, file.toString(), false)
-            .addString(ClearingFileImportJob.CONTENT_HASH, contentHash, false)
             .toJobParameters();
     JobExecution execution;
     try {

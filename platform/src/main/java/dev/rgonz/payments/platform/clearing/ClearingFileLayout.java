@@ -3,11 +3,9 @@ package dev.rgonz.payments.platform.clearing;
 import dev.rgonz.payments.platform.shared.Money;
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
@@ -29,8 +27,11 @@ final class ClearingFileLayout {
 
   static final int RECORD_LENGTH = 120;
 
-  // The header's file ID is its positions 3–22.
+  // The header's file ID ends at position 22, and a detail record's PAN takes positions 23–41, as
+  // in parse below and in layout.md.
   private static final int FILE_ID_END = 22;
+  private static final int PAN_FROM = 23;
+  private static final int PAN_TO = 41;
 
   private static final DateTimeFormatter DATE =
       DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
@@ -38,9 +39,11 @@ final class ClearingFileLayout {
   private ClearingFileLayout() {}
 
   /**
-   * The SHA-256 of the file from position 23 of its header on, in hex: everything but its record
-   * type and its file ID, so the same file sent again under another file ID has the same hash. Of
-   * the file's bytes as they are, line ends included.
+   * The SHA-256 of the file's content, in hex: each line followed by a line feed, leaving out the
+   * header's record type and file ID (its first 22 characters), so the same file sent again under
+   * another file ID has the same hash, and each detail record's PAN (positions 23–41), so the hash,
+   * kept outside the vault, can't be worked back to a PAN (ADR-0004). Reads a malformed file
+   * without throwing; the validate step refuses it.
    */
   static String contentHash(Path file) throws IOException {
     MessageDigest sha256;
@@ -49,11 +52,26 @@ final class ClearingFileLayout {
     } catch (NoSuchAlgorithmException everyJavaHasIt) {
       throw new IllegalStateException(everyJavaHasIt);
     }
-    try (var bytes = Files.newInputStream(file)) {
-      bytes.skipNBytes(FILE_ID_END);
-      bytes.transferTo(new DigestOutputStream(OutputStream.nullOutputStream(), sha256));
+    try (var lines = open(file)) {
+      var line = lines.readLine();
+      if (line != null) {
+        hash(sha256, line.substring(Math.min(FILE_ID_END, line.length())));
+      }
+      while ((line = lines.readLine()) != null) {
+        hash(sha256, line.startsWith("05") ? withoutPan(line) : line);
+      }
     }
     return HexFormat.of().formatHex(sha256.digest());
+  }
+
+  private static void hash(MessageDigest sha256, String content) {
+    sha256.update((content + "\n").getBytes(StandardCharsets.US_ASCII));
+  }
+
+  // A detail record without its positions 23–41, as far as it reaches them.
+  private static String withoutPan(String detail) {
+    return detail.substring(0, Math.min(PAN_FROM - 1, detail.length()))
+        + (detail.length() > PAN_TO ? detail.substring(PAN_TO) : "");
   }
 
   /** Opens the file for reading, in the layout's character set (US-ASCII). */
