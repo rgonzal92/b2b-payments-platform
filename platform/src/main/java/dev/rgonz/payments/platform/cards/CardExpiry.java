@@ -13,7 +13,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * CardExpirySchedule} runs it; tests switch the schedule off and run it with a later {@code now}.
  */
 @Component
-public class CardExpiry {
+class CardExpiry {
 
   private static final Logger log = LoggerFactory.getLogger(CardExpiry.class);
   private static final int BATCH_SIZE = 100;
@@ -35,7 +35,7 @@ public class CardExpiry {
    * leaves each card either still {@code ACTIVE}, for the next run, or {@code EXPIRED} with its
    * event recorded, for the registry to deliver. Cards another run has locked are skipped.
    */
-  public void expireDue(Instant now) {
+  void expireDue(Instant now) {
     boolean batchWasFull;
     do {
       batchWasFull = Boolean.TRUE.equals(transaction.execute(status -> expireBatch(now)));

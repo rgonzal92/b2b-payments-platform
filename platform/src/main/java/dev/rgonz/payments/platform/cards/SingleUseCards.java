@@ -111,11 +111,11 @@ class SingleUseCards implements Cards {
   }
 
   /**
-   * Marks up to {@code limit} {@code ACTIVE} cards whose expiry is at or before {@code now} {@code
-   * EXPIRED} and returns them, skipping cards other transactions have locked. Joins the caller's
-   * transaction, which keeps them locked until it ends.
+   * Marks up to {@code batchSize} {@code ACTIVE} cards whose expiry is at or before {@code now}
+   * {@code EXPIRED} and returns them, skipping cards other transactions have locked. Joins the
+   * caller's transaction, which keeps them locked until it ends.
    */
-  List<SingleUseCard> expireDue(Instant now, int limit) {
+  List<SingleUseCard> expireDue(Instant now, int batchSize) {
     // The literal 'ACTIVE' matches card_expires_at_idx's predicate; a bound parameter wouldn't,
     // once PostgreSQL switches the prepared statement to a generic plan.
     return jdbc.sql(
@@ -127,13 +127,13 @@ class SingleUseCards implements Cards {
                                    where status = 'ACTIVE'
                                      and expires_at <= :now
                                    order by expires_at
-                                   limit :limit
+                                   limit :batchSize
                                      for update skip locked)
             returning
             """
                 + COLUMNS)
         .param("now", now.atOffset(ZoneOffset.UTC))
-        .param("limit", limit)
+        .param("batchSize", batchSize)
         .query(SingleUseCards::toCard)
         .list();
   }

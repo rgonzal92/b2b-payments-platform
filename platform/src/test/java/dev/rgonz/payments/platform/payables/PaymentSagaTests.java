@@ -21,7 +21,7 @@ import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
 import dev.rgonz.payments.platform.cards.CardExpired;
-import dev.rgonz.payments.platform.cards.CardExpiry;
+import dev.rgonz.payments.platform.cards.CardExpiryJob;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
@@ -51,6 +51,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.TransientDataAccessResourceException;
@@ -93,7 +94,7 @@ class PaymentSagaTests {
   @Autowired CompletedEventPublications completedEvents;
   @Autowired JdbcClient jdbc;
   @Autowired MockRestServiceServer supplier;
-  @Autowired CardExpiry cardExpiry;
+  @Autowired ApplicationContext context;
   @MockitoSpyBean Holds holds;
   @MockitoSpyBean Cards cards;
   @MockitoSpyBean RemittanceAdvices remittanceAdvices;
@@ -192,7 +193,7 @@ class PaymentSagaTests {
     var creditWhilePaid = availableCredit(acme);
     var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
 
-    cardExpiry.expireDue(card.expiresAt().plusSeconds(1));
+    CardExpiryJob.runAt(context, card.expiresAt().plusSeconds(1));
 
     await()
         .atMost(Duration.ofSeconds(10))
@@ -213,8 +214,8 @@ class PaymentSagaTests {
         UUID.randomUUID(), new BuyerId(acme), new Money(1_000_000, Currency.getInstance("USD")));
     var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
 
-    cardExpiry.expireDue(card.expiresAt());
-    cardExpiry.expireDue(card.expiresAt());
+    CardExpiryJob.runAt(context, card.expiresAt());
+    CardExpiryJob.runAt(context, card.expiresAt());
     await().atMost(Duration.ofSeconds(10)).until(() -> completedExpiriesOf(card.cardToken()) == 1);
     // The same event again, as the registry redelivers one whose listener's completion was lost.
     transactions.executeWithoutResult(

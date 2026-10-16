@@ -20,10 +20,8 @@ class CardExpirySchedule {
     this.expiry = expiry;
   }
 
-  // Cards expire at any time of day, 30 days after issuance to the microsecond. Until the job runs,
-  // an expired card's Hold keeps its Buyer's credit reserved: a minute keeps that delay small, for
-  // one indexed query per pass. A fixed delay never overlaps one instance's passes; SKIP LOCKED
-  // keeps other instances on other cards.
+  // Every minute: cards expire at any time of day, and an expired card's credit returns soon after.
+  // A fixed delay never overlaps one instance's passes; SKIP LOCKED keeps others on other cards.
   @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.MINUTES)
   void expireDue() {
     expiry.expireDue(Instant.now());
