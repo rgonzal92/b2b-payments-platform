@@ -38,6 +38,18 @@ class JournalEntries implements Journal {
                 new Line(Account.networkSettlementPayable(), Side.CREDIT, amount))));
   }
 
+  @Override
+  @Transactional
+  public UUID postSettlement(String fileId, Money amount) {
+    return post(
+        new JournalEntry(
+            JournalEntry.Kind.SETTLEMENT,
+            fileId,
+            List.of(
+                new Line(Account.networkSettlementPayable(), Side.DEBIT, amount),
+                new Line(Account.issuerCash(), Side.CREDIT, amount))));
+  }
+
   // Posts a Repayment's Journal Entry, debiting Issuer Cash and crediting the Buyer's Receivable,
   // and returns the Repayment its idempotency key stands for. Runs in the caller's transaction.
   Repayment postRepayment(String idempotencyKey, BuyerId buyerId, Money amount) {
