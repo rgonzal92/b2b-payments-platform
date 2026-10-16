@@ -8,7 +8,7 @@ Agents open the pull requests, and you review them. CI gives every pull request 
 
 - **A workflow is a YAML file** in `.github/workflows/`, run on events: here every pull request and every push to `main`.
 - **Jobs run in parallel on fresh virtual machines.** `build` and `secrets` share nothing; each checks out the code itself.
-- **A job's id is its check name.** The ruleset requires checks by name, so renaming `build` or `secrets` would silently drop the gate.
+- **A job's id is its check name.** The ruleset requires checks by name, so the pull request that renames `build` or `secrets` waits for a check that never reports, until the ruleset is updated (see `github-rulesets.md`).
 - **Steps either run a command or use an action,** a published, reusable step such as `actions/checkout`.
 
 ## Gotchas we hit

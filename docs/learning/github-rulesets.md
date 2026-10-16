@@ -18,4 +18,4 @@ Every check in CI is advisory until something refuses to merge when it fails. A 
 
 - **Zero required approvals is deliberate.** GitHub won't let you approve your own pull request, and agents open pull requests under your account, so requiring one approval would block every merge. Review stays your discipline (`CLAUDE.md`, "Pull requests").
 - **Branches don't need to be up to date before merging.** Two pull requests can each pass against an older `main`; the solo pace makes that rare, and requiring updates would force a re-run for every merge.
-- **Renaming a CI job breaks the gate.** The ruleset requires checks by job id, so a renamed job leaves a required check that never reports, and nothing can merge.
+- **Renaming a CI job strands its pull request.** The ruleset requires checks by job id, so the pull request that renames `build` or `secrets` waits for a check that never reports and can't merge until the ruleset is updated to the new name. `main` itself is unaffected.

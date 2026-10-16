@@ -1,4 +1,4 @@
-# One grouped pull request per ecosystem per week. Security updates arrive on their own, as soon as published.
+# One grouped pull request per ecosystem per week.
 version: 2
 updates:
   - package-ecosystem: maven
