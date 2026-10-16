@@ -2,6 +2,9 @@ package dev.rgonz.payments.platform;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.grpc.server.GlobalServerInterceptor;
+import org.springframework.grpc.server.security.AuthenticationProcessInterceptor;
+import org.springframework.grpc.server.security.GrpcSecurity;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
@@ -36,6 +39,17 @@ class SecurityConfig {
             session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         // Bearer tokens, no cookies: there is no session for a cross-site request to ride on.
         .csrf(AbstractHttpConfigurer::disable) // NOSONAR java:S4502, reviewed: see the line above
+        .build();
+  }
+
+  // The Network link (gRPC): every call needs the Network's token, sent as `authorization: Bearer`
+  // metadata and checked by the same JWT decoder and roles claim as REST. No token or a bad one is
+  // UNAUTHENTICATED; another client's token is PERMISSION_DENIED.
+  @Bean
+  @GlobalServerInterceptor
+  AuthenticationProcessInterceptor networkLink(GrpcSecurity grpc) throws Exception {
+    return grpc.authorizeRequests(requests -> requests.allRequests().hasAuthority("ROLE_network"))
+        .oauth2ResourceServer(server -> server.jwt(Customizer.withDefaults()))
         .build();
   }
 

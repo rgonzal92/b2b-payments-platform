@@ -110,6 +110,21 @@ class SingleUseCards implements Cards {
         .update();
   }
 
+  // Only an ACTIVE card moves, so of two Charges at once exactly one finds it ACTIVE.
+  @Override
+  public boolean authorize(String cardToken) {
+    return jdbc.sql(
+                """
+                update cards.card set status = :authorized
+                 where card_token = :cardToken and status = :active
+                """)
+            .param("authorized", SingleUseCard.Status.AUTHORIZED.name())
+            .param("cardToken", cardToken)
+            .param("active", SingleUseCard.Status.ACTIVE.name())
+            .update()
+        == 1;
+  }
+
   /**
    * Marks up to {@code batchSize} {@code ACTIVE} cards whose expiry is at or before {@code now}
    * {@code EXPIRED} and returns them, skipping cards other transactions have locked. Joins the

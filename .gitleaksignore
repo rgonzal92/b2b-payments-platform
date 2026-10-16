@@ -3,3 +3,7 @@
 # A made-up Remittance Advice link token in a simulator test fixture (the base64 of a "test-only" phrase), not a
 # credential. A later commit replaced it with a low-entropy value.
 fffe9e8706a8bfb35d7f6709fa6cb26b98ecd16b:simulator/src/test/java/dev/rgonz/payments/simulator/GlobexSupplierTests.java:generic-api-key:32
+
+# A made-up, unsigned JWT in a platform test that checks a forged token is refused (its claims are {"sub":"network"} and
+# its signature the word "signature"), not a credential. A later commit builds the forged token at runtime instead.
+5fb82fe0a485177f8136ef66a013d73a154102ef:platform/src/test/java/dev/rgonz/payments/platform/NetworkAuthenticationTests.java:jwt:75

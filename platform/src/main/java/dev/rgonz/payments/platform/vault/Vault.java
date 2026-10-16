@@ -1,5 +1,7 @@
 package dev.rgonz.payments.platform.vault;
 
+import java.util.Optional;
+
 /**
  * The only place PANs and security codes are stored (ADR-0004). Other modules refer to a card by
  * its Card Token; only {@link #cardDetails} hands out a PAN, for showing to a Supplier once.
@@ -18,4 +20,12 @@ public interface Vault {
    * Supplier the card pays, once. Callers never store or log them.
    */
   CardDetails cardDetails(String cardToken);
+
+  /**
+   * The Card Token of the card with this PAN, found through the PAN's keyed hash without decrypting
+   * anything; empty when no card has it. The PAN itself never comes back. For answering the
+   * Network's Authorization request, whose caller passes the PAN straight through and never stores
+   * or logs it.
+   */
+  Optional<String> cardFor(String pan);
 }

@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 (foundations) and M1 (Invoice to card) are done. The M1 modules are built: `shared`, `buyers`, `ledger` (Credit Lines and Holds), `suppliers` (Suppliers, Supplier Relationships, Remittance Advice), `payables` (Invoice intake, approvals, the Payment saga), `cards` (Single-Use Cards) and `vault`. `authorization`, `clearing` and `reconciliation` arrive with M2 to M4, as the module table shows. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 (foundations) and M1 (Invoice to card) are done. The M1 modules are built: `shared`, `buyers`, `ledger` (Credit Lines and Holds), `suppliers` (Suppliers, Supplier Relationships, Remittance Advice), `payables` (Invoice intake, approvals, the Payment saga), `cards` (Single-Use Cards) and `vault`. M2 (Authorization) is under way: `authorization` answers the Network over gRPC (see [The Network link](#the-network-link)). `clearing` and `reconciliation` arrive with M3 and M4, as the module table shows. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -37,8 +37,9 @@ flowchart LR
 
 Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, and Keycloak, which issues every token. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
 
-- **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp` and `issuer-admin`, and puts them in a flat `roles` claim. Every Buyer-side client also carries its Buyer in a `buyer_id` claim (`acme-erp`, `acme-approver-1` and `acme-approver-2` carry Acme's), and the platform takes the Buyer only from that claim. An Approver is the token's subject (`sub`); its `preferred_username` is kept beside it to make the approval record readable. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
-- **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it.
+- **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp`, `issuer-admin` and `network` (the `network` client, which the Network signs in with), and puts them in a flat `roles` claim. Every Buyer-side client also carries its Buyer in a `buyer_id` claim (`acme-erp`, `acme-approver-1` and `acme-approver-2` carry Acme's), and the platform takes the Buyer only from that claim. An Approver is the token's subject (`sub`); its `preferred_username` is kept beside it to make the approval record readable. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
+- **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it. The Network link's contract is a protobuf file in the same module (`src/main/proto`), from which both sides get generated messages and gRPC stubs.
+- **Ports:** REST on `8080`; the Network link's gRPC on `127.0.0.1:9090`.
 
 ## Modules
 
@@ -50,9 +51,9 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 | `buyers` | Buyer profiles, Approval Thresholds | | M1 |
 | `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice and their one-time card links | `cards`, `vault` | M1 |
 | `payables` | Invoices and their Idempotency-Keys, approvals, Payments (runs the Payment saga) | `buyers`, `ledger`, `cards`, `suppliers` | M1 |
-| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel, expire after 30 days uncharged) | `vault` | M1 |
-| `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards` and `suppliers` may call it | | M1 |
-| `authorization` | Authorization rules; answers the Network | `cards`, `ledger` | M2 |
+| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel, authorize, expire after 30 days uncharged) | `vault` | M1 |
+| `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards`, `suppliers` and `authorization` may call it | | M1 |
+| `authorization` | The Network link over gRPC; Authorization rules and a record of every answer | `vault`, `cards` | M2 |
 | `ledger` | Credit Lines, Holds and Available Credit; postings and the journal from M3 (ADR-0005) | `buyers` | M1 |
 | `clearing` | Clearing File processing, Settlement | `ledger` | M3 |
 | `reconciliation` | Matching Charges to Authorizations and Invoices; Breaks | | M4 |
@@ -60,7 +61,7 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card, or `ledger` asking `buyers` whether a Buyer exists before setting its Credit Line. The callee answers through a public type in its module's top-level package (`buyers.BuyerDirectory`); the rest of the module stays package-private.
-- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places and releases Holds through `ledger.Holds` and issues cards through `cards.Cards`, inside the worker's transaction, so each step and the Payment's new state commit together. `cards` asks `vault.Vault` for a new PAN by Card Token, in that same transaction, and gets back only its last four digits. The saga delivers the Remittance Advice through `suppliers.RemittanceAdvices`, and when delivery fails for good it cancels the card through `cards.Cards`. When a Supplier opens its link, `suppliers` asks `cards.Cards` for the card (status, expiry) and `vault.Vault` for its PAN and security code. `ModularityTests` fails if any module other than `cards` and `suppliers` uses `vault`.
+- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places and releases Holds through `ledger.Holds` and issues cards through `cards.Cards`, inside the worker's transaction, so each step and the Payment's new state commit together. `cards` asks `vault.Vault` for a new PAN by Card Token, in that same transaction, and gets back only its last four digits. The saga delivers the Remittance Advice through `suppliers.RemittanceAdvices`, and when delivery fails for good it cancels the card through `cards.Cards`. When a Supplier opens its link, `suppliers` asks `cards.Cards` for the card (status, expiry) and `vault.Vault` for its PAN and security code. When the Network asks for an Authorization, `authorization` asks `vault.Vault` for the Card Token of the request's PAN and `cards.Cards` to move the card to `AUTHORIZED`, in one transaction with the recorded answer. `ModularityTests` fails if any module other than `cards`, `suppliers` and `authorization` uses `vault`.
 - **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008). The first is `payables.InvoiceApproved` (Invoice, Buyer, Supplier, amount), published by the approval that completes an Invoice; the Payment saga's listener starts a Payment from it. The second is `cards.CardExpired` (Card Token, Payment, Buyer, amount), published by the expiry job for each card nobody charged; `payables` ends the Payment and releases its Hold (see [Card expiry](#card-expiry)). Publications whose listener didn't complete are delivered again when the platform starts, so a listener must cope with the same event twice.
 - **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`. Spring Modulith's event publication registry keeps its one table, `event_publication`, in a `modulith` schema it creates at startup.
 
@@ -161,8 +162,8 @@ A Single-Use Card's data is split between two modules so the PAN lives in exactl
 | | `cards.card` | `vault.card_secret` |
 |---|---|---|
 | Key | Card Token: 16 random bytes, base64url | the same Card Token |
-| Stores | Payment (unique), Buyer, Supplier and amount the card is locked to, last four digits, issue and expiry times, status (`ACTIVE`; `CANCELLED` when its Remittance Advice couldn't be delivered; `EXPIRED` when nobody charged it within 30 days) | the PAN and the security code, each AES-256-GCM-encrypted under a fresh nonce with the Card Token as associated data; the PAN's HMAC-SHA-256 hash, unique |
-| Read by | `payables` (the Invoice shows Card Token, last four digits, expiry); `suppliers` (status and expiry, when a link is opened) | `suppliers`, when a Supplier opens its link: the PAN and security code, decrypted, never stored outside the vault |
+| Stores | Payment (unique), Buyer, Supplier and amount the card is locked to, last four digits, issue and expiry times, status (`ACTIVE`; `AUTHORIZED` once a Charge on it is approved; `CANCELLED` when its Remittance Advice couldn't be delivered; `EXPIRED` when nobody charged it within 30 days) | the PAN and the security code, each AES-256-GCM-encrypted under a fresh nonce with the Card Token as associated data; the PAN's HMAC-SHA-256 hash, unique |
+| Read by | `payables` (the Invoice shows Card Token, last four digits, expiry); `suppliers` (status and expiry, when a link is opened) | `suppliers`, when a Supplier opens its link: the PAN and security code, decrypted, never stored outside the vault; `authorization`: the Card Token for a PAN, found through its hash |
 
 - **PANs** are synthetic: 16 digits, `990000` followed by nine random digits and a Luhn check digit. A PAN whose hash another card already has is drawn again.
 - **Keys:** two separate 256-bit keys, one to encrypt and one to hash, come from `vault.encryption-key` and `vault.hash-key` (`VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` in `.env`, written by `scripts/init-env.sh`). The platform doesn't start when either is missing or isn't 32 bytes ([`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md)). M7 replaces them with envelope encryption.
@@ -226,6 +227,35 @@ sequenceDiagram
 - **The Supplier's address** is the remittance address on the first Invoice naming its tax ID (see Invoice intake in the M1 design). The simulator plays the Supplier Globex at `http://localhost:8081/globex/remittance-advice`: it drops repeated advice by `Idempotency-Key`, opens each link once, and logs only the last four digits.
 - **How it works and why:** [`learning/one-time-links.md`](learning/one-time-links.md). When delivery keeps failing: [`runbooks/payment-stuck.md`](runbooks/payment-stuck.md).
 
+## The Network link
+
+The Network asks the platform to approve each Charge over gRPC (ADR-0006), signed in as the Keycloak client `network`. The contract is `contracts/src/main/proto/issuer_authorization.proto`: the `IssuerAuthorization` service with `Authorize` and `Reverse`, its fields named after the ISO 8583 data elements they stand for (the PAN is DE 2, the request ID DE 37, the response code DE 39).
+
+```mermaid
+sequenceDiagram
+  participant NET as Network (sim)
+  participant SEC as gRPC security
+  participant AUT as authorization
+  participant VLT as vault
+  participant CRD as cards
+
+  NET->>SEC: Authorize(PAN, amount, request ID, Acceptor ID, …)<br/>metadata authorization: Bearer <network token>
+  SEC->>SEC: the token checked like REST's; ROLE_network required
+  SEC->>AUT: the request
+  AUT->>VLT: cardFor(PAN)
+  VLT-->>AUT: Card Token, found through the PAN's keyed hash (or none)
+  AUT->>CRD: authorize(Card Token): ACTIVE to AUTHORIZED, one conditional update
+  AUT->>AUT: record the answer in "authorization".authorizations
+  AUT-->>NET: 00 and an authorization code, or a decline code
+```
+
+- **Serving:** a Netty gRPC server on `127.0.0.1:9090` (`spring.grpc.server.address` and `.port`), beside the REST port, plaintext until mutual TLS in M7. Tests give each context's server a free port.
+- **Signing in:** the Network's token travels in the `authorization` metadata header. Spring gRPC's `GrpcSecurity` (`SecurityConfig`) checks it with the same JWT decoder, issuer and `roles` claim as REST, and every call needs `ROLE_network`, the reflection and health services the starter adds included. No token or a bad one answers `UNAUTHENTICATED`; another client's token, `PERMISSION_DENIED`.
+- **Answering**, in one transaction: `authorization` asks `vault.Vault.cardFor(pan)` for the card's Card Token; the vault looks up the PAN's HMAC, decrypts nothing and never returns the PAN. No card has it: `14` (invalid card). Otherwise `cards.Cards.authorize` moves the card from `ACTIVE` to `AUTHORIZED` in one conditional update: if it moved, `00` with a random six-character authorization code (`SecureRandom`); if the card wasn't `ACTIVE`, `54`. There is no credit check, and the Hold placed at issuance stays as it is (ADR-0011). The remaining rules and resent requests come with #31; `Reverse` answers `UNIMPLEMENTED` until #33.
+- **The record:** every answer is a row in `"authorization".authorizations`: the request ID (DE 37, primary key), the Card Token (null for an unknown PAN), amount and currency, Acceptor ID, response code, authorization code (approvals only), status (`APPROVED` or `DECLINED`) and time. Never a PAN or security code. The schema's name is a reserved word in PostgreSQL, so SQL quotes it.
+- **The PAN stays in the vault (ADR-0004):** `authorization` holds the PAN and security code in memory only, on their way to the vault. Nothing logs a request (a protobuf message's `toString` prints every field) or puts a request field in an exception message; the one log line per answer names its request ID and response code. Traces record the RPC's full method name, its status and the caller's address and port (Micrometer's gRPC observation), never message fields or metadata.
+- **How it works and why:** [`learning/grpc.md`](learning/grpc.md). When the Network's calls are refused: [`runbooks/keycloak-unavailable.md`](runbooks/keycloak-unavailable.md); when every Charge answers `14`: [`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md).
+
 ## The simulator in M1
 
 The `simulator` plays every party on M1's core path other than the platform; each role that calls the platform signs in as its own Keycloak client:
@@ -263,11 +293,17 @@ sequenceDiagram
 ## How M1 is proven
 
 - **The core path** (`CorePathTests`): real Keycloak tokens from the repository's realm file and real PostgreSQL, the worker on its schedule, only the Supplier's address stubbed. Acme is set up, an Invoice above the threshold is approved twice and paid, Available Credit drops by its amount, and the link opens once, then answers `410`.
-- **No PAN outside the vault:** the same test class searches every column of every table outside `vault`, and the captured logs, for the PAN it just read through the link.
+- **No PAN outside the vault:** the same test class reads the PAN and security code through the link, has the Network charge the card with them over gRPC, then searches every column of every table outside `vault` (the `authorization` schema included) and the captured logs, the gRPC call's included, for either.
 - **A crash at each Payment state** (`PaymentSagaTests`): the platform stops mid-step after `STARTED`, `HOLD_PLACED` and `CARD_ISSUED`, and the next pass completes the Payment with one Hold and one card.
-- **Module boundaries:** `ModularityTests` (Spring Modulith's verification, and only `cards` and `suppliers` using `vault`).
+- **Module boundaries:** `ModularityTests` (Spring Modulith's verification, and only `cards`, `suppliers` and `authorization` using `vault`).
 - **The simulator's roles and the demo** against stub Keycloak and platform servers.
 - **The core path through both apps** (`e2e`, `CorePathEndToEndTests`): the platform and the simulator run in one JVM against real PostgreSQL and Keycloak, and the simulator's demo endpoint takes an Invoice through two approvals to a completed Payment whose card Globex opens through its link. `docs/learning/testcontainers.md` explains how two apps share one JVM.
+
+## How the Network link is proven
+
+- **Only the Network signs in** (`NetworkAuthenticationTests`): real Keycloak tokens from the repository's realm file, over a real gRPC connection. No token or a forged one: `UNAUTHENTICATED`; `acme-erp`'s token: `PERMISSION_DENIED`; the `network` client's: answered.
+- **Authorize** (`AuthorizeTests`): over gRPC on PostgreSQL, with a mocked Network token. An issued `ACTIVE` card's PAN: `00` with a six-character authorization code, the card `AUTHORIZED`, Available Credit unchanged; an unknown PAN: `14`; a `CANCELLED` card: `54`. Each answer recorded.
+- **The vault finds a card by its PAN** (`CardSecretsTests`): a known PAN gives its Card Token, an unknown one nothing.
 
 ## Quality targets
 

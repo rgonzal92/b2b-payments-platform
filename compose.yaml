@@ -30,6 +30,7 @@ services:
       ACME_ERP_SECRET: ${ACME_ERP_SECRET:?run scripts/init-env.sh first}
       ACME_APPROVER_1_SECRET: ${ACME_APPROVER_1_SECRET:?run scripts/init-env.sh first}
       ACME_APPROVER_2_SECRET: ${ACME_APPROVER_2_SECRET:?run scripts/init-env.sh first}
+      NETWORK_CLIENT_SECRET: ${NETWORK_CLIENT_SECRET:?run scripts/init-env.sh first}
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:
