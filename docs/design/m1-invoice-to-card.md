@@ -90,10 +90,10 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 - **Business refusals compensate at once; technical errors retry** with backoff (5 attempts), then fail for good.
 - **A crashed worker loses nothing:** its claimed row is released when the transaction rolls back, and the next pass picks it up.
 - Decided during #17:
-  - `InvoiceApproved` reaches the saga through an `@ApplicationModuleListener` in `payables`, which inserts the Payment unless its Invoice has one (a unique `invoice_id`), so a redelivered event starts no second Payment. Incomplete publications are delivered again at startup (`spring.modulith.events.republish-outstanding-events-on-restart=true`, off by default).
+  - `InvoiceApproved` reaches the saga through an `@ApplicationModuleListener` in `payables`, which inserts the Payment unless its Invoice has one (a unique `invoice_id`), so a redelivered event starts no second Payment. Incomplete publications are delivered again at startup (`spring.modulith.events.republish-outstanding-events-on-restart=true`, off by default). (Open for the owner's sign-off: the setting applies to every listener, not only the saga's.)
   - The Payment row copies the Buyer and amount from the event, and carries `attempts` (failed attempts at the current step) and `next_attempt_at` (null once no step is left to run). A Payment stops at `HOLD_PLACED` until #18 adds card issuance.
-  - Each worker transaction claims one Payment (`limit 1`); a pass repeats that up to ten times, every second. Claiming a batch in one transaction would let one Payment's failure roll back the rest, and could deadlock two workers that lock two Buyers' Credit Lines in opposite orders.
-  - The step runs inside a savepoint in that transaction. A technical error rolls back to it, undoing the step while the Payment stays locked, and the failed attempt is saved in the same transaction. Retries come 10, 20, 40 and 80 seconds after each failure; the fifth fails the Payment for good.
+  - Each worker transaction claims one Payment (`limit 1`); a pass repeats that up to ten times, every second. Claiming a batch in one transaction would let one Payment's failure roll back the rest, and could deadlock two workers that lock two Buyers' Credit Lines in opposite orders. (Open for the owner's sign-off: the ticket's plan said a small batch per claim.)
+  - A technical error anywhere in that transaction, a lost connection included, rolls it all back; a new transaction then counts the failed attempt, unless another worker has moved the Payment on meanwhile (the update checks the state and attempt count it claimed). Retries come 10, 20, 40 and 80 seconds after each failure; the fifth fails the Payment for good. A first version used a savepoint instead, which can't be rolled back to once the connection is gone.
   - A Payment that fails says why (`failureReason`), shown with its state on `GET /v1/invoices/{invoiceId}`. Technical errors are logged with the Payment's ID, not shown to the Buyer.
 
 ### Ledger: Credit Lines and Holds
@@ -133,7 +133,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 
 ### Tests
 
-- **Unit tests:** approval rules, the credit check, Luhn and PAN generation, the saga's state transitions. (Changed during #17: the credit check is a comparison inside the transaction that locks the Credit Line, so it is tested through `ledger.Holds` and the Payment flow on PostgreSQL, the test seams agreed for #17, not as a unit test.)
+- **Unit tests:** approval rules, the credit check, Luhn and PAN generation, the saga's state transitions. (Changed during #17: the credit check is a comparison inside the transaction that locks the Credit Line, so it is tested through `ledger.Holds` and the Payment flow on PostgreSQL, the test seams agreed for #17, not as a unit test. Open for the owner's sign-off.)
 - **Module integration tests** on PostgreSQL Testcontainers, with mocked JWTs (`spring-security-test`).
 - **A core-path test** against real Keycloak (`testcontainers-keycloak` 4.4.0, importing the same realm file) and PostgreSQL, with the Supplier's address stubbed by `MockRestServiceServer`.
 - **A test that greps every table outside `vault`, and the captured logs, for the issued PAN.**

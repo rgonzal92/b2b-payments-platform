@@ -2,6 +2,8 @@ package dev.rgonz.payments.platform.ledger;
 
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Currency;
 import java.util.Optional;
 import java.util.UUID;
@@ -41,23 +43,11 @@ class CreditLines implements Holds {
   /** The Buyer's Credit Line and open Holds; empty when the Buyer has no Credit Line. */
   Optional<Credit> findCredit(BuyerId buyerId) {
     return jdbc.sql(
-            """
-            select c.amount_minor, c.currency,
-                   (select coalesce(sum(h.amount_minor), 0)
-                      from ledger.hold h
-                     where h.buyer_id = c.buyer_id) as held_minor
-              from ledger.credit_line c
-             where c.buyer_id = :buyerId
-            """)
+            "select amount_minor, currency from ledger.credit_line where buyer_id = :buyerId")
         .param("buyerId", buyerId.value())
-        .query(
-            (row, rowNumber) -> {
-              var currency = Currency.getInstance(row.getString("currency"));
-              return new Credit(
-                  new Money(row.getLong("amount_minor"), currency),
-                  new Money(row.getLong("held_minor"), currency));
-            })
-        .optional();
+        .query(CreditLines::toMoney)
+        .optional()
+        .map(creditLine -> new Credit(creditLine, openHolds(buyerId, creditLine.currency())));
   }
 
   @Override
@@ -74,11 +64,7 @@ class CreditLines implements Holds {
                    for update
                 """)
             .param("buyerId", buyerId.value())
-            .query(
-                (row, rowNumber) ->
-                    new Money(
-                        row.getLong("amount_minor"),
-                        Currency.getInstance(row.getString("currency"))))
+            .query(CreditLines::toMoney)
             .optional();
     if (creditLine.isEmpty()) {
       // A Buyer without a Credit Line has no credit: a refusal like any other, not an error.
@@ -92,14 +78,7 @@ class CreditLines implements Holds {
     if (alreadyPlaced) {
       return Outcome.PLACED;
     }
-    // Statements after the lock see what other transactions committed while this one waited for
-    // it (READ COMMITTED); a subquery inside the locking statement would not.
-    var held =
-        jdbc.sql("select coalesce(sum(amount_minor), 0) from ledger.hold where buyer_id = :buyerId")
-            .param("buyerId", buyerId.value())
-            .query(Long.class)
-            .single();
-    var credit = new Credit(creditLine.get(), new Money(held, creditLine.get().currency()));
+    var credit = new Credit(creditLine.get(), openHolds(buyerId, creditLine.get().currency()));
     if (amount.isMoreThan(credit.availableCredit())) {
       return Outcome.INSUFFICIENT_CREDIT;
     }
@@ -114,5 +93,20 @@ class CreditLines implements Holds {
         .param("currency", amount.currency().getCurrencyCode())
         .update();
     return Outcome.PLACED;
+  }
+
+  // A statement of its own: after place's lock, it sees what other transactions committed while
+  // that one waited (READ COMMITTED); a subquery inside the locking statement would not.
+  private Money openHolds(BuyerId buyerId, Currency currency) {
+    var held =
+        jdbc.sql("select coalesce(sum(amount_minor), 0) from ledger.hold where buyer_id = :buyerId")
+            .param("buyerId", buyerId.value())
+            .query(Long.class)
+            .single();
+    return new Money(held, currency);
+  }
+
+  private static Money toMoney(ResultSet row, int rowNumber) throws SQLException {
+    return new Money(row.getLong("amount_minor"), Currency.getInstance(row.getString("currency")));
   }
 }

@@ -30,9 +30,18 @@ select id, invoice_id, attempts, next_attempt_at
 ```
 
 - **`next_attempt_at` is in the future and `attempts` is above zero:** the step failed for technical reasons and waits for its retry. Find the cause in the logs by the Payment's ID (`Payment <id> failed its step for technical reasons`). It fails for good on the fifth attempt.
-- **`next_attempt_at` is in the past:** the worker isn't running, or can't claim the row.
+- **`next_attempt_at` is in the past:** the worker isn't running, is stuck waiting for a lock, or can't claim the row.
   1. Check that `payables.payment-worker.enabled` isn't `false` in the platform's configuration or environment.
-  2. Check for a transaction that holds the Payment's row and never ends. The worker skips locked rows (`skip locked`), so it passes over that Payment for as long as the other transaction is open:
+  2. Check whether the worker is waiting for a lock. Placing a Hold waits, without a time limit, for the Buyer's Credit Line row; while it waits, the worker runs nothing else on that platform instance, so every Payment stalls behind it:
+
+     ```sql
+     select pid, pg_blocking_pids(pid) as blocked_by, left(query, 80)
+       from pg_stat_activity
+      where cardinality(pg_blocking_pids(pid)) > 0;
+     ```
+
+     The pids in `blocked_by` hold the lock; end the one that shouldn't (see below).
+  3. Check for a transaction that holds the Payment's row and never ends. The worker skips locked rows (`skip locked`), so it passes over that Payment for as long as the other transaction is open:
 
      ```sql
      select pid, state, xact_start, left(query, 80)
@@ -42,6 +51,15 @@ select id, invoice_id, attempts, next_attempt_at
      ```
 
      `select pg_terminate_backend(<pid>);` ends it and rolls it back. A step it was running leaves nothing behind, and the next pass runs it again.
+  4. The platform logs an error from a scheduled task every second, naming no Payment: the worker can't read the Payment due longest (a state or currency the code doesn't know, say), and its pass stops there each time. This finds that row; fix the row, or the code:
+
+     ```sql
+     select id, state, currency, next_attempt_at
+       from payables.payment
+      where next_attempt_at <= now()
+      order by next_attempt_at
+      limit 1;
+     ```
 
 ## A Payment `FAILED`
 

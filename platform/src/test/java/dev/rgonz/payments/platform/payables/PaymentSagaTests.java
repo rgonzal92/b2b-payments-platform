@@ -33,6 +33,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.modulith.events.CompletedEventPublications;
 import org.springframework.modulith.events.EventPublication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -59,6 +60,7 @@ class PaymentSagaTests {
   @Autowired TransactionTemplate transactions;
   @Autowired ApplicationEventPublisher events;
   @Autowired CompletedEventPublications completedEvents;
+  @Autowired JdbcClient jdbc;
   @MockitoSpyBean Holds holds;
 
   @Test
@@ -180,14 +182,16 @@ class PaymentSagaTests {
   }
 
   @Test
-  void aStepThatFailsTechnicallyIsRetriedAfterItsBackoff() throws Exception {
+  void aStepWhoseConnectionIsLostIsRetriedAfterItsBackoff() throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
-    // The first attempt places the Hold, then fails before the step's transaction commits.
+    // The first attempt places the Hold, then PostgreSQL drops its connection before the commit.
     doAnswer(
             invocation -> {
               invocation.callRealMethod();
-              throw new TransientDataAccessResourceException("Connection lost");
+              return jdbc.sql("select pg_terminate_backend(pg_backend_pid())")
+                  .query()
+                  .singleValue();
             })
         .doCallRealMethod()
         .when(holds)

@@ -24,12 +24,12 @@ record Payment(
   private static final Duration FIRST_BACKOFF = Duration.ofSeconds(10);
 
   /** A new Payment for the approved Invoice, due for its first step now. */
-  static Payment startFor(InvoiceApproved invoice, Instant now) {
+  static Payment startFor(InvoiceApproved approved, Instant now) {
     return new Payment(
         UUID.randomUUID(),
-        invoice.invoiceId(),
-        invoice.buyerId(),
-        invoice.amount(),
+        approved.invoiceId(),
+        approved.buyerId(),
+        approved.amount(),
         State.STARTED,
         null,
         0,
@@ -38,14 +38,14 @@ record Payment(
 
   /** The Hold is placed; card issuance (#18) will be the next step, so nothing is due yet. */
   Payment holdPlaced() {
-    return new Payment(id, invoiceId, buyerId, amount, State.HOLD_PLACED, null, 0, null);
+    return moved(State.HOLD_PLACED, null, 0, null);
   }
 
   /**
    * A business refusal, such as not enough credit: retrying wouldn't change it, so it fails now.
    */
   Payment refused(String reason) {
-    return new Payment(id, invoiceId, buyerId, amount, State.FAILED, reason, attempts, null);
+    return moved(State.FAILED, reason, attempts, null);
   }
 
   /**
@@ -55,19 +55,19 @@ record Payment(
   Payment stepFailed(Instant now) {
     var failed = attempts + 1;
     if (failed >= MAX_ATTEMPTS) {
-      return new Payment(
-          id,
-          invoiceId,
-          buyerId,
-          amount,
+      return moved(
           State.FAILED,
           "Placing the Hold failed " + failed + " times for technical reasons.",
           failed,
           null);
     }
     var backoff = FIRST_BACKOFF.multipliedBy(1L << (failed - 1));
+    return moved(state, failureReason, failed, now.plus(backoff));
+  }
+
+  private Payment moved(State state, String failureReason, int attempts, Instant nextAttemptAt) {
     return new Payment(
-        id, invoiceId, buyerId, amount, state, failureReason, failed, now.plus(backoff));
+        id, invoiceId, buyerId, amount, state, failureReason, attempts, nextAttemptAt);
   }
 
   enum State {

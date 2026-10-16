@@ -2,12 +2,11 @@ package dev.rgonz.payments.platform.payables;
 
 import dev.rgonz.payments.platform.ledger.Holds;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.modulith.events.ApplicationModuleListener;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -23,14 +22,11 @@ class PaymentSaga {
   private final Payments payments;
   private final Holds holds;
   private final TransactionTemplate transaction;
-  private final TransactionTemplate savepoint;
 
-  PaymentSaga(Payments payments, Holds holds, PlatformTransactionManager transactionManager) {
+  PaymentSaga(Payments payments, Holds holds, TransactionTemplate transaction) {
     this.payments = payments;
     this.holds = holds;
-    this.transaction = new TransactionTemplate(transactionManager);
-    this.savepoint = new TransactionTemplate(transactionManager);
-    this.savepoint.setPropagationBehavior(TransactionDefinition.PROPAGATION_NESTED);
+    this.transaction = transaction;
   }
 
   /**
@@ -38,46 +34,44 @@ class PaymentSaga {
    * (ADR-0008), so it may arrive more than once; the Invoice's existing Payment wins.
    */
   @ApplicationModuleListener
-  void start(InvoiceApproved invoice) {
-    if (payments.insertUnlessInvoiceHasOne(Payment.startFor(invoice, Instant.now()))) {
-      log.info("Invoice {} started a Payment", invoice.invoiceId());
+  void start(InvoiceApproved approved) {
+    if (payments.insertUnlessInvoiceHasOne(Payment.startFor(approved, Instant.now()))) {
+      log.info("Invoice {} started a Payment", approved.invoiceId());
     }
   }
 
   /**
-   * Runs the next step of up to {@value BATCH_SIZE} due Payments, one transaction each, and returns
-   * how many it ran. The scheduler calls it; tests call it with a later {@code now} instead of
-   * waiting out a backoff.
+   * Runs the next step of up to {@value BATCH_SIZE} due Payments, one transaction each. The
+   * scheduler calls it; tests call it with a later {@code now} instead of waiting out a backoff.
    */
-  int runDueSteps(Instant now) {
-    var ran = 0;
-    while (ran < BATCH_SIZE && Boolean.TRUE.equals(transaction.execute(status -> runNext(now)))) {
-      ran++;
+  void runDueSteps(Instant now) {
+    for (var ran = 0; ran < BATCH_SIZE; ran++) {
+      var claimed = new AtomicReference<Payment>();
+      try {
+        if (!Boolean.TRUE.equals(transaction.execute(status -> runNextStep(now, claimed)))) {
+          return;
+        }
+      } catch (RuntimeException e) {
+        if (claimed.get() == null) {
+          // Nothing was claimed, so there is no attempt to count: the next pass tries again.
+          throw e;
+        }
+        recordFailedAttempt(claimed.get(), now, e);
+      }
     }
-    return ran;
   }
 
-  private boolean runNext(Instant now) {
-    var claimed = payments.claimNextDue(now);
-    if (claimed.isEmpty()) {
+  // Claims the Payment due longest, runs its next step and saves its new state, all in the
+  // caller's transaction.
+  private boolean runNextStep(Instant now, AtomicReference<Payment> claimed) {
+    var due = payments.claimNextDue(now);
+    if (due.isEmpty()) {
       return false;
     }
-    var payment = claimed.get();
-    Payment next;
-    try {
-      // A technical error rolls back to the savepoint, undoing the step but keeping the claim, so
-      // the failed attempt is saved in this same transaction.
-      next = savepoint.execute(status -> placeHold(payment));
-    } catch (RuntimeException e) {
-      next = payment.stepFailed(now);
-      log.warn(
-          "Payment {} failed its step for technical reasons ({} of {} attempts)",
-          payment.id(),
-          next.attempts(),
-          Payment.MAX_ATTEMPTS,
-          e);
-    }
-    payments.save(next);
+    var payment = due.get();
+    claimed.set(payment);
+    var next = placeHold(payment);
+    payments.update(payment, next);
     log.info("Payment {} is {}", payment.id(), next.state());
     return true;
   }
@@ -88,5 +82,18 @@ class PaymentSaga {
       case PLACED -> payment.holdPlaced();
       case INSUFFICIENT_CREDIT -> payment.refused("Not enough Available Credit to place the Hold.");
     };
+  }
+
+  // The step's transaction rolled back, undoing what the step did, so a new transaction counts the
+  // attempt. If another worker claimed the Payment in between, its record wins.
+  private void recordFailedAttempt(Payment claimed, Instant now, RuntimeException cause) {
+    var next = claimed.stepFailed(now);
+    log.warn(
+        "Payment {} failed its step for technical reasons ({} of {} attempts)",
+        claimed.id(),
+        next.attempts(),
+        Payment.MAX_ATTEMPTS,
+        cause);
+    transaction.executeWithoutResult(status -> payments.update(claimed, next));
   }
 }

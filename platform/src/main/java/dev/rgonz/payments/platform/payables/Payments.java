@@ -73,7 +73,11 @@ class Payments {
         .optional();
   }
 
-  void save(Payment payment) {
+  /**
+   * Saves the Payment's new state, unless the row is no longer as it was when read: another worker
+   * has moved the Payment on since, and its state wins.
+   */
+  void update(Payment read, Payment next) {
     jdbc.sql(
             """
             update payables.payment
@@ -82,12 +86,16 @@ class Payments {
                    attempts = :attempts,
                    next_attempt_at = :nextAttemptAt
              where id = :id
+               and state = :readState
+               and attempts = :readAttempts
             """)
-        .param("state", payment.state().name())
-        .param("failureReason", payment.failureReason())
-        .param("attempts", payment.attempts())
-        .param("nextAttemptAt", toTimestamp(payment.nextAttemptAt()))
-        .param("id", payment.id())
+        .param("state", next.state().name())
+        .param("failureReason", next.failureReason())
+        .param("attempts", next.attempts())
+        .param("nextAttemptAt", toTimestamp(next.nextAttemptAt()))
+        .param("id", read.id())
+        .param("readState", read.state().name())
+        .param("readAttempts", read.attempts())
         .update();
   }
 

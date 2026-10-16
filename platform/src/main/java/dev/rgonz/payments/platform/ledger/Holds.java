@@ -10,8 +10,8 @@ public interface Holds {
   /**
    * Places a Hold for the amount on the Buyer's Available Credit. The caller chooses the Hold's ID
    * (a Payment's ID, say), so placing it again with the same ID finds the same Hold instead of
-   * placing a second one. Joins the caller's transaction, so the Hold commits or rolls back with
-   * whatever the caller records about it.
+   * placing a second one; the first placement's Buyer and amount stand. Joins the caller's
+   * transaction, so the Hold commits or rolls back with whatever the caller records about it.
    */
   Outcome place(UUID holdId, BuyerId buyerId, Money amount);
 
