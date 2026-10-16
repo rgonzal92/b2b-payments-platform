@@ -71,7 +71,7 @@ class Payments {
                  limit 1
                    for update skip locked
                 """)
-        .param("now", toTimestamp(now))
+        .param("now", now.atOffset(ZoneOffset.UTC))
         .query(Payments::toPayment)
         .optional();
   }
