@@ -15,17 +15,18 @@ class ModularityTests {
     modules.verify();
   }
 
-  // PANs stay in as few places as possible (ADR-0004): only cards may ask the vault for anything.
-  // Spring Modulith's allowedDependencies limits what a module uses, not who uses it, so this
-  // checks the vault's users directly.
+  // PANs stay in as few places as possible (ADR-0004): only cards, which stores a PAN with each new
+  // card, and suppliers, which shows a Supplier its card once through the Remittance Advice link,
+  // may ask the vault for anything. Spring Modulith's allowedDependencies limits what a module
+  // uses, not who uses it, so this checks the vault's users directly.
   @Test
-  void onlyCardsUsesTheVault() {
+  void onlyCardsAndSuppliersUseTheVault() {
     assertThat(
             modules.stream()
                 .filter(
                     module -> module.getDirectDependencies(modules).containsModuleNamed("vault"))
                 .map(ApplicationModule::getIdentifier)
                 .map(Object::toString))
-        .containsExactly("cards");
+        .containsExactlyInAnyOrder("cards", "suppliers");
   }
 }

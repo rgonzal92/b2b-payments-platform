@@ -44,6 +44,25 @@ class CardSecrets implements Vault {
         "Drew " + MAX_PAN_DRAWS + " PANs that were all taken for card " + cardToken + ".");
   }
 
+  @Override
+  public CardDetails cardDetails(String cardToken) {
+    return jdbc.sql(
+            """
+            select pan_ciphertext, security_code_ciphertext
+              from vault.card_secret
+             where card_token = :cardToken
+            """)
+        .param("cardToken", cardToken)
+        .query(
+            (row, rowNumber) ->
+                new CardDetails(
+                    crypto.decrypt(row.getBytes("pan_ciphertext"), cardToken),
+                    crypto.decrypt(row.getBytes("security_code_ciphertext"), cardToken)))
+        .optional()
+        .orElseThrow(
+            () -> new IllegalStateException("The vault has no card data for card " + cardToken));
+  }
+
   // The unique PAN hash rejects a PAN another card already has; `on conflict` reports that as no
   // row inserted instead of an error, which would abort the caller's transaction.
   private boolean insertUnlessPanTaken(String cardToken, String pan, String securityCode) {

@@ -20,4 +20,7 @@ public interface Cards {
 
   /** The Payment's Single-Use Card; empty until one is issued. */
   Optional<SingleUseCard> findForPayment(UUID paymentId);
+
+  /** The card with this Card Token, if there is one. */
+  Optional<SingleUseCard> find(String cardToken);
 }

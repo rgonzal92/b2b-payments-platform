@@ -1,9 +1,16 @@
 package dev.rgonz.payments.platform.suppliers;
 
+import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.cards.SingleUseCard;
+import dev.rgonz.payments.platform.shared.Money;
+import dev.rgonz.payments.platform.vault.CardDetails;
+import dev.rgonz.payments.platform.vault.Vault;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.Currency;
+import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Propagation;
@@ -15,10 +22,14 @@ class RemittanceLinks {
 
   private final JdbcClient jdbc;
   private final LinkTokens tokens;
+  private final Cards cards;
+  private final Vault vault;
 
-  RemittanceLinks(JdbcClient jdbc, LinkTokens tokens) {
+  RemittanceLinks(JdbcClient jdbc, LinkTokens tokens, Cards cards, Vault vault) {
     this.jdbc = jdbc;
     this.tokens = tokens;
+    this.cards = cards;
+    this.vault = vault;
   }
 
   /**
@@ -57,6 +68,49 @@ class RemittanceLinks {
             .single();
     return new Link(token, recordedExpiry.toInstant());
   }
+
+  /**
+   * Uses up the link with this token and returns its card's details, fetched from the vault now and
+   * never stored here; empty when the link can't be opened.
+   */
+  @Transactional
+  public Optional<OpenedLink> open(String token) {
+    // Reads the link and marks it used in one statement: of two opens at once, one updates the row
+    // and the other waits for its lock, then finds it used.
+    var opened =
+        jdbc.sql(
+                """
+                update suppliers.remittance_advice
+                   set link_used_at = now()
+                 where link_token_hash = :tokenHash
+                   and link_used_at is null
+                   and link_expires_at > now()
+                returning invoice_number, amount_minor, currency, card_token
+                """)
+            .param("tokenHash", LinkTokens.hash(token))
+            .query(
+                (row, rowNumber) ->
+                    new UsedLink(
+                        row.getString("invoice_number"),
+                        new Money(
+                            row.getLong("amount_minor"),
+                            Currency.getInstance(row.getString("currency"))),
+                        row.getString("card_token")))
+            .optional();
+    if (opened.isEmpty()) {
+      return Optional.empty();
+    }
+    var used = opened.get();
+    var card = cards.find(used.cardToken()).orElseThrow();
+    return Optional.of(
+        new OpenedLink(
+            used.invoiceNumber(), used.amount(), card, vault.cardDetails(card.cardToken())));
+  }
+
+  /** What an opened link shows: the card's details come from the vault, never from here. */
+  record OpenedLink(String invoiceNumber, Money amount, SingleUseCard card, CardDetails details) {}
+
+  private record UsedLink(String invoiceNumber, Money amount, String cardToken) {}
 
   /** A Remittance Advice's one-time link. The token is a credential, so it isn't in toString. */
   record Link(String token, Instant expiresAt) {

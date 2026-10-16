@@ -2,6 +2,7 @@ package dev.rgonz.payments.platform;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -22,6 +23,9 @@ class SecurityConfig {
             requests ->
                 requests
                     .requestMatchers("/actuator/health/**")
+                    .permitAll()
+                    // A Remittance Advice's link: its token is the credential (suppliers).
+                    .requestMatchers(HttpMethod.GET, "/v1/remittance-links/*")
                     .permitAll()
                     .anyRequest()
                     .authenticated())

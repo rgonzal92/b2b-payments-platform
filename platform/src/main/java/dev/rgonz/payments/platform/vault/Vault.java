@@ -12,4 +12,10 @@ public interface Vault {
    * caller's transaction, so the card data commits or rolls back with the card that uses it.
    */
   String generatePan(String cardToken);
+
+  /**
+   * The PAN and security code of the card with this Card Token, decrypted, for showing to the
+   * Supplier the card pays, once. Callers never store or log them.
+   */
+  CardDetails cardDetails(String cardToken);
 }
