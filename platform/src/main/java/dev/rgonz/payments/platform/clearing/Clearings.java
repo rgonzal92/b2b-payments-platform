@@ -57,7 +57,7 @@ class Clearings {
     // Recorded before anything is posted, so the primary key decides between two records with one
     // Network record ID, even in two imports at once: the second waits for the first to commit,
     // then is skipped.
-    if (!record(fileId, record, cardToken, authorization)) {
+    if (!recordIfNew(fileId, record, cardToken, authorization)) {
       return false;
     }
     // The conditional move to CLEARED decides between two Clearings for one card: only the first
@@ -81,7 +81,7 @@ class Clearings {
 
   // Records the Clearing, UNMATCHED until it is posted; false when its Network record ID was
   // already recorded.
-  private boolean record(
+  private boolean recordIfNew(
       String fileId, ClearingRecord record, String cardToken, ApprovedAuthorization authorization) {
     // shortcut: every Clearing off the matched path is recorded UNMATCHED and not posted; #51
     // replaces this with the M3 design's outcome table.

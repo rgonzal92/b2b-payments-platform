@@ -9,14 +9,19 @@ alter table clearing_file
     add column refusal_reason text,
     add constraint clearing_file_refusal_reason_check check ((status = 'REFUSED') = (refusal_reason is not null));
 
--- What a file the validate step accepted keeps once it is imported and deleted (#50): the SHA-256 of its content after
--- its file ID, in hex, which finds the same file sent again under another file ID, and its trailer's figures. Null for
--- a refused file, and for a file received before #50.
+-- What a file the validate step accepted keeps once it is imported and deleted (#50): the SHA-256 of its content, in
+-- hex, without its file ID, so it finds the same file sent again under another file ID, and without its PANs, so it
+-- can't be worked back to one (ADR-0004); and its trailer's figures. Null for a refused file, and for a file received
+-- before #50.
 alter table clearing_file
     add column content_hash text unique,
     add column amount_total_minor bigint,
     add column net_settlement_amount_minor bigint,
-    add column totals_currency char(3);
+    add column totals_currency char(3),
+    -- The trailer's figures come together: each amount with its currency.
+    add constraint clearing_file_totals_check check (
+        (amount_total_minor is null) = (totals_currency is null)
+        and (net_settlement_amount_minor is null) = (totals_currency is null));
 
 -- How many of the file's records were skipped because their Network record ID was already recorded (#50), counted in
 -- each import chunk's transaction. Before #50 such a record stopped the import instead, so files imported then

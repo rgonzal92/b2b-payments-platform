@@ -574,8 +574,25 @@ class ClearingFileImportTests {
     assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
         .isEqualTo(SingleUseCard.Status.AUTHORIZED);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
-    assertThat(DROP_FOLDER.resolve("failed").resolve(fileName)).exists();
-    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();
+    assertMovedToFailed(fileName);
+  }
+
+  // Without a readable header there's no file ID to record the refusal under: the answer says why.
+  @Test
+  void aFileWhoseHeaderCantBeReadIsRefusedIntoFailed() {
+    var fileName =
+        TestClearingFiles.write(
+            DROP_FOLDER, List.of("90NOT-A-HEADER", TestClearingFiles.trailer(0, 0, 0)));
+
+    var response = importFile(fileName, "ROLE_issuer-admin");
+
+    assertProblem(response, 422);
+    assertThat(response)
+        .bodyJson()
+        .extractingPath("$.detail")
+        .asString()
+        .contains("Line 1: the record is 14 characters long, not 120.");
+    assertMovedToFailed(fileName);
   }
 
   static Stream<Arguments> refusedFiles() {
@@ -624,6 +641,7 @@ class ClearingFileImportTests {
             "Line 2: the file ends without a trailer (92)."));
   }
 
+  // Gives a lambda its type, which it can't take from arguments(Object...).
   private static Function<Detail, List<String>> records(Function<Detail, List<String>> records) {
     return records;
   }
@@ -722,8 +740,7 @@ class ClearingFileImportTests {
     assertThat(postedCount(List.of(imported))).isEqualTo(1);
     assertThat(postedCount(List.of(notImported))).isZero();
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
-    assertThat(DROP_FOLDER.resolve("failed").resolve(again)).exists();
-    assertThat(DROP_FOLDER.resolve("processing").resolve(again)).doesNotExist();
+    assertMovedToFailed(again);
   }
 
   @Test
@@ -745,8 +762,7 @@ class ClearingFileImportTests {
     assertThat(postedCount(List.of(clearing))).isEqualTo(1);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
     assertThat(files.find(newFileId)).isEmpty();
-    assertThat(DROP_FOLDER.resolve("failed").resolve(again)).exists();
-    assertThat(DROP_FOLDER.resolve("processing").resolve(again)).doesNotExist();
+    assertMovedToFailed(again);
   }
 
   @Test
@@ -817,6 +833,12 @@ class ClearingFileImportTests {
 
     assertProblem(response, 403);
     assertThat(DROP_FOLDER.resolve(fileName)).exists();
+  }
+
+  // A refused or repeated file waits in failed/ for a person, out of processing/.
+  private static void assertMovedToFailed(String fileName) {
+    assertThat(DROP_FOLDER.resolve("failed").resolve(fileName)).exists();
+    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();
   }
 
   private static void assertProblem(MvcTestResult response, int status) {
