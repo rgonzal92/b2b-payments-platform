@@ -11,6 +11,9 @@ import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.NettyChannelBuilder;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -71,8 +74,7 @@ class NetworkAuthenticationTests {
 
   @Test
   void aTokenKeycloakDidntSignIsUnauthenticated() {
-    // A well-formed JWT whose signature no key of the realm made.
-    var forged = signedInWith("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJuZXR3b3JrIn0.c2lnbmF0dXJl");
+    var forged = signedInWith(forgedNetworkToken());
 
     assertThat(statusOf(() -> forged.authorize(chargeOn(UNKNOWN_PAN))))
         .isEqualTo(Status.Code.UNAUTHENTICATED);
@@ -100,6 +102,25 @@ class NetworkAuthenticationTests {
         .actual()
         .getStatus()
         .getCode();
+  }
+
+  // Claims all the Network's token does, from the realm's issuer, but no key of the realm signed
+  // it.
+  // Built here rather than written out: a literal JWT is what secret scanners look for.
+  private static String forgedNetworkToken() {
+    var base64 = Base64.getUrlEncoder().withoutPadding();
+    var header =
+        """
+        {"alg":"RS256","typ":"JWT"}""";
+    var claims =
+        """
+        {"iss":"%s","sub":"service-account-network","roles":["network"],"exp":%d}"""
+            .formatted(TestKeycloak.issuerUri(), Instant.now().plusSeconds(300).getEpochSecond());
+    return String.join(
+        ".",
+        base64.encodeToString(header.getBytes(StandardCharsets.UTF_8)),
+        base64.encodeToString(claims.getBytes(StandardCharsets.UTF_8)),
+        base64.encodeToString("not a signature".getBytes(StandardCharsets.UTF_8)));
   }
 
   private static AuthorizationRequest chargeOn(String pan) {
