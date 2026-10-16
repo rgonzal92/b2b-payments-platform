@@ -1,6 +1,6 @@
 # M3: Clearing and Settlement
 
-**Status:** approved 2026-10-16. Decisions from the M3 grilling (Round 1–3, Q1–Q23, 2026-10-16).
+**Status:** approved 2026-10-16; done 2026-10-16 (#57 proved every "Done when" item). Decisions from the M3 grilling (Round 1–3, Q1–Q23, 2026-10-16).
 
 ## Problem
 
@@ -124,6 +124,13 @@ Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with seq
   - The Network gives a Clearing its Network record ID and writes its detail record when the Clearing is submitted, so one that doesn't fit the layout is refused then, not when a file is written, where it would hold up every later file. A file whose write fails is deleted (it holds PANs), and its Clearings wait for the next.
   - With nothing to send, the Network writes no file and uses no sequence number, so a quiet day leaves no gap in the sequence; the demo then answers `204` with no body.
   - The file ID (`NET-`, the Business Date, 7 random letters and digits) and the Network record ID (`NR-` and 12) are partly random, like the retrieval reference number, so they stay unique when the simulator restarts. The sequence number lives in memory and starts again at 1 when the simulator restarts on its own; restarting both apps after `docker compose down` starts both sides afresh.
+- Decided during #57:
+  - The switches are optional boolean query parameters of `POST /demo/clearing-file`, all off by default, each changing the file of that call only, by its first Clearing: `duplicateRecord` repeats the first detail record at the end, under its Network record ID; `aboveAuthorizedAmount` clears the first Clearing for $100.00 more than its Charge; `noAuthorization` adds a Clearing on the first one's card under the authorization code `NONE`, which no Authorization has, as an approval's code has six characters; `unknownPan` adds a Clearing on `9900000000000000002`, Luhn-valid and from the 990000 range but of 19 digits, where every PAN the Issuer issues has 16, so no card has it; `wrongTrailerTotal` makes the trailer's amount total one cent more than the records'. An added Clearing is otherwise the first one's, under a Network record ID and retrieval reference number of its own. `sameFileTwice` has the Network deliver the file again, as it was and under its own name, once the first import has taken it from the drop folder, and Issuer staff import it a second time; sending it again uses no sequence number.
+  - The trailer stays true to the records under every other switch, and the net settlement amount stays their total, as the simulator charges no fees. So under `duplicateRecord` the Network settles the repeated record twice, and the platform records the Settlement mismatched by its amount: what a Network that sends a record twice would do.
+  - A Clearing sent under a switch counts as sent, so the next file doesn't carry it again, even when the platform refused the file: a refused file's Charges stay uncleared until the 7-day rule releases their Holds.
+  - The switches change a file but never make one: with no Clearing to send, the demo writes no file and answers `204` whatever the switches.
+  - The demo no longer answers with the bare import summary but with the file's name and the platform's answer to each import it made (`imports`, one, or two for `sameFileTwice`): its status, and the summary or a refusal's Problem Details as the platform sent them, never a PAN. An answer other than a `2xx` is shown rather than failing the demo, so a `404` or `409` after the platform's own check of its drop folder took the file first shows too.
+  - The end-to-end test, which since #56 ran to a matched Settlement, checks the new answer. A Settlement above zero always has its Journal Entry (`clearing.settlement`'s `settlement_posted_check`), so the summary's Settlement shows it posted; the journal has no API to read until M9.
 
 ### M2 follow-ups (Q18)
 
