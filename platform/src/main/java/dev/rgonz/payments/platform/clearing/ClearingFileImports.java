@@ -235,8 +235,8 @@ class ClearingFileImports {
     record Refused(String reason) implements ImportResult {}
 
     /**
-     * The file repeats one the platform already received, so nothing was posted, and it moved to
-     * {@code failed/}.
+     * The file repeats one the platform imported or is importing, so nothing was posted, and it
+     * moved to {@code failed/}.
      */
     record Repeated(String earlierFileId) implements ImportResult {}
 

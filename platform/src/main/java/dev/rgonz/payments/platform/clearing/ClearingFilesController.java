@@ -41,7 +41,7 @@ class ClearingFilesController implements ClearingFilesApi {
               HttpStatus.CONFLICT,
               "This file repeats Clearing File "
                   + repeated.earlierFileId()
-                  + ", which the platform already received, so nothing in it was posted: see"
+                  + ", imported or importing, so nothing in it was posted: see"
                   + " docs/runbooks/clearing-file-arrived-twice.md.");
       case ImportResult.Running running ->
           throw problem(

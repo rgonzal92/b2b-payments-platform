@@ -1,8 +1,8 @@
 # A Clearing File arrived twice
 
-**Signals:** `POST /v1/clearing-files` answers `409` "This file repeats Clearing File <file ID>, which the platform already received, so nothing in it was posted"; the platform logs `Refused Clearing File <file name>: it repeats Clearing File <file ID>`; a file waits in the drop folder's `failed/` folder (`var/clearing/failed/` in local development).
+**Signals:** `POST /v1/clearing-files` answers `409` "This file repeats Clearing File <file ID>, imported or importing, so nothing in it was posted"; the platform logs `Refused Clearing File <file name>: it repeats Clearing File <file ID>`; a file waits in the drop folder's `failed/` folder (`var/clearing/failed/` in local development).
 
-The platform refuses a file whose file ID, or whose content hash, matches a file it already received, whatever became of that file: imported, importing or refused. **Nothing in the repeat was posted.** It was moved into `processing/` as every file is, checked before its import started, and moved on to `failed/`. The content hash is the SHA-256 of the file from position 23 of its header on, everything but the header's record type and file ID, so the same Clearings sent again under a new file ID match too. Spring Batch's job, keyed by the file ID, refuses a completed file ID again as a second guard (see [`docs/learning/spring-batch.md`](../learning/spring-batch.md)).
+The platform refuses a file whose file ID, or whose content hash, matches a file it imported or is importing. **Nothing in the repeat was posted.** It was moved into `processing/` as every file is, checked before its import started, and moved on to `failed/`. The content hash is the SHA-256 of the file's lines without the header's record type and file ID, so the same Clearings sent again under a new file ID match too, and without each detail record's PAN (positions 23–41), so the hash can't be worked back to a PAN. A refused file doesn't count: it wasn't imported, so the Network's corrected file may carry its ID (see [`clearing-file-refused.md`](clearing-file-refused.md)). Spring Batch's job, keyed by the file ID, refuses a completed file ID again as a second guard (see [`docs/learning/spring-batch.md`](../learning/spring-batch.md)).
 
 One file is not a repeat: a file with both the file ID and the content hash of an import that stopped partway. Importing it restarts that import (see [`clearing-import-stopped.md`](clearing-import-stopped.md)).
 
@@ -19,11 +19,12 @@ Every query below runs against the development database: `docker compose exec po
 
    - `IMPORTED`: every Clearing in it is recorded.
    - `IMPORTING`: its import is running or stopped partway, and the repeat has the same file ID with other content, or the same content under another file ID. Resolve the stopped import first: [`clearing-import-stopped.md`](clearing-import-stopped.md).
-   - `REFUSED`: the earlier file with this ID failed a check (`refusal_reason` says which), and a refused file's ID stays taken. The Network has to send its corrected file under a new file ID: see [`clearing-file-refused.md`](clearing-file-refused.md).
-2. Compare the repeat's content hash, and its sequence number and Business Date (positions 23–38 of its first line), with the earlier file's:
+2. Compare the repeat's content hash, and its sequence number and Business Date (positions 23–38 of its first line), with the earlier file's. The command works the hash out as the platform does, without the file ID and without printing or hashing a PAN:
 
    ```sh
-   tail -c +23 var/clearing/failed/<file name> | sha256sum
+   awk 'NR == 1 { print substr($0, 23); next }
+        /^05/ { print substr($0, 1, 22) substr($0, 42); next } { print }' \
+     var/clearing/failed/<file name> | sha256sum
    head -c 38 var/clearing/failed/<file name>; echo
    ```
 

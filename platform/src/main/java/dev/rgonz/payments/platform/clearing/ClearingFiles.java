@@ -69,7 +69,7 @@ class ClearingFiles {
     // Another file with this ID is importing or imported, which the repeat check before the job
     // keeps from happening.
     if (received != 1) {
-      throw new IllegalStateException("Clearing File " + header.fileId() + " is already received");
+      throw new IllegalStateException("Clearing File " + header.fileId() + " is already imported");
     }
   }
 
