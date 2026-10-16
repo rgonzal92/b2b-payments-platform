@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 foundations are built, and M1 is under way: `shared` and `buyers` exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 foundations are built, and M1 is under way: `shared`, `buyers` and `ledger` exist (`ledger` holds Credit Lines so far); the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -11,7 +11,7 @@ flowchart LR
   buyerStaff["Buyer staff<br/>(Approvers)"]
   issuerStaff["Issuer staff<br/>(set up Buyers, resolve Breaks)"]
   subgraph sim["simulator app"]
-    simIssuer["Issuer staff<br/>(creates Acme at startup)"]
+    simIssuer["Issuer staff<br/>(creates Acme and its Credit Line at startup)"]
     erp["Buyer ERP"]
     supplier["Supplier"]
     acquirer["Acquirer"]
@@ -20,7 +20,7 @@ flowchart LR
   platform["platform<br/>(the Issuer's system)"]
   keycloak["Keycloak"]
 
-  simIssuer -- "create Buyers (REST)" --> platform
+  simIssuer -- "create Buyers, set Credit Lines (REST)" --> platform
   erp -- "Invoices (REST)" --> platform
   buyerStaff -- "approve Invoices (REST)" --> platform
   issuerStaff -- "set up Buyers, resolve Breaks (REST)" --> platform
@@ -45,20 +45,20 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 
 | Module | Owns | Calls |
 |---|---|---|
-| `shared` | `Money`; open to every module | |
+| `shared` | `Money`, `BuyerId`; open to every module | |
 | `buyers` | Buyer profiles, Approval Thresholds | |
 | `suppliers` | Suppliers, Supplier Relationships, Remittance Advice delivery | |
 | `payables` | Invoices, approvals, Payments (runs the Payment saga) | `ledger`, `cards`, `suppliers` |
 | `cards` | Virtual Card lifecycle, Card Tokens | `vault` |
 | `vault` | PANs, encrypted (ADR-0004) | |
 | `authorization` | Authorization rules; answers the Network | `cards`, `ledger` |
-| `ledger` | Credit Lines, Holds, postings, Available Credit (ADR-0005) | |
+| `ledger` | Credit Lines, Holds, postings, Available Credit (ADR-0005) | `buyers` |
 | `clearing` | Clearing File processing, Settlement | `ledger` |
 | `reconciliation` | Matching Charges to Authorizations and Invoices; Breaks | |
 
 How modules interact:
 
-- **Direct call** when the caller needs an answer now, such as `authorization` checking a card.
+- **Direct call** when the caller needs an answer now, such as `authorization` checking a card, or `ledger` asking `buyers` whether a Buyer exists before setting its Credit Line. The callee answers through a public type in its module's top-level package (`buyers.BuyerDirectory`); the rest of the module stays package-private.
 - **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008).
 - **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`.
 

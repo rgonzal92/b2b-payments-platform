@@ -1,6 +1,7 @@
 package dev.rgonz.payments.simulator;
 
 import dev.rgonz.payments.contracts.client.BuyersApi;
+import dev.rgonz.payments.contracts.client.CreditApi;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,11 +22,22 @@ class PlatformClients {
       RestClient.Builder builder,
       OAuth2AuthorizedClientManager clients,
       @Value("${simulator.platform-url}") String platformUrl) {
+    return asIssuerAdmin(builder, clients, platformUrl).createClient(BuyersApi.class);
+  }
+
+  @Bean
+  CreditApi creditApi(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl) {
+    return asIssuerAdmin(builder, clients, platformUrl).createClient(CreditApi.class);
+  }
+
+  private static HttpServiceProxyFactory asIssuerAdmin(
+      RestClient.Builder builder, OAuth2AuthorizedClientManager clients, String platformUrl) {
     var issuerAdmin = new OAuth2ClientHttpRequestInterceptor(clients);
     issuerAdmin.setClientRegistrationIdResolver(request -> "issuer-admin");
     var restClient = builder.baseUrl(platformUrl).requestInterceptor(issuerAdmin).build();
-    return HttpServiceProxyFactory.builderFor(RestClientAdapter.create(restClient))
-        .build()
-        .createClient(BuyersApi.class);
+    return HttpServiceProxyFactory.builderFor(RestClientAdapter.create(restClient)).build();
   }
 }
