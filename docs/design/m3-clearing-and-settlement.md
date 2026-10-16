@@ -101,7 +101,12 @@ Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with seq
 
 - Globex submits each approved, unreversed Charge for Clearing through its Acquirer; the Network writes the Issuer's file for a Business Date with every Clearing not yet sent, just after midnight UTC and on demand.
 - `POST /demo/clearing-file` writes the file and asks the platform, signed in as Issuer staff, to import it at once; it answers with the import summary. Switches inject each edge case on purpose: a duplicate record, an amount above the authorized one, a Clearing with no Authorization, an unknown PAN, a wrong trailer total, and the same file sent twice.
-- The end-to-end test continues from the approved Charge to the imported file: the card `CLEARED`, the Buyer Receivable posted, the Settlement posted.
+- The end-to-end test continues from the approved Charge to the imported file: the card `CLEARED`, the Buyer Receivable posted, the Settlement posted. (Changed during #56: it stops at the imported file, checked through the platform's summary (one Clearing, `IMPORTED`) and the emptied drop folder: no public API shows a card's status, the credit endpoint doesn't show the Buyer Receivable until #53, and Settlement arrives with #52; #57 takes the test through Settlement.)
+- Decided during #56:
+  - Globex charges for the full amount and never captures later, so its Acquirer submits a Charge for Clearing the moment the Issuer approves it. The Network (`NetworkClearingFiles`) keeps the submitted Clearings in memory until it writes a file; a Charge declined, or declined `91` and reversed by the Network, is never submitted.
+  - At 00:05 UTC (`simulator.network.clearing-file-cron`) the Network writes the file for the Business Date that just ended, and the platform's check of its drop folder imports it; `POST /demo/clearing-file` writes today's (UTC). The net settlement amount equals the amount total: the simulator charges no fees.
+  - With nothing to send, the Network writes no file and uses no sequence number, so a quiet day leaves no gap in the sequence; the demo then answers `204` with no body.
+  - The file ID (`NET-`, the Business Date, 7 random letters and digits) and the Network record ID (`NR-` and 12) are partly random, like the retrieval reference number, so they stay unique when the simulator restarts. The sequence number lives in memory and starts again at 1 when the simulator restarts on its own; restarting both apps after `docker compose down` starts both sides afresh.
 
 ### M2 follow-ups (Q18)
 
