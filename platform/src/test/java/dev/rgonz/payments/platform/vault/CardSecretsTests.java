@@ -41,6 +41,18 @@ class CardSecretsTests {
   }
 
   @Test
+  void theCardsOwnSecurityCodeMatchesAndAnyOtherDoesNot() {
+    var cardToken = "card-" + UUID.randomUUID();
+    vault.generatePan(cardToken);
+    var securityCode = vault.cardDetails(cardToken).securityCode();
+    var otherCode = String.format("%03d", (Integer.parseInt(securityCode) + 1) % 1_000);
+
+    assertThat(vault.securityCodeMatches(cardToken, securityCode)).isTrue();
+    assertThat(vault.securityCodeMatches(cardToken, otherCode)).isFalse();
+    assertThat(vault.securityCodeMatches(cardToken, "")).isFalse();
+  }
+
+  @Test
   void aPanAnotherCardAlreadyHasIsDrawnAgain() {
     // Each card draws its security code, then the PAN's nine random digits. The second card's first
     // PAN is the first card's, 9900001234567899; its second draw gives 9900009876543219.
