@@ -1,0 +1,55 @@
+name: CI
+
+# Each push starts one run: on its pull request, or on main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to a pull request cancels the run it supersedes. A run on main gets a group of its
+# own, so it is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# The job ids are the check names the main ruleset requires by name: keep `build` and `secrets`.
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # The runner is thrown away after the run, so Testcontainers' clean-up container isn't needed.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: corretto
+          # The newest Java 25: setup-java takes Corretto by major version only.
+          java-version: '25'
+          cache: maven
+      - name: Verify
+        run: ./mvnw -B verify
+
+  secrets:
+    runs-on: ubuntu-latest
+    env:
+      # Update both together, from the release's checksums file.
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # gitleaks-action scans only the commits in a push or pull request; the CLI scans everything.
+      - name: Install gitleaks
+        run: |
+          tarball="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL -o "$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan the full history
+        run: '"$RUNNER_TEMP/gitleaks" git --redact --verbose .'

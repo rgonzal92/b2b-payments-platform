@@ -56,7 +56,7 @@ Both apps use Spring Boot's OpenTelemetry starter, exporting traces, metrics and
 `.github/workflows/ci.yml`, on every pull request and every push to `main`:
 
 - **build:** Corretto 25 (the JDK on this machine and in `vehicle-catalog`), Maven cache, `./mvnw -B verify` (Spotless check, unit and Testcontainers tests, JaCoCo coverage), then SonarQube Cloud analysis with the Maven Sonar plugin. The analysis is skipped on pull requests from forks, which don't receive secrets.
-- **secrets:** `gitleaks/gitleaks-action@v3` over the full history.
+- **secrets:** the gitleaks CLI, pinned by version and checksum, over the full history. (Changed during #4: `gitleaks/gitleaks-action` scans only the commits in a push or pull request.)
 
 ### Repository rules
 
