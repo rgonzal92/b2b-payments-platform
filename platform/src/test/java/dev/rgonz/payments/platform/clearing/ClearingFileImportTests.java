@@ -401,6 +401,49 @@ class ClearingFileImportTests {
   }
 
   @Test
+  void aValidateStepThatRunsAgainAfterItCommittedImportsTheFileOnce() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var fileId = newId("F", 16);
+    var clearings = List.of(clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000));
+    // The validate step commits; the import step after it fails, once.
+    var fault = new AtomicBoolean(true);
+    doAnswer(
+            posting -> {
+              if (fault.getAndSet(false)) {
+                throw new IllegalStateException("Test fault: the import step stops here.");
+              }
+              return posting.callRealMethod();
+            })
+        .when(journal)
+        .postClearing(any(), any(), any());
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, fileId, 20, clearings);
+    assertProblem(importFile(fileName, "ROLE_issuer-admin"), 500);
+    // As if the platform had stopped after the validate step committed, before Spring Batch
+    // recorded it complete, and a person had marked the run failed
+    // (runbooks/clearing-import-stopped.md).
+    jdbc.sql(
+            """
+            update batch.batch_step_execution set status = 'FAILED', exit_code = 'FAILED'
+             where step_name = 'validate'
+               and job_execution_id in (select job_execution_id
+                                          from batch.batch_job_execution_params
+                                         where parameter_name = 'fileId'
+                                           and parameter_value = :fileId)
+            """)
+        .param("fileId", fileId)
+        .update();
+
+    var restarted = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(restarted).hasStatus(201);
+    assertThat(restarted).bodyJson().extractingPath("$.status").isEqualTo("IMPORTED");
+    // The validate step ran twice, and the file was imported once.
+    verify(files, times(2)).receive(any(), any());
+    assertThat(postedCount(clearings)).isEqualTo(1);
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 1_000_000);
+  }
+
+  @Test
   void aSettleStepThatRunsAgainAfterItCommittedSettlesTheFileOnce() throws Exception {
     var buyerId = buyerWithCreditLine(10_000_000);
     var fileId = newId("F", 16);

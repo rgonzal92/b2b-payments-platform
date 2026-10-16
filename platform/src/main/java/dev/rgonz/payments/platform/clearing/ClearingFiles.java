@@ -24,8 +24,10 @@ class ClearingFiles {
 
   /**
    * Records a file the validate step accepted, as {@code IMPORTING}, with its header's and its
-   * trailer's figures and its content hash, in place of a refused file with its ID. Joins the
-   * step's transaction.
+   * trailer's figures and its content hash, in place of a refused file with its ID. When the step
+   * runs again for the same file (it committed, then the platform stopped before Spring Batch
+   * recorded it complete), the file's record is already there, and stays. Joins the step's
+   * transaction.
    */
   void receive(ClearingFileLayout.Envelope file, String contentHash) {
     var header = file.header();
@@ -47,8 +49,11 @@ class ClearingFiles {
                        net_settlement_amount_minor = excluded.net_settlement_amount_minor,
                        totals_currency = excluded.totals_currency,
                        content_hash = excluded.content_hash, refusal_reason = null,
-                       received_at = now()
+                       received_at = case when clearing_file.status = :refused then now()
+                                          else clearing_file.received_at end
                  where clearing_file.status = :refused
+                    or (clearing_file.status = excluded.status
+                        and clearing_file.content_hash = excluded.content_hash)
                 """)
             .param("id", header.fileId())
             .param("sequenceNumber", header.sequenceNumber())
@@ -61,7 +66,8 @@ class ClearingFiles {
             .param("contentHash", contentHash)
             .param("refused", ClearingFileSummary.Status.REFUSED.name())
             .update();
-    // Only another import of the same file ID, which the job's key keeps from running at once.
+    // Another file with this ID is importing or imported, which the repeat check before the job
+    // keeps from happening.
     if (received != 1) {
       throw new IllegalStateException("Clearing File " + header.fileId() + " is already received");
     }
