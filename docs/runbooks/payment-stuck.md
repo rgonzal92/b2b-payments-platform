@@ -114,3 +114,7 @@ update payables.payment
    and state = 'FAILED'
    and failure_reason not like 'Delivering the Remittance Advice%';
 ```
+
+## A card past its expiry is still `ACTIVE`
+
+The expiry job in `cards` is switched off (`cards.expiry-job.enabled=false`) or failing (an error from the scheduled task `cardExpirySchedule.expireDue` in the logs, usually the database), so the card's Hold stays placed and the Buyer's Available Credit stays short by its amount; `select card_token, payment_id, expires_at from cards.card where status = 'ACTIVE' and expires_at <= now();` lists the cards waiting, and once the job runs again it expires them all. A card that is `EXPIRED` while its Payment isn't is waiting for its `CardExpired` listener: query the registry as above with `event_type like '%CardExpired'`, fix the cause in the logs (`PaymentSaga.expire`), and restart.
