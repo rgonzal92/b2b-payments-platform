@@ -399,6 +399,29 @@ class ClearingFileImportTests {
   }
 
   @Test
+  void theContentOfAnImportedFileUnderANewFileIdIsRefusedByItsHashAndPostsNothingTwice()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var clearing = clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT);
+    var earlierFileId = newId("F", 16);
+    var first = TestClearingFiles.drop(DROP_FOLDER, earlierFileId, 16, List.of(clearing));
+    assertThat(importFile(first, "ROLE_issuer-admin")).hasStatus(201);
+    var creditBefore = availableCredit(buyerId);
+    var newFileId = newId("F", 16);
+    var again = TestClearingFiles.drop(DROP_FOLDER, newFileId, 16, List.of(clearing));
+
+    var response = importFile(again, "ROLE_issuer-admin");
+
+    assertProblem(response, 409);
+    assertThat(response).bodyJson().extractingPath("$.detail").asString().contains(earlierFileId);
+    assertThat(postedCount(List.of(clearing))).isEqualTo(1);
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(files.find(newFileId)).isEmpty();
+    assertThat(DROP_FOLDER.resolve("failed").resolve(again)).exists();
+    assertThat(DROP_FOLDER.resolve("processing").resolve(again)).doesNotExist();
+  }
+
+  @Test
   void theDropFolderCheckImportsANewFileAndLeavesOneStillBeingWritten() throws Exception {
     var buyerId = buyerWithCreditLine(10_000_000);
     var charged = chargedCard(buyerId);

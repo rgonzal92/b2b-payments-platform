@@ -76,6 +76,27 @@ class ClearingFiles {
         .update();
   }
 
+  /**
+   * The ID of the file one with this file ID and content hash repeats: a file received earlier with
+   * the same file ID, refused ones included, or the same content hash. Never the file whose import
+   * stopped partway, which has both and is still {@code IMPORTING}: importing it again restarts
+   * that import.
+   */
+  Optional<String> repeatedBy(String fileId, String contentHash) {
+    return jdbc.sql(
+            """
+            select id from clearing.clearing_file
+             where (id = :id or content_hash = :contentHash)
+               and not (id = :id and content_hash = :contentHash and status = :importing)
+             limit 1
+            """)
+        .param("id", fileId)
+        .param("contentHash", contentHash)
+        .param("importing", ClearingFileSummary.Status.IMPORTING.name())
+        .query(String.class)
+        .optional();
+  }
+
   Optional<ClearingFileSummary> find(String fileId) {
     return jdbc.sql(
             """
