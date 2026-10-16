@@ -39,12 +39,14 @@ class ClearingFileImports {
   private final Job clearingFileImport;
   private final ClearingFiles files;
 
+  // A String, not a Path: Spring converts a Path setting through its resource loader, which
+  // resolves a relative path against the classpath, and fails once the platform runs from a jar.
   ClearingFileImports(
-      @Value("${clearing.drop-folder}") Path dropFolder,
+      @Value("${clearing.drop-folder}") String dropFolder,
       JobOperator jobOperator,
       Job clearingFileImport,
       ClearingFiles files) {
-    this.dropFolder = dropFolder.toAbsolutePath().normalize();
+    this.dropFolder = Path.of(dropFolder).toAbsolutePath().normalize();
     this.processingFolder = this.dropFolder.resolve("processing");
     this.jobOperator = jobOperator;
     this.clearingFileImport = clearingFileImport;
