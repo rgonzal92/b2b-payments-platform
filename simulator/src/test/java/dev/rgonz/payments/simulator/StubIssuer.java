@@ -56,7 +56,8 @@ final class StubIssuer {
           public void authorize(
               AuthorizationRequest request, StreamObserver<AuthorizationResponse> responses) {
             received.add(new Received(request, CALLERS_AUTHORIZATION.get()));
-            if (!answerAfterDelay((ServerCallStreamObserver<AuthorizationResponse>) responses)) {
+            if (!callerStillWaitingAfterDelay(
+                (ServerCallStreamObserver<AuthorizationResponse>) responses)) {
               return;
             }
             responses.onNext(
@@ -101,8 +102,8 @@ final class StubIssuer {
     }
   }
 
-  // Waits out the delay; false when the caller gave up meanwhile, so there's no one to answer.
-  private boolean answerAfterDelay(ServerCallStreamObserver<?> responses) {
+  // Waits out the delay, then tells whether the caller is still there to be answered.
+  private boolean callerStillWaitingAfterDelay(ServerCallStreamObserver<?> responses) {
     try {
       Thread.sleep(delay);
     } catch (InterruptedException e) {

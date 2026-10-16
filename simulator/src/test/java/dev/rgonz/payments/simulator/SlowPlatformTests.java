@@ -1,6 +1,7 @@
 package dev.rgonz.payments.simulator;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import com.sun.net.httpserver.HttpServer;
 import dev.rgonz.payments.contracts.client.model.Money;
@@ -23,7 +24,7 @@ import org.springframework.test.context.DynamicPropertySource;
 /**
  * The Network doesn't wait on a slow Issuer: when the platform doesn't answer an Authorization
  * within the Network's deadline, Globex's Charge is declined {@code 91} (issuer unavailable) and
- * the Network sends a Reversal for it, against a stub Keycloak and a stub {@code
+ * the Network sends a Reversal for it in the background, against a stub Keycloak and a stub {@code
  * IssuerAuthorization} server that answers late.
  */
 @SpringBootTest(
@@ -74,15 +75,23 @@ class SlowPlatformTests {
 
     assertThat(authorization).isEqualTo(new Authorization(false, "91", null));
     var requestId = issuer.received.getFirst().request().getRetrievalReferenceNumber();
-    assertThat(issuer.reversals)
-        .singleElement()
-        .satisfies(
-            reversal -> {
-              assertThat(reversal.request().getRetrievalReferenceNumber()).isEqualTo(requestId);
-              assertThat(reversal.request().getSystemTraceAuditNumber()).matches("\\d{6}");
-              assertThat(reversal.request().hasTransmittedAt()).isTrue();
-              assertThat(reversal.authorization()).isEqualTo("Bearer token-for-network");
-            });
+    // The Network sends the Reversal in the background, after Globex has its decline.
+    await()
+        .atMost(Duration.ofSeconds(5))
+        .untilAsserted(
+            () ->
+                assertThat(issuer.reversals)
+                    .singleElement()
+                    .satisfies(
+                        reversal -> {
+                          assertThat(reversal.request().getRetrievalReferenceNumber())
+                              .isEqualTo(requestId);
+                          assertThat(reversal.request().getSystemTraceAuditNumber())
+                              .matches("\\d{6}");
+                          assertThat(reversal.request().hasTransmittedAt()).isTrue();
+                          assertThat(reversal.authorization())
+                              .isEqualTo("Bearer token-for-network");
+                        }));
   }
 
   private static ReceivedCard card() {

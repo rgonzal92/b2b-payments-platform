@@ -2,7 +2,7 @@
 
 **Signals:** Charges are declined `91` (issuer unavailable): the demo answers `"authorization": {"approved": false, "responseCode": "91", "authorizationCode": null}`. The simulator logs `The Network got no answer to Authorization <request ID> (UNAVAILABLE)` (the platform can't be reached) or `(DEADLINE_EXCEEDED)` (it answered too slowly), `… declined it 91 and is reversing it`. When the platform is slow, Reversals arrive there: it logs `Reversal <request ID> acknowledged` or `Reversal <request ID> came before its Authorization, which will answer 05`, and `"authorization".authorizations` fills with `REVERSED` rows, some with response code `05`. When the Reversal can't get through either, the simulator logs at `ERROR`: `The Network couldn't reverse Authorization <request ID> after 4 attempts`.
 
-The simulator's Network sends each Charge to the platform's gRPC server at `simulator.platform-grpc-address` (`localhost:9090` by default), where the platform listens on `127.0.0.1:9090` (`spring.grpc.server.address` and `.port`); see [The simulator](../architecture.md#the-simulator). It waits at most `simulator.network.authorization-deadline` (1 second) for the answer, as card networks do (ADR-0010). When the deadline passes (`DEADLINE_EXCEEDED`), or gRPC can't connect (`UNAVAILABLE`, at once), the Network declines the Charge to Globex itself with `91` and sends the platform a Reversal for the request ID, in case the platform approves it too late. It sends the Reversal up to four times, 100, 200 and 400 ms apart, each with its own deadline; Reversals are safe to repeat ([`docs/learning/grpc.md`](../learning/grpc.md#the-client-side-the-simulators-network)).
+The simulator's Network sends each Charge to the platform's gRPC server at `simulator.platform-grpc-address` (`localhost:9090` by default), where the platform listens on `127.0.0.1:9090` (`spring.grpc.server.address` and `.port`); see [The simulator](../architecture.md#the-simulator). It waits at most `simulator.network.authorization-deadline` (1 second) for the answer, as card networks do (ADR-0010). When the deadline passes (`DEADLINE_EXCEEDED`), or gRPC can't connect (`UNAVAILABLE`, at once), the Network declines the Charge to Globex itself with `91`, at once, and sends the platform a Reversal for the request ID in the background, in case the platform approves it too late. It sends the Reversal up to four times, 100, 200 and 400 ms apart, each with its own deadline; Reversals are safe to repeat ([`docs/learning/grpc.md`](../learning/grpc.md#the-client-side-the-simulators-network)).
 
 Nothing is lost as long as the Reversal arrived: the card stays (or goes back to) `ACTIVE` with its Hold, and Globex can charge it again. If no Charge reaches it within 30 days it expires and its Hold is released. A new demo Invoice charges its own new card.
 
@@ -33,7 +33,7 @@ The log says `DEADLINE_EXCEEDED`: the platform accepted the call but didn't answ
 3. **What did the Authorizations record?**
 
    ```sql
-   select status, response_code, card_token is null as before_its_authorization, count(*)
+   select status, response_code, card_token is null as no_card_token, count(*)
      from "authorization".authorizations
     where created_at > now() - interval '1 hour'
     group by 1, 2, 3;
