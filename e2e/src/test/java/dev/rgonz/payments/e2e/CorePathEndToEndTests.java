@@ -79,7 +79,10 @@ class CorePathEndToEndTests {
             // platform's own tests.
             "vault.encryption-key=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
             "vault.hash-key=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
-            "remittance.link-key=AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=");
+            "remittance.link-key=AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+            // Its drop folder defaults to the repository's var/clearing, where a developer's own
+            // Clearing Files may wait: this run doesn't check it.
+            "clearing.poller.enabled=false");
     // Returns once AcmeSeeder has created Acme and its Credit Line through the platform.
     simulator =
         start(

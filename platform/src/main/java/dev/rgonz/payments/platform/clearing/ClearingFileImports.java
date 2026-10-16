@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
@@ -75,6 +76,36 @@ class ClearingFileImports {
       return run(header.fileId(), file);
     } catch (IOException e) {
       throw new UncheckedIOException(e);
+    }
+  }
+
+  /**
+   * Imports each new file in the drop folder, one after another, in name order. A name starting
+   * with {@code .} is a file the Network is still writing, and waits for its rename (the layout's
+   * delivery rule). A file whose import fails is logged and left where it is; the next one still
+   * imports.
+   */
+  void importNewFiles() {
+    List<String> names;
+    try (var entries = Files.list(dropFolder)) {
+      names =
+          entries
+              .filter(Files::isRegularFile)
+              .map(file -> file.getFileName().toString())
+              .filter(name -> !name.startsWith("."))
+              .sorted()
+              .toList();
+    } catch (NoSuchFileException noFolderYet) {
+      return;
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
+    for (var name : names) {
+      try {
+        importFile(name);
+      } catch (RuntimeException e) {
+        log.error("Couldn't import Clearing File {}", name, e);
+      }
     }
   }
 

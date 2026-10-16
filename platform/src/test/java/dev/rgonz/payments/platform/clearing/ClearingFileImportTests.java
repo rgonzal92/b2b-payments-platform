@@ -101,6 +101,7 @@ class ClearingFileImportTests {
   @Autowired Holds holds;
   @Autowired Vault vault;
   @Autowired Suppliers suppliers;
+  @Autowired ClearingFileImports imports;
 
   // The real journal, which the restart test makes fail once.
   @MockitoSpyBean Journal journal;
@@ -263,6 +264,28 @@ class ClearingFileImportTests {
     assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
         .isEqualTo(SingleUseCard.Status.AUTHORIZED);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+  }
+
+  @Test
+  void theDropFolderCheckImportsANewFileAndLeavesOneStillBeingWritten() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var charged = chargedCard(buyerId);
+    var fileName =
+        TestClearingFiles.drop(
+            DROP_FOLDER,
+            newId("F", 16),
+            12,
+            List.of(clearingOf(charged, newId("R", 20), CARD_AMOUNT)));
+    // The Network writes under a name starting with ".", then renames the file (layout.md).
+    var beingWritten = DROP_FOLDER.resolve(".clearing-" + UUID.randomUUID() + ".txt");
+    Files.writeString(beingWritten, "90");
+
+    imports.importNewFiles();
+
+    assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CLEARED);
+    assertThat(DROP_FOLDER.resolve(fileName)).doesNotExist();
+    assertThat(beingWritten).exists();
   }
 
   @Test
