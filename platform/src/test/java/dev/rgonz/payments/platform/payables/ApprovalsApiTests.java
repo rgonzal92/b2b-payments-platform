@@ -87,19 +87,18 @@ class ApprovalsApiTests {
     var invoiceId = submitInvoice(acme, THRESHOLD + 1);
     decide(approverOf(acme, "ann"), invoiceId, "approval");
 
-    var rejected = decide(approverOf(acme, "bob"), invoiceId, "rejection");
-    var laterApproval = decide(approverOf(acme, "cy"), invoiceId, "approval");
-    var laterRejection = decide(approverOf(acme, "cy"), invoiceId, "rejection");
-    var sameRejectionAgain = decide(approverOf(acme, "bob"), invoiceId, "rejection");
+    // Still awaiting a second approval, so the Approver who approved may reject it.
+    var rejected = decide(approverOf(acme, "ann"), invoiceId, "rejection");
+    var laterApproval = decide(approverOf(acme, "bob"), invoiceId, "approval");
+    var laterRejection = decide(approverOf(acme, "bob"), invoiceId, "rejection");
+    var sameRejectionAgain = decide(approverOf(acme, "ann"), invoiceId, "rejection");
 
     assertThat(rejected).hasStatus(200);
     assertThat(rejected).bodyJson().extractingPath("$.status").isEqualTo("REJECTED");
-    for (var refused : List.of(laterApproval, laterRejection)) {
+    for (var refused : List.of(laterApproval, laterRejection, sameRejectionAgain)) {
       assertThat(refused).hasStatus(409);
       assertThat(refused).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
     }
-    assertThat(sameRejectionAgain).hasStatus(200);
-    assertThat(sameRejectionAgain).bodyJson().extractingPath("$.status").isEqualTo("REJECTED");
   }
 
   @Test

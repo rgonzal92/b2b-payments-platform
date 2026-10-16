@@ -38,7 +38,7 @@ class Approvals {
     if (invoice.status() == Invoice.Status.REJECTED) {
       throw rejectionIsFinal();
     }
-    var approverIds = approverIds(invoiceId, Decision.Outcome.APPROVED);
+    var approverIds = approverIdsOf(invoiceId);
     if (approverIds.contains(approver.id())) {
       // The same Approver twice counts once, so a retried approval is safe.
       return;
@@ -62,10 +62,6 @@ class Approvals {
   void reject(BuyerId buyerId, UUID invoiceId, Approver approver) {
     var invoice = locked(buyerId, invoiceId);
     if (invoice.status() == Invoice.Status.REJECTED) {
-      if (approverIds(invoiceId, Decision.Outcome.REJECTED).contains(approver.id())) {
-        // The same Approver's rejection again, such as a retry: nothing changes.
-        return;
-      }
       throw rejectionIsFinal();
     }
     if (invoice.status() == Invoice.Status.APPROVED) {
@@ -82,9 +78,10 @@ class Approvals {
         .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No such Invoice."));
   }
 
-  private List<String> approverIds(UUID invoiceId, Decision.Outcome outcome) {
+  // The IDs of the Approvers who have approved the Invoice so far.
+  private List<String> approverIdsOf(UUID invoiceId) {
     return decisions.of(invoiceId).stream()
-        .filter(decision -> decision.outcome() == outcome)
+        .filter(decision -> decision.outcome() == Decision.Outcome.APPROVED)
         .map(decision -> decision.approver().id())
         .toList();
   }

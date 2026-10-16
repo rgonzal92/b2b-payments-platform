@@ -68,9 +68,10 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 - Decided during #16:
   - An Approver is the token's subject (`sub`), stored with its `preferred_username` so the record reads without Keycloak. The simulator's demo Approvers are the service accounts of two Keycloak clients, `acme-approver-1` and `acme-approver-2`.
   - `payables` gets the Approval Threshold from `buyers.BuyerDirectory`, never from `buyers`' tables.
-  - The Invoice stays `RECEIVED` until it is `APPROVED` or `REJECTED`; above the threshold its first approval shows only in its `decisions`, so no state outside the glossary is needed.
-  - Neither action takes an `Idempotency-Key`: the same Approver deciding the same way again changes nothing and returns the Invoice. That covers a repeated rejection too, so its retry is answered `200` like an approval's; any other decision on a rejected Invoice is `409`.
-  - An approved Invoice takes no new decisions (`409`), a rejection included, because its Payment may already be under way.
+  - The Invoice stays `RECEIVED` until it is `APPROVED` or `REJECTED`; above the threshold its first approval shows only in its `decisions`, so no partly-approved state is needed.
+  - Neither action takes an `Idempotency-Key`: the same Approver approving again changes nothing and returns the Invoice. A rejection is final, so every later decision, the same Approver's repeated rejection included, is `409`; a client unsure whether its rejection arrived reads the Invoice.
+  - An Approver may reject an Invoice they approved while it still awaits a second approval; the record then shows both of their decisions.
+  - An approved Invoice takes no new decisions (`409`), a rejection included, because its Payment may already be under way. (Open for the owner's sign-off: the ticket names only a new Approver's approval.)
   - Concurrent decisions on one Invoice take turns on its row lock (`select ... for update`), so two Approvers can't both be counted as the first.
   - `InvoiceApproved` carries the Invoice, Buyer, Supplier and amount, which is what the saga needs to place the Hold and issue the card.
 

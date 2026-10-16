@@ -76,8 +76,8 @@ stateDiagram-v2
   APPROVED --> [*]: publishes InvoiceApproved
 ```
 
-- The same Approver deciding the same way again changes nothing and returns the Invoice, so a retry is safe without an `Idempotency-Key`.
-- A rejected Invoice takes no new decisions, and neither does an approved one, whose Payment may be under way: both answer `409`.
+- The same Approver approving again changes nothing and returns the Invoice, so a retried approval is safe without an `Idempotency-Key`.
+- A rejected Invoice takes no new decisions, a repeated rejection included, and neither does an approved one, whose Payment may be under way: both answer `409`.
 - Each approval and rejection is a row in `payables.invoice_decision` (Approver's subject, user name, decision, time) and appears in the Invoice's `decisions`. That is M1's audit trail.
 - The status change, the decision and the `InvoiceApproved` publication commit in one transaction.
 

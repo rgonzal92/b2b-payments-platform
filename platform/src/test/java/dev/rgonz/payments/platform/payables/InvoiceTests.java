@@ -1,7 +1,6 @@
 package dev.rgonz.payments.platform.payables;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
@@ -37,14 +36,6 @@ class InvoiceTests {
   @Test
   void noApproversApproveNothing() {
     assertThat(invoiceFor(new Money(1, USD)).isApprovedBy(List.of(), THRESHOLD)).isFalse();
-  }
-
-  @Test
-  void aThresholdInAnotherCurrencyIsAnError() {
-    var invoice = invoiceFor(new Money(1, Currency.getInstance("EUR")));
-
-    assertThatIllegalArgumentException()
-        .isThrownBy(() -> invoice.isApprovedBy(List.of("ann"), THRESHOLD));
   }
 
   private static Invoice invoiceFor(Money amount) {

@@ -234,10 +234,10 @@ paths:
       operationId: rejectInvoice
       summary: Reject an Invoice
       description: >-
-        An Approver of the Invoice's Buyer only (role `approver`); the Approver is the token's subject. A rejection
-        is final: any later approval or rejection is `409`, except the same Approver rejecting again, which changes
-        nothing and returns the Invoice, so retrying is safe. An approved Invoice can't be rejected (`409`). An
-        Invoice of any other Buyer answers `404`.
+        An Approver of the Invoice's Buyer only (role `approver`); the Approver is the token's subject. An Approver
+        may reject an Invoice they approved while it still awaits a second approval. A rejection is final: any later
+        approval or rejection, the same Approver's included, is `409`. An approved Invoice can't be rejected
+        (`409`). An Invoice of any other Buyer answers `404`.
       parameters:
         - name: invoiceId
           in: path
