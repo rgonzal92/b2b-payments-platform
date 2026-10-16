@@ -1,17 +1,17 @@
 package dev.rgonz.payments.platform.authorization;
 
 /**
- * The platform's answer to a Charge: an ISO 8583 response code (DE 39) and, only on an approval, an
- * authorization code (DE 38); null on a decline.
+ * The Issuer's approve-or-decline answer to a Charge: an ISO 8583 response code (DE 39) and, only
+ * on an approval, an authorization code (DE 38); null on a decline.
  */
-record Answer(ResponseCode responseCode, String authorizationCode) {
+record Authorization(ResponseCode responseCode, String authorizationCode) {
 
-  static Answer approved(String authorizationCode) {
-    return new Answer(ResponseCode.APPROVED, authorizationCode);
+  static Authorization approved(String authorizationCode) {
+    return new Authorization(ResponseCode.APPROVED, authorizationCode);
   }
 
-  static Answer declined(ResponseCode responseCode) {
-    return new Answer(responseCode, null);
+  static Authorization declined(ResponseCode responseCode) {
+    return new Authorization(responseCode, null);
   }
 
   Status status() {

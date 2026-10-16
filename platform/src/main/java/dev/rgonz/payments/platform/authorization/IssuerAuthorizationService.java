@@ -25,7 +25,7 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
   @Override
   public void authorize(
       AuthorizationRequest request, StreamObserver<AuthorizationResponse> responseObserver) {
-    var answer =
+    var authorization =
         authorizations.authorize(
             new Charge(
                 request.getRetrievalReferenceNumber(),
@@ -36,8 +36,8 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
     responseObserver.onNext(
         AuthorizationResponse.newBuilder()
             .setRetrievalReferenceNumber(request.getRetrievalReferenceNumber())
-            .setResponseCode(answer.responseCode().code())
-            .setAuthorizationCode(Objects.requireNonNullElse(answer.authorizationCode(), ""))
+            .setResponseCode(authorization.responseCode().code())
+            .setAuthorizationCode(Objects.requireNonNullElse(authorization.authorizationCode(), ""))
             .build());
     responseObserver.onCompleted();
   }

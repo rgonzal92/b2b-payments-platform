@@ -33,7 +33,7 @@ message AuthorizationRequest {
   string system_trace_audit_number = 5;
   // DE 14: the card's expiry as printed on it, "YYMM".
   string expiration_date = 6;
-  // DE 18: the Supplier's merchant category code.
+  // DE 18: the category code of the Supplier's business.
   string merchant_category_code = 7;
   // DE 37: the request ID; the same value names this Authorization in a Reversal.
   string retrieval_reference_number = 8;

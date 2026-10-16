@@ -1,6 +1,6 @@
 package dev.rgonz.payments.platform.authorization;
 
-import dev.rgonz.payments.platform.authorization.Answer.ResponseCode;
+import dev.rgonz.payments.platform.authorization.Authorization.ResponseCode;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.vault.Vault;
 import java.security.SecureRandom;
@@ -37,25 +37,26 @@ class Authorizations {
   /**
    * Approves a Charge on an issued, {@code ACTIVE} card and moves the card to {@code AUTHORIZED};
    * declines anything else. The PAN goes to the vault and nowhere else. The card's move and the
-   * recorded answer commit together.
+   * recorded Authorization commit together.
    */
   @Transactional
-  Answer authorize(Charge charge) {
+  Authorization authorize(Charge charge) {
     var cardToken = vault.cardFor(charge.pan()).orElse(null);
-    Answer answer;
+    Authorization authorization;
     if (cardToken == null) {
-      answer = Answer.declined(ResponseCode.INVALID_CARD);
+      authorization = Authorization.declined(ResponseCode.INVALID_CARD);
     } else if (cards.authorize(cardToken)) {
-      answer = Answer.approved(newAuthorizationCode());
+      authorization = Authorization.approved(newAuthorizationCode());
     } else {
-      answer = Answer.declined(ResponseCode.EXPIRED_CARD);
+      authorization = Authorization.declined(ResponseCode.EXPIRED_CARD);
     }
-    record(charge, cardToken, answer);
-    log.info("Authorization {} answered {}", charge.requestId(), answer.responseCode().code());
-    return answer;
+    record(charge, cardToken, authorization);
+    log.info(
+        "Authorization {} answered {}", charge.requestId(), authorization.responseCode().code());
+    return authorization;
   }
 
-  private void record(Charge charge, String cardToken, Answer answer) {
+  private void record(Charge charge, String cardToken, Authorization authorization) {
     jdbc.sql(
             """
             insert into "authorization".authorizations
@@ -69,9 +70,9 @@ class Authorizations {
         .param("amount", charge.amount().minorUnits())
         .param("currency", charge.amount().currency().getCurrencyCode())
         .param("acceptorId", charge.acceptorId())
-        .param("responseCode", answer.responseCode().code())
-        .param("authorizationCode", answer.authorizationCode())
-        .param("status", answer.status().name())
+        .param("responseCode", authorization.responseCode().code())
+        .param("authorizationCode", authorization.authorizationCode())
+        .param("status", authorization.status().name())
         .update();
   }
 
