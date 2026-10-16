@@ -1,6 +1,7 @@
 package dev.rgonz.payments.simulator;
 
 import dev.rgonz.payments.contracts.client.BuyersApi;
+import dev.rgonz.payments.contracts.client.ClearingFilesApi;
 import dev.rgonz.payments.contracts.client.CreditApi;
 import dev.rgonz.payments.contracts.client.InvoicesApi;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
@@ -34,6 +35,15 @@ class PlatformClients {
       OAuth2AuthorizedClientManager clients,
       @Value("${simulator.platform-url}") String platformUrl) {
     return signedInAs("issuer-admin", builder, clients, platformUrl).createClient(BuyersApi.class);
+  }
+
+  @Bean
+  ClearingFilesApi clearingFilesApi(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl) {
+    return signedInAs("issuer-admin", builder, clients, platformUrl)
+        .createClient(ClearingFilesApi.class);
   }
 
   @Bean
