@@ -54,7 +54,9 @@ final class AuthorizationRules {
     if (!withinAmount(card, charge)) {
       return ResponseCode.EXCEEDS_AMOUNT;
     }
-    if (card.status() == SingleUseCard.Status.AUTHORIZED) {
+    // A Single-Use Card takes one Charge: once approved, and once cleared, it takes no other.
+    if (card.status() == SingleUseCard.Status.AUTHORIZED
+        || card.status() == SingleUseCard.Status.CLEARED) {
       return ResponseCode.NOT_PERMITTED;
     }
     return ResponseCode.APPROVED;
