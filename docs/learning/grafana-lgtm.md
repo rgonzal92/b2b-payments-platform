@@ -15,3 +15,4 @@ From M1 on, requests cross two apps (an Invoice from the simulator's ERP role in
 
 - **Metrics arrive once a minute.** The apps push metrics every 60 seconds, so a fresh start shows traces and logs within seconds and metrics only after the first push.
 - **Searching Tempo through its API needs a time range.** A TraceQL search without `start` and `end` returned no traces even though they were stored. Grafana's Explore view adds the range for you.
+- **The Payment worker's traces bury everything else (from M1).** The worker runs every second, and each pass is a trace (`task paymentWorkerSchedule.runDueSteps`), so an unfiltered search lists only those. Search by span name instead: `{name="http post /demo/invoices"}` finds the demo's trace across both apps. Through Grafana's API: `http://localhost:3000/api/datasources/proxy/uid/tempo/api/search?q=…&start=…&end=…`, then `…/api/traces/<trace ID>` for the spans.

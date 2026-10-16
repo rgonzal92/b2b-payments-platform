@@ -1,8 +1,8 @@
 package dev.rgonz.payments.platform.vault;
 
 /**
- * The only place PANs and security codes exist (ADR-0004). Other modules refer to a card by its
- * Card Token and never receive its PAN.
+ * The only place PANs and security codes are stored (ADR-0004). Other modules refer to a card by
+ * its Card Token; only {@link #cardDetails} hands out a PAN, for showing to a Supplier once.
  */
 public interface Vault {
 

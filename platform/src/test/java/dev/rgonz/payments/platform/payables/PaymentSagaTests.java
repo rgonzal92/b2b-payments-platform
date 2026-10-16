@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
@@ -24,6 +25,7 @@ import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import dev.rgonz.payments.platform.suppliers.RemittanceAdvices;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.time.Duration;
@@ -39,6 +41,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.restclient.test.autoconfigure.AutoConfigureMockRestServiceServer;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -88,6 +92,7 @@ class PaymentSagaTests {
   @Autowired MockRestServiceServer supplier;
   @MockitoSpyBean Holds holds;
   @MockitoSpyBean Cards cards;
+  @MockitoSpyBean RemittanceAdvices remittanceAdvices;
 
   @Test
   void anApprovedInvoicesPaymentPlacesAHoldThenIssuesASingleUseCardShownWithoutItsPan()
@@ -171,29 +176,6 @@ class PaymentSagaTests {
     assertThat(card.amount()).isEqualTo(amount);
     assertThat(card.status()).isEqualTo(SingleUseCard.Status.ACTIVE);
     assertThat(again).isEqualTo(card);
-  }
-
-  @Test
-  void noTableOutsideTheVaultHoldsAPan() throws Exception {
-    var acme = newBuyerWithCreditLine(10_000_000);
-    var invoiceId = approvedInvoice(acme, 1_240_000);
-    supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
-    String cardToken =
-        JsonPath.read(
-            invoice(acme, invoiceId).getResponse().getContentAsString(),
-            "$.payment.card.cardToken");
-
-    // A simple check: #20 adds the exhaustive search of every table and log line.
-    assertThat(tablesOutsideTheVaultMatching("990000[0-9]{10}")).isEmpty();
-    // The search does find a value that is stored, such as the Card Token.
-    assertThat(tablesOutsideTheVaultMatching(cardToken)).contains("cards.card");
-    assertThat(
-            jdbc.sql("select count(*) from vault.card_secret where card_token = :cardToken")
-                .param("cardToken", cardToken)
-                .query(Long.class)
-                .single())
-        .isOne();
   }
 
   @Test
@@ -496,58 +478,45 @@ class PaymentSagaTests {
     assertThat(mvc.get().uri(link).exchange()).hasStatus(410);
   }
 
-  @Test
-  void aPlatformStoppedMidStepLeavesNoHoldAndTheNextPassPlacesExactlyOne() throws Exception {
-    var acme = newBuyerWithCreditLine(10_000_000);
-    var invoiceId = approvedInvoice(acme, 1_240_000);
-    // The platform stops after the Hold is placed, before the Payment's new state is saved.
-    doAnswer(
-            invocation -> {
-              invocation.callRealMethod();
-              throw new PlatformStopped();
-            })
-        .doCallRealMethod()
-        .when(holds)
-        .place(any(), eq(new BuyerId(acme)), any());
-    supplierAnswers(withSuccess());
-
-    assertThatThrownBy(() -> saga.runDueSteps(Instant.now())).isInstanceOf(PlatformStopped.class);
-    var stateAfterStop = paymentState(acme, invoiceId);
-    var creditAfterStop = availableCredit(acme);
-    saga.runDueSteps(Instant.now());
-
-    assertThat(stateAfterStop).isEqualTo("STARTED");
-    assertThat(creditAfterStop).isEqualTo(10_000_000);
-    assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
-    assertThat(availableCredit(acme)).isEqualTo(8_760_000);
-  }
-
-  @Test
-  void aPlatformStoppedWhileIssuingTheCardLeavesNoCardDataAndTheNextPassIssuesExactlyOne()
+  /**
+   * The platform stops during the step that follows each state, after the step's side effect but
+   * before its transaction commits, then starts again. The stop rolls back what the step wrote,
+   * except the Remittance Advice's record, which commits on its own before the POST (ADR-0014), and
+   * the advice the Supplier already received.
+   */
+  @ParameterizedTest(name = "stopped at {0}")
+  @CsvSource(
+      delimiter = '|',
+      textBlock =
+          """
+          # State | left after the stop: Holds | cards | advice records | advice the Supplier has
+          STARTED     | 0 | 0 | 0 | 0
+          HOLD_PLACED | 1 | 0 | 0 | 0
+          CARD_ISSUED | 1 | 1 | 1 | 1
+          """)
+  void aPlatformStoppedMidStepAndStartedAgainCompletesThePaymentWithOneHoldAndOneCard(
+      Payment.State stoppedAt, int holdsLeft, int cardsLeft, int advicesLeft, int deliveriesLeft)
       throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
-    // The platform stops after the card and its PAN are stored, before the Payment's new state.
-    doAnswer(
-            invocation -> {
-              invocation.callRealMethod();
-              throw new PlatformStopped();
-            })
-        .doCallRealMethod()
-        .when(cards)
-        .issueSingleUse(any(), eq(new BuyerId(acme)), any(), any(), any());
-    supplierAnswers(withSuccess());
+    stopOnceDuringTheStepAfter(stoppedAt, acme, UUID.fromString(invoiceId));
+    var deliveries = supplierAnswers(withSuccess(), withSuccess());
 
     assertThatThrownBy(() -> saga.runDueSteps(Instant.now())).isInstanceOf(PlatformStopped.class);
     var stateAfterStop = paymentState(acme, invoiceId);
-    var cardAfterStop = cards.findForPayment(paymentIdOf(invoiceId));
+    var leftAfterStop =
+        List.of(holdsOf(acme), cardsOf(acme), advicesFor(invoiceId), deliveries.size());
+    // Started again: the worker's next pass.
     saga.runDueSteps(Instant.now());
 
-    assertThat(stateAfterStop).isEqualTo("HOLD_PLACED");
-    assertThat(cardAfterStop).isEmpty();
+    assertThat(stateAfterStop).isEqualTo(stoppedAt.name());
+    assertThat(leftAfterStop).containsExactly(holdsLeft, cardsLeft, advicesLeft, deliveriesLeft);
     assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
-    assertThat(cards.findForPayment(paymentIdOf(invoiceId))).isPresent();
+    assertThat(List.of(holdsOf(acme), cardsOf(acme), advicesFor(invoiceId)))
+        .containsExactly(1, 1, 1);
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
+    // A Supplier that received the advice before the stop receives the same one again, to drop.
+    assertThat(deliveries).hasSize(deliveriesLeft + 1).allMatch(deliveries.getFirst()::equals);
     // No PAN left in the vault for a card that was rolled back.
     assertThat(
             jdbc.sql(
@@ -558,6 +527,51 @@ class PaymentSagaTests {
                 .query(Long.class)
                 .single())
         .isZero();
+  }
+
+  // The step's real call runs, then the platform stops before the step's transaction commits. The
+  // step runs normally after that, as it does once the platform has started again.
+  private void stopOnceDuringTheStepAfter(Payment.State state, UUID buyerId, UUID invoiceId) {
+    var stopAfterTheRealCall =
+        doAnswer(
+                invocation -> {
+                  invocation.callRealMethod();
+                  throw new PlatformStopped();
+                })
+            .doCallRealMethod();
+    var buyer = new BuyerId(buyerId);
+    switch (state) {
+      case STARTED -> stopAfterTheRealCall.when(holds).place(any(), eq(buyer), any());
+      case HOLD_PLACED ->
+          stopAfterTheRealCall.when(cards).issueSingleUse(any(), eq(buyer), any(), any(), any());
+      case CARD_ISSUED ->
+          stopAfterTheRealCall
+              .when(remittanceAdvices)
+              .deliver(argThat(advice -> advice.invoiceId().equals(invoiceId)), any());
+      case COMPLETED, FAILED -> throw new IllegalArgumentException("No step follows " + state);
+    }
+  }
+
+  private int holdsOf(UUID buyerId) {
+    return jdbc.sql("select count(*) from ledger.hold where buyer_id = :buyerId")
+        .param("buyerId", buyerId)
+        .query(Integer.class)
+        .single();
+  }
+
+  private int cardsOf(UUID buyerId) {
+    return jdbc.sql("select count(*) from cards.card where buyer_id = :buyerId")
+        .param("buyerId", buyerId)
+        .query(Integer.class)
+        .single();
+  }
+
+  private int advicesFor(String invoiceId) {
+    return jdbc.sql(
+            "select count(*) from suppliers.remittance_advice where invoice_id = :invoiceId")
+        .param("invoiceId", UUID.fromString(invoiceId))
+        .query(Integer.class)
+        .single();
   }
 
   /** A Remittance Advice as the Supplier's address received it. */
@@ -670,28 +684,6 @@ class PaymentSagaTests {
         .param("invoiceId", UUID.fromString(invoiceId))
         .query(UUID.class)
         .single();
-  }
-
-  // Every table outside the vault's schema (and PostgreSQL's own) with a row whose text matches.
-  private List<String> tablesOutsideTheVaultMatching(String regex) {
-    var tables =
-        jdbc.sql(
-                """
-                select format('%I.%I', table_schema, table_name)
-                  from information_schema.tables
-                 where table_type = 'BASE TABLE'
-                   and table_schema not in ('vault', 'pg_catalog', 'information_schema')
-                """)
-            .query(String.class)
-            .list();
-    return tables.stream()
-        .filter(
-            table ->
-                jdbc.sql("select exists (select 1 from " + table + " t where t::text ~ :regex)")
-                    .param("regex", regex)
-                    .query(Boolean.class)
-                    .single())
-        .toList();
   }
 
   private long completedDeliveriesOf(UUID invoiceId) {

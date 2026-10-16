@@ -4,7 +4,7 @@ Companies pay their suppliers by card: the platform issues a single-use virtual 
 
 It's a learning project modelled on a senior payments engineering role (virtual cards, payables, event-driven services). Every significant decision is recorded with its reasoning, so the docs matter as much as the code.
 
-> **Status:** M0 (foundations) is done: both apps build, run locally with telemetry, and pass CI. No business features yet. See the [roadmap](#roadmap).
+> **Status:** M1 (Invoice to card) is done: steps 1 to 4 below work end to end. An ERP's invoice is approved by one or two approvers, paid with a single-use card whose full number lives only in the encrypted vault, and the supplier opens the card's details once through its remittance advice link. Once the apps are running, one command runs it (see [Run it locally](#run-it-locally)). Next is M2: the card network charges the card. See the [roadmap](#roadmap).
 
 ## How a payment works
 
@@ -38,9 +38,10 @@ You need Java 25 (Corretto), Docker running, OpenSSL, and ports 5432, 3000, 4317
 1. Once, generate local secrets: `./scripts/init-env.sh`. It writes random development secrets into `.env`, which git ignores; running it again keeps existing values and adds any new ones. After pulling a change to `keycloak/payments-realm.json` (such as a new client), run it again, then `docker compose up -d --force-recreate keycloak`: Keycloak imports the realm only into a fresh container. If your `.env` predates the card vault or the Remittance Advice, run it again too: it adds the vault's two keys (`VAULT_ENCRYPTION_KEY`, `VAULT_HASH_KEY`) and the Remittance Advice link key (`REMITTANCE_LINK_KEY`), without which the platform refuses to start.
 2. Start the platform: `./mvnw -pl platform -am spring-boot:run`. The first start pulls the PostgreSQL, Grafana LGTM and Keycloak images, then the platform listens on <http://localhost:8080>.
 3. In a second terminal, start the simulator: `./mvnw -pl simulator -am spring-boot:run`. It listens on <http://localhost:8081>, reuses the running stack, and creates the Buyer Acme through the platform, signed in through Keycloak.
-4. Open Grafana at <http://localhost:3000> (no login). Under **Explore**, pick **Tempo** for traces, **Loki** for logs or **Prometheus** for metrics. Metrics arrive once a minute.
-5. Keycloak's admin console is at <http://localhost:8180>: user `admin`, password `KEYCLOAK_ADMIN_PASSWORD` from `.env`.
-6. Stopping an app leaves the stack running for the other. Stop the stack with `docker compose down`. If only part of it is running, run `docker compose up -d` before starting an app: Spring Boot starts the stack only when none of it is running.
+4. Run the whole payment in one call: `curl -s -X POST http://localhost:8081/demo/invoices`. The simulator's ERP submits a $12,400 invoice from Globex, two of Acme's approvers approve it (it is above Acme's $10,000 threshold), and the simulator waits for the platform to pay it. Within a second or two it answers with the invoice, who approved it, `"paymentState": "COMPLETED"` and what Globex received through its one-time link: the card's last four digits, expiry and amount, never the full number. Add `?minorUnits=500000` for a $5,000 invoice, which takes one approval. Each paid invoice keeps its amount of Acme's $100,000 credit line reserved until the card is charged and cleared (M2 and M3), so the ninth $12,400 demo answers `"paymentState": "FAILED"` with `"Not enough Available Credit to place the Hold."`. `docker compose down` followed by restarting both apps starts again with an empty database. For any other payment that isn't `COMPLETED`, see [`docs/runbooks/payment-stuck.md`](docs/runbooks/payment-stuck.md).
+5. Open Grafana at <http://localhost:3000> (no login). Under **Explore**, pick **Tempo** for traces, **Loki** for logs or **Prometheus** for metrics. Metrics arrive once a minute. In Tempo, the TraceQL query `{name="http post /demo/invoices"}` finds each demo call as one trace across the simulator and the platform.
+6. Keycloak's admin console is at <http://localhost:8180>: user `admin`, password `KEYCLOAK_ADMIN_PASSWORD` from `.env`.
+7. Stopping an app leaves the stack running for the other. Stop the stack with `docker compose down`. If only part of it is running, run `docker compose up -d` before starting an app: Spring Boot starts the stack only when none of it is running.
 
 Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own throwaway PostgreSQL and Keycloak.
 
@@ -49,7 +50,7 @@ Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own th
 | # | What works at the end | Status |
 |---|---|---|
 | M0 | Project skeleton, local stack in Docker Compose, CI with secret scanning and SonarQube | Done |
-| M1 | Invoice → approvals → payment saga → single-use card in the vault → remittance link | Planned |
+| M1 | Invoice → approvals → payment saga → single-use card in the vault → remittance link | Done |
 | M2 | The network simulator charges the card over gRPC; authorization rules, credit holds, reversals | Planned |
 | M3 | The daily clearing file is processed by Spring Batch; daily settlement with the network | Planned |
 | M4 | Reconciliation and Breaks; load test against the 100 ms target; Grafana dashboards | Planned |

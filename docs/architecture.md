@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 foundations are built, and M1 is under way: `shared`, `buyers`, `ledger` (Credit Lines and Holds so far), `suppliers` (with Remittance Advice), `payables` (Invoice intake, approvals and the Payment saga), `cards` (Single-Use Cards) and `vault` exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 (foundations) and M1 (Invoice to card) are done. The M1 modules are built: `shared`, `buyers`, `ledger` (Credit Lines and Holds), `suppliers` (Suppliers, Supplier Relationships, Remittance Advice), `payables` (Invoice intake, approvals, the Payment saga), `cards` (Single-Use Cards) and `vault`. `authorization`, `clearing` and `reconciliation` arrive with M2 to M4, as the module table shows. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -44,18 +44,18 @@ Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for 
 
 The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce the boundaries.
 
-| Module | Owns | Calls |
-|---|---|---|
-| `shared` | `Money`, `BuyerId`, `SecretKeys` (reads a 256-bit key from configuration, or stops the platform); open to every module | |
-| `buyers` | Buyer profiles, Approval Thresholds | |
-| `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice and their one-time card links | `cards`, `vault` |
-| `payables` | Invoices and their Idempotency-Keys, approvals, Payments (runs the Payment saga) | `buyers`, `ledger`, `cards`, `suppliers` |
-| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel) | `vault` |
-| `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards` and `suppliers` may call it | |
-| `authorization` | Authorization rules; answers the Network | `cards`, `ledger` |
-| `ledger` | Credit Lines, Holds, postings, Available Credit (ADR-0005) | `buyers` |
-| `clearing` | Clearing File processing, Settlement | `ledger` |
-| `reconciliation` | Matching Charges to Authorizations and Invoices; Breaks | |
+| Module | Owns | Calls | Built |
+|---|---|---|---|
+| `shared` | `Money`, `BuyerId`, `SecretKeys` (reads a 256-bit key from configuration, or stops the platform); open to every module | | M1 |
+| `buyers` | Buyer profiles, Approval Thresholds | | M1 |
+| `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice and their one-time card links | `cards`, `vault` | M1 |
+| `payables` | Invoices and their Idempotency-Keys, approvals, Payments (runs the Payment saga) | `buyers`, `ledger`, `cards`, `suppliers` | M1 |
+| `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel) | `vault` | M1 |
+| `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards` and `suppliers` may call it | | M1 |
+| `authorization` | Authorization rules; answers the Network | `cards`, `ledger` | M2 |
+| `ledger` | Credit Lines, Holds and Available Credit; postings and the journal from M3 (ADR-0005) | `buyers` | M1 |
+| `clearing` | Clearing File processing, Settlement | `ledger` | M3 |
+| `reconciliation` | Matching Charges to Authorizations and Invoices; Breaks | | M4 |
 
 How modules interact:
 
@@ -200,6 +200,48 @@ sequenceDiagram
 - **Opening** a link hashes the token and runs one `update ... returning` that sets `link_used_at` only if it is unset and the link hasn't expired, so of two opens at once exactly one shows the card. A token with no record answers `404`; a used or expired link, or one whose card is cancelled, `410`, and a link that shows nothing isn't marked used. The PAN and security code come from `vault` for that answer only. Nothing logs the token, the PAN or the security code, and traces record a link request by its route (`RequestObservations`), not its URL.
 - **The Supplier's address** is the remittance address on the first Invoice naming its tax ID (see Invoice intake in the M1 design). The simulator plays the Supplier Globex at `http://localhost:8081/globex/remittance-advice`: it drops repeated advice by `Idempotency-Key`, opens each link once, and logs only the last four digits.
 - **How it works and why:** [`learning/one-time-links.md`](learning/one-time-links.md). When delivery keeps failing: [`runbooks/payment-stuck.md`](runbooks/payment-stuck.md).
+
+## The simulator in M1
+
+The `simulator` plays every party on M1's core path other than the platform; each role that calls the platform signs in as its own Keycloak client:
+
+| Role | Class | What it does |
+|---|---|---|
+| Issuer staff | `AcmeSeeder` | At startup, creates the Buyer Acme (fixed ID, Approval Threshold $10,000) and gives it a $100,000 Credit Line (`simulator-issuer-admin`) |
+| Acme's ERP | `AcmeErp` | Submits Invoices from Globex under a new `Idempotency-Key` each, and reads them back (`acme-erp`) |
+| Acme's Approvers | `AcmeApprovers` | Approve on request, as `acme-approver-1` or `acme-approver-2` |
+| Supplier Globex | `GlobexSupplier` | Receives Remittance Advice at `/globex/remittance-advice`, drops repeats by `Idempotency-Key`, opens each card link once with an untraced client, and keeps only the last four digits, expiry and amount |
+| Demo | `AcmeDemo` | `POST /demo/invoices[?minorUnits=…]`: runs the whole path in one call (below) |
+
+```mermaid
+sequenceDiagram
+  participant You
+  participant DEMO as simulator: AcmeDemo
+  participant PLT as platform
+  participant GLX as simulator: Globex
+
+  You->>DEMO: POST /demo/invoices
+  DEMO->>PLT: POST /v1/invoices (as acme-erp)
+  DEMO->>PLT: POST /v1/invoices/{id}/approval (acme-approver-1)
+  DEMO->>PLT: second approval (acme-approver-2), only while the Invoice is still RECEIVED
+  loop every 200 ms, at most 30 s
+    DEMO->>PLT: GET /v1/invoices/{id} (as acme-erp)
+  end
+  Note over PLT: the worker places the Hold, issues the card, delivers the advice
+  PLT->>GLX: POST /globex/remittance-advice
+  GLX->>PLT: GET /v1/remittance-links/{token}
+  DEMO-->>You: Invoice, approvers, Payment state, what Globex received (no PAN)
+```
+
+- **One trace across both apps.** Both apps export traces to Grafana's Tempo over OTLP, and Spring's HTTP clients pass the trace context on (W3C `traceparent`). The demo's request is one trace, rooted at the simulator's `http post /demo/invoices`, holding the platform's spans for the Invoice submission, the approvals and every read. Delivering the advice is a trace of its own, rooted at the worker's task (`task paymentWorkerSchedule.runDueSteps`), that continues into Globex's `http post /globex/remittance-advice`. A card link's GET is deliberately untraced on Globex's side and recorded by its route on the platform's.
+
+## How M1 is proven
+
+- **The core path** (`CorePathTests`): real Keycloak tokens from the repository's realm file and real PostgreSQL, the worker on its schedule, only the Supplier's address stubbed. Acme is set up, an Invoice above the threshold is approved twice and paid, Available Credit drops by its amount, and the link opens once, then answers `410`.
+- **No PAN outside the vault:** the same test class searches every column of every table outside `vault`, and the captured logs, for the PAN it just read through the link.
+- **A crash at each Payment state** (`PaymentSagaTests`): the platform stops mid-step after `STARTED`, `HOLD_PLACED` and `CARD_ISSUED`, and the next pass completes the Payment with one Hold and one card.
+- **Module boundaries:** `ModularityTests` (Spring Modulith's verification, and only `cards` and `suppliers` using `vault`).
+- **The simulator's roles and the demo** against stub Keycloak and platform servers.
 
 ## Quality targets
 

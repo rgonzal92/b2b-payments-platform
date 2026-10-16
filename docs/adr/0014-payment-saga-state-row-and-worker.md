@@ -1,3 +1,5 @@
 # Payment saga state lives in a row, driven by a SKIP LOCKED worker
 
 Each Payment is a row in `payables` holding its saga state; a worker in the platform claims due Payments with `SELECT ... FOR UPDATE SKIP LOCKED`, runs the next step and saves the new state in the same transaction. We chose this over chaining Spring Modulith events from step to step (the natural reading of ADR-0008) because a single row shows every Payment's state in one place and makes retry counts and backoff explicit columns rather than framework behaviour. Modulith events still start the saga (`InvoiceApproved`) and remain the way modules tell each other something happened.
+
+**Amended 2026-10-16 (#20):** a step with an external side effect commits its own record before the call. Delivering the Remittance Advice records the advice and its link in a transaction of its own, so the link already works when the Supplier receives it; the POST then runs inside the worker's transaction, and the Payment's new state commits after the Supplier's answer. Delivery is therefore at least once, made safe by sending every attempt's advice, with the same link, under the same `Idempotency-Key`.

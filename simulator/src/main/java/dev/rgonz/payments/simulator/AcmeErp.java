@@ -14,7 +14,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-/** Acme's ERP: submits Invoices to the platform, signed in as the acme-erp client. */
+/**
+ * Acme's ERP: submits Invoices to the platform and reads them back, signed in as the acme-erp
+ * client.
+ */
 @Component
 class AcmeErp {
 
@@ -32,8 +35,8 @@ class AcmeErp {
     this.globexRemittanceAddress = globexRemittanceAddress;
   }
 
-  /** Submits a new Invoice from Globex for $12,400, due in 30 days. */
-  Invoice submitInvoice() {
+  /** Submits a new Invoice from Globex for the amount, due in 30 days. */
+  Invoice submitInvoice(Money amount) {
     var number = "INV-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     var request =
         new InvoiceRequest()
@@ -44,7 +47,7 @@ class AcmeErp {
                     .buyerReference("GLOBEX-01")
                     .remittanceAddress(globexRemittanceAddress))
             .invoiceNumber(number)
-            .amount(new Money().minorUnits(1_240_000L).currency(Money.CurrencyEnum.USD))
+            .amount(amount)
             .dueDate(LocalDate.now().plusDays(30));
     // A new key for each new Invoice; retrying this same Invoice would resend the same key.
     var response = invoices.submitInvoice(UUID.randomUUID().toString(), request);
@@ -52,5 +55,12 @@ class AcmeErp {
     var invoice = Objects.requireNonNull(response.getBody(), "the platform's Invoice");
     log.info("Acme's ERP submitted Invoice {} as {}", number, invoice.getId());
     return invoice;
+  }
+
+  /** Reads the Invoice back, with its Payment once it has one. */
+  Invoice find(UUID invoiceId) {
+    // The contract's 200 always carries the Invoice; errors arrive as exceptions instead.
+    return Objects.requireNonNull(
+        invoices.getInvoice(invoiceId).getBody(), "the platform's Invoice");
   }
 }
