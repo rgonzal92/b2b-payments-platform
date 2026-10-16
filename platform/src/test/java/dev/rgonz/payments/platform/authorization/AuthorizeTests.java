@@ -28,6 +28,8 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -139,15 +141,25 @@ class AuthorizeTests {
         .containsEntry("status", "DECLINED");
   }
 
-  @Test
-  void aChargeFromAnotherAcceptorIdIsDeclinedAndChangesNeitherTheCardNorItsHold() throws Exception {
+  // A card whose Supplier has no Acceptor ID can't be charged by anyone.
+  @ParameterizedTest(name = "the Supplier has {0}, the Charge carries {1}")
+  @CsvSource(
+      delimiter = '|',
+      textBlock =
+          """
+          # The Supplier's Acceptor ID (none when empty) | the Charge's
+          GLOBEX000000001 | OTHER0000000002
+                          | GLOBEX000000001
+          """)
+  void aChargeNotFromTheCardsSuppliersAcceptorIdIsDeclinedAndChangesNeitherTheCardNorItsHold(
+      String suppliersAcceptorId, String chargesAcceptorId) throws Exception {
     var buyerId = buyerWithCreditLine(10_000_000);
-    var card = issuedCard(buyerId, ACCEPTOR_ID);
+    var card = issuedCard(buyerId, suppliersAcceptorId);
     var creditBefore = availableCredit(buyerId);
     var requestId = UUID.randomUUID().toString();
 
     var response =
-        authorize(requestId, vault.cardDetails(card.cardToken()).pan(), "OTHER0000000002");
+        authorize(requestId, vault.cardDetails(card.cardToken()).pan(), chargesAcceptorId);
 
     assertThat(response.getResponseCode()).isEqualTo("57");
     assertThat(response.getAuthorizationCode()).isEmpty();
@@ -158,31 +170,7 @@ class AuthorizeTests {
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
     assertThat(recorded(requestId))
         .containsEntry("card_token", card.cardToken())
-        .containsEntry("acceptor_id", "OTHER0000000002")
-        .containsEntry("response_code", "57")
-        .containsEntry("authorization_code", null)
-        .containsEntry("status", "DECLINED");
-  }
-
-  @Test
-  void aCardWhoseSupplierHasNoAcceptorIdIsDeclinedAndChangesNeitherTheCardNorItsHold()
-      throws Exception {
-    var buyerId = buyerWithCreditLine(10_000_000);
-    var card = issuedCard(buyerId, null);
-    var creditBefore = availableCredit(buyerId);
-    var requestId = UUID.randomUUID().toString();
-
-    var response = authorize(requestId, vault.cardDetails(card.cardToken()).pan());
-
-    assertThat(response.getResponseCode()).isEqualTo("57");
-    assertThat(response.getAuthorizationCode()).isEmpty();
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.ACTIVE);
-    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
-    assertThat(recorded(requestId))
-        .containsEntry("card_token", card.cardToken())
+        .containsEntry("acceptor_id", chargesAcceptorId)
         .containsEntry("response_code", "57")
         .containsEntry("authorization_code", null)
         .containsEntry("status", "DECLINED");

@@ -62,7 +62,7 @@ The Network identifies the Supplier on every Charge by the Acceptor ID its Acqui
 - Decided during #32:
   - The contract's `acceptorId` is 1 to 15 characters (DE 42's length), not blank, and compared exactly. Invoices without it are still accepted.
   - `authorization` reads it through `suppliers.Suppliers.acceptorId(supplierId)`, a new direct call from `authorization` to `suppliers`. The rule runs where the rule table puts it; until #31 adds the security-code check, that is right after the card-status check, so `authorization` reads the card (`cards.Cards.find`) before the conditional update that moves it to `AUTHORIZED`.
-  - Globex's Acceptor ID is the simulator setting `simulator.globex.acceptor-id` (a made-up 15-character value). Acme's ERP sends it on its Invoices, and the Acquirer role reuses it for Globex's Charges.
+  - Globex's Acceptor ID is the simulator setting `simulator.globex.acceptor-id` (a made-up 15-character value). Acme's ERP sends it on its Invoices, and the Acquirer role (#36) will put the same setting on Globex's Charges.
 
 ### Card expiry
 

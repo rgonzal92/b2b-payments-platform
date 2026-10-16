@@ -4,7 +4,7 @@
 
 Authorization approves a Charge only when its Acceptor ID (DE 42) is exactly the one stored for the card's Supplier, and a card whose Supplier has no Acceptor ID can't be charged at all (see [The Network link](../architecture.md#the-network-link)). The Supplier's Acceptor ID comes from the Buyer's ERP: the first Invoice that carries one sets it, and a different one on a later Invoice is ignored. So either no Invoice has given the Supplier one, or the first one it got isn't what its Acquirer sends. A decline changes nothing: the card stays `ACTIVE` with its Hold until it expires, so the Supplier can charge it again once the Acceptor ID is right.
 
-1. Compare what the Charges carry with what the Supplier holds:
+1. Compare what the Charges carry with what the Supplier holds. This operator query joins three modules' schemas, which the platform's own code never does (ADR-0009); it works while they share one database, and needs splitting when `authorization` becomes its own service (M5).
 
    ```sql
    select a.acceptor_id as charged_with, s.acceptor_id as supplier_has, s.tax_id, s.name, count(*)

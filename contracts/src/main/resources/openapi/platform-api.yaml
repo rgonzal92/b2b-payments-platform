@@ -132,8 +132,9 @@ paths:
         A Buyer's ERP only (role `erp`); the Buyer is the one in the token's `buyer_id` claim. The amount must
         be more than zero. The first Invoice naming an unknown tax ID creates the Supplier, and the Buyer's first
         Invoice to a Supplier creates its Supplier Relationship; later Invoices reuse both and don't change them,
-        except that a Supplier without an Acceptor ID takes the first one an Invoice carries. Repeating a request with the same `Idempotency-Key` returns the original response; reusing a key with a
-        different request is `422`. The same Supplier and Invoice number under a new key is `409`.
+        except that a Supplier without an Acceptor ID takes the first one an Invoice carries. Repeating a request
+        with the same `Idempotency-Key` returns the original response; reusing a key with a different request is
+        `422`. The same Supplier and Invoice number under a new key is `409`.
       parameters:
         - name: Idempotency-Key
           in: header

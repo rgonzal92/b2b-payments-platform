@@ -148,19 +148,19 @@ class InvoicesApiTests {
     var taxId = newTaxId();
 
     var carrying =
-        submit(acme, newKey(), invoiceJson(taxId, "INV-1", 1_240_000, "GLOBEX000000001"));
+        submit(acme, newKey(), invoiceJson(taxId, "INV-1", 1_240_000, GLOBEX_ACCEPTOR_ID));
     var later = submit(acme, newKey(), invoiceJson(taxId, "INV-2", 500_000));
 
     assertThat(carrying).hasStatus(201);
     assertThat(carrying)
         .bodyJson()
         .extractingPath("$.supplier.acceptorId")
-        .isEqualTo("GLOBEX000000001");
+        .isEqualTo(GLOBEX_ACCEPTOR_ID);
     assertThat(later).hasStatus(201);
     assertThat(later)
         .bodyJson()
         .extractingPath("$.supplier.acceptorId")
-        .isEqualTo("GLOBEX000000001");
+        .isEqualTo(GLOBEX_ACCEPTOR_ID);
   }
 
   // Like the remittance address, so a later Invoice can't redirect the Supplier's Charges.
@@ -171,7 +171,7 @@ class InvoicesApiTests {
     var taxId = newTaxId();
 
     var without = submit(acme, newKey(), invoiceJson(taxId, "INV-1", 1_240_000));
-    var first = submit(acme, newKey(), invoiceJson(taxId, "INV-2", 1_240_000, "GLOBEX000000001"));
+    var first = submit(acme, newKey(), invoiceJson(taxId, "INV-2", 1_240_000, GLOBEX_ACCEPTOR_ID));
     var different =
         submit(initech, newKey(), invoiceJson(taxId, "INV-3", 1_240_000, "OTHER0000000002"));
 
@@ -180,12 +180,12 @@ class InvoicesApiTests {
     assertThat(first)
         .bodyJson()
         .extractingPath("$.supplier.acceptorId")
-        .isEqualTo("GLOBEX000000001");
+        .isEqualTo(GLOBEX_ACCEPTOR_ID);
     assertThat(different).hasStatus(201);
     assertThat(different)
         .bodyJson()
         .extractingPath("$.supplier.acceptorId")
-        .isEqualTo("GLOBEX000000001");
+        .isEqualTo(GLOBEX_ACCEPTOR_ID);
   }
 
   @Test
@@ -314,6 +314,7 @@ class InvoicesApiTests {
   }
 
   private static final String ERP = "ROLE_erp";
+  private static final String GLOBEX_ACCEPTOR_ID = "GLOBEX000000001";
 
   private UUID newBuyer() {
     var buyerId = UUID.randomUUID();
