@@ -1,4 +1,5 @@
 # Local development stack. Spring Boot's Docker Compose support starts it with either app.
+# Every port listens on 127.0.0.1 only: the database takes no password and Grafana no login.
 services:
   postgres:
     # Same tag as the platform's TestcontainersConfiguration: change both together.
@@ -6,13 +7,13 @@ services:
     environment:
       POSTGRES_DB: payments
       POSTGRES_USER: payments
-      POSTGRES_PASSWORD: payments # local-only credential
+      POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   lgtm:
     image: grafana/otel-lgtm:0.36.0
     ports:
-      - "3000:3000" # Grafana
-      - "4317:4317" # OTLP over gRPC
-      - "4318:4318" # OTLP over HTTP
+      - "127.0.0.1:3000:3000" # Grafana
+      - "127.0.0.1:4317:4317" # OTLP over gRPC
+      - "127.0.0.1:4318:4318" # OTLP over HTTP

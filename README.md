@@ -33,9 +33,9 @@ Java 25, Spring Boot 4, Maven, PostgreSQL, Spring Modulith, gRPC, Spring Batch, 
 
 ## Run it locally
 
-You need Java 25 (Corretto is what CI uses) and Docker running. Docker Compose starts the database and the telemetry stack for you.
+You need Java 25 (Corretto) and Docker running, with ports 5432, 3000, 4317, 4318, 8080 and 8081 free. Docker Compose starts the database and the telemetry stack for you.
 
-1. Start the platform: `./mvnw -pl platform spring-boot:run`. The first start pulls PostgreSQL 18.6 and Grafana LGTM, then the platform listens on <http://localhost:8080>.
+1. Start the platform: `./mvnw -pl platform spring-boot:run`. The first start pulls the PostgreSQL and Grafana LGTM images, then the platform listens on <http://localhost:8080>.
 2. In a second terminal, start the simulator: `./mvnw -pl simulator spring-boot:run`. It listens on <http://localhost:8081> and reuses the running stack.
 3. Open Grafana at <http://localhost:3000> (no login). Under **Explore**, pick **Tempo** for traces, **Loki** for logs or **Prometheus** for metrics. Metrics arrive once a minute.
 4. Stopping an app leaves the stack running for the other. Stop the stack with `docker compose down`.

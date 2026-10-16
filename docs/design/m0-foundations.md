@@ -33,7 +33,7 @@ Nothing exists yet. Every later milestone needs four things in place first: a bu
 
 ### simulator
 
-- Dependencies: Spring Web, Actuator, the OpenTelemetry starter.
+- Dependencies: Spring Web, Actuator, the OpenTelemetry starter, Docker Compose support (development only). (Changed during #3: Docker Compose support is what points the exporters at Grafana LGTM, so the simulator needs it too.)
 - An empty application in M0. It gains its ERP role in M1 and its Network role in M2.
 
 ### Local stack

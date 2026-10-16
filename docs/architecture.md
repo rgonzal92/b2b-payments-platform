@@ -32,7 +32,7 @@ flowchart LR
 
 ## Runtime (M0 to M4)
 
-One Docker Compose stack: `platform`, `simulator`, PostgreSQL (one schema per module), Keycloak, and `grafana/otel-lgtm` for metrics, traces and logs.
+Docker Compose runs PostgreSQL (one schema per module) and `grafana/otel-lgtm` for metrics, traces and logs; Keycloak joins in M1. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
 
 ## Modules
 
