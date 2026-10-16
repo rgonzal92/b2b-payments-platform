@@ -157,7 +157,7 @@ A Buyer's payment to the Issuer that reduces its Buyer Receivable.
 _Avoid_: Payment, refund, top-up
 
 **Clearing Suspense**:
-The Account a Clearing is posted to when its card can't be identified, until a person resolves it.
+The Account a Clearing is posted to when its card can't be identified, or it is in another currency than its card's, until a person resolves it.
 _Avoid_: Unknown account, holding account
 
 **Business Date**:
