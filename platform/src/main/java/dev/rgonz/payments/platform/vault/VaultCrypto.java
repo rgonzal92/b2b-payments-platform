@@ -1,10 +1,10 @@
 package dev.rgonz.payments.platform.vault;
 
+import dev.rgonz.payments.platform.shared.SecretKeys;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
-import java.util.Base64;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
@@ -22,7 +22,6 @@ final class VaultCrypto {
 
   private static final String CIPHER = "AES/GCM/NoPadding";
   private static final String HMAC = "HmacSHA256";
-  private static final int KEY_BYTES = 32;
   private static final int NONCE_BYTES = 12;
   private static final int TAG_BITS = 128;
 
@@ -33,8 +32,9 @@ final class VaultCrypto {
   VaultCrypto(
       @Value("${vault.encryption-key:}") String encryptionKey,
       @Value("${vault.hash-key:}") String hashKey) {
-    this.encryptionKey = new SecretKeySpec(decodeKey("vault.encryption-key", encryptionKey), "AES");
-    this.hashKey = new SecretKeySpec(decodeKey("vault.hash-key", hashKey), HMAC);
+    this.encryptionKey =
+        new SecretKeySpec(SecretKeys.decode256("vault.encryption-key", encryptionKey), "AES");
+    this.hashKey = new SecretKeySpec(SecretKeys.decode256("vault.hash-key", hashKey), HMAC);
   }
 
   /**
@@ -90,31 +90,5 @@ final class VaultCrypto {
     } catch (GeneralSecurityException e) {
       throw new IllegalStateException("Hashing a PAN failed.", e);
     }
-  }
-
-  // The messages name the property, never its value.
-  private static byte[] decodeKey(String property, String base64) {
-    if (base64 == null || base64.isBlank()) {
-      throw new IllegalStateException(
-          property + " is missing: run scripts/init-env.sh to add the vault's keys to .env.");
-    }
-    byte[] key;
-    try {
-      key = Base64.getDecoder().decode(base64.strip());
-    } catch (IllegalArgumentException notBase64) {
-      // Not chained: the decoder's message quotes a character of the key.
-      throw new IllegalStateException(
-          property + " isn't valid base64: generate it with openssl rand -base64 32.");
-    }
-    if (key.length != KEY_BYTES) {
-      throw new IllegalStateException(
-          property
-              + " must be "
-              + KEY_BYTES
-              + " bytes (256 bits) once base64-decoded, but is "
-              + key.length
-              + ": generate it with openssl rand -base64 32.");
-    }
-    return key;
   }
 }

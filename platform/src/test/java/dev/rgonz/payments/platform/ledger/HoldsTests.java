@@ -16,6 +16,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.JwtRequestPostProcessor;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
@@ -28,6 +29,7 @@ class HoldsTests {
 
   @Autowired MockMvcTester mvc;
   @Autowired Holds holds;
+  @Autowired JdbcClient jdbc;
 
   @Test
   void placingTheSameHoldTwiceReservesTheCreditOnce() throws Exception {
@@ -55,6 +57,53 @@ class HoldsTests {
     holds.release(holdId);
 
     assertThat(availableCredit(buyerId)).isEqualTo(1_000_000);
+  }
+
+  @Test
+  void aReleasedHoldKeepsItsRowMarkedReleased() {
+    var buyerId = buyerWithCreditLine(1_240_000);
+    var holdId = UUID.randomUUID();
+    holds.place(holdId, buyerId, new Money(1_000_000, Currency.getInstance("USD")));
+
+    holds.release(holdId);
+
+    // Money records don't disappear: the row stays, with when it was released.
+    var row =
+        jdbc.sql(
+                "select status, released_at is not null as released from ledger.hold where id = :id")
+            .param("id", holdId)
+            .query()
+            .singleRow();
+    assertThat(row).containsEntry("status", "RELEASED").containsEntry("released", true);
+  }
+
+  @Test
+  void placingAReleasedHoldAgainReservesItsCreditAfresh() throws Exception {
+    var buyerId = buyerWithCreditLine(1_240_000);
+    var holdId = UUID.randomUUID();
+    var amount = new Money(1_000_000, Currency.getInstance("USD"));
+    holds.place(holdId, buyerId, amount);
+    holds.release(holdId);
+
+    var placedAgain = holds.place(holdId, buyerId, amount);
+
+    assertThat(placedAgain).isEqualTo(Holds.Outcome.PLACED);
+    assertThat(availableCredit(buyerId)).isEqualTo(240_000);
+  }
+
+  @Test
+  void placingAReleasedHoldAgainIsRefusedOnceItsCreditIsTaken() throws Exception {
+    var buyerId = buyerWithCreditLine(1_240_000);
+    var holdId = UUID.randomUUID();
+    var amount = new Money(1_000_000, Currency.getInstance("USD"));
+    holds.place(holdId, buyerId, amount);
+    holds.release(holdId);
+    holds.place(UUID.randomUUID(), buyerId, amount);
+
+    var placedAgain = holds.place(holdId, buyerId, amount);
+
+    assertThat(placedAgain).isEqualTo(Holds.Outcome.INSUFFICIENT_CREDIT);
+    assertThat(availableCredit(buyerId)).isEqualTo(240_000);
   }
 
   private BuyerId buyerWithCreditLine(long creditLine) {

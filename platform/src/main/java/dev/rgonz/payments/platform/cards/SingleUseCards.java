@@ -24,6 +24,11 @@ class SingleUseCards implements Cards {
 
   private static final Duration VALIDITY = Duration.ofDays(30);
   private static final int CARD_TOKEN_BYTES = 16;
+  private static final String COLUMNS =
+      """
+      card_token, payment_id, buyer_id, supplier_id, amount_minor, currency, last_four, issued_at,
+      expires_at, status
+      """;
 
   private final JdbcClient jdbc;
   private final Vault vault;
@@ -82,16 +87,26 @@ class SingleUseCards implements Cards {
 
   @Override
   public Optional<SingleUseCard> findForPayment(UUID paymentId) {
-    return jdbc.sql(
-            """
-            select card_token, payment_id, buyer_id, supplier_id, amount_minor, currency, last_four,
-                   issued_at, expires_at, status
-              from cards.card
-             where payment_id = :paymentId
-            """)
+    return jdbc.sql("select " + COLUMNS + " from cards.card where payment_id = :paymentId")
         .param("paymentId", paymentId)
         .query(SingleUseCards::toCard)
         .optional();
+  }
+
+  @Override
+  public Optional<SingleUseCard> find(String cardToken) {
+    return jdbc.sql("select " + COLUMNS + " from cards.card where card_token = :cardToken")
+        .param("cardToken", cardToken)
+        .query(SingleUseCards::toCard)
+        .optional();
+  }
+
+  @Override
+  public void cancel(String cardToken) {
+    jdbc.sql("update cards.card set status = :status where card_token = :cardToken")
+        .param("status", SingleUseCard.Status.CANCELLED.name())
+        .param("cardToken", cardToken)
+        .update();
   }
 
   // Random and opaque: nothing about the card, its PAN included, can be worked out from it.

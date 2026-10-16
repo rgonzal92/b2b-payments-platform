@@ -54,6 +54,14 @@ public class Suppliers {
     return find(buyerId, supplierId).orElseThrow();
   }
 
+  /** Where the Supplier receives Remittance Advice. */
+  String remittanceAddressOf(UUID supplierId) {
+    return jdbc.sql("select remittance_address from suppliers.supplier where id = :id")
+        .param("id", supplierId)
+        .query(String.class)
+        .single();
+  }
+
   /** The Buyer's Supplier Relationship to this Supplier, if it has one. */
   public Optional<SupplierRelationship> find(BuyerId buyerId, UUID supplierId) {
     return jdbc.sql(

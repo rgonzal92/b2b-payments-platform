@@ -43,9 +43,14 @@ record Payment(
     return moved(State.HOLD_PLACED, null, 0, now);
   }
 
-  /** The card is issued; delivering the Remittance Advice (#19) will be the next step. */
-  Payment cardIssued() {
-    return moved(State.CARD_ISSUED, null, 0, null);
+  /** The card is issued, so delivering the Remittance Advice is due at once. */
+  Payment cardIssued(Instant now) {
+    return moved(State.CARD_ISSUED, null, 0, now);
+  }
+
+  /** The Supplier has the Remittance Advice: no step is left. */
+  Payment completed() {
+    return moved(State.COMPLETED, null, 0, null);
   }
 
   /**
@@ -77,7 +82,8 @@ record Payment(
     return switch (state) {
       case STARTED -> "Placing the Hold";
       case HOLD_PLACED -> "Issuing the Single-Use Card";
-      case CARD_ISSUED, FAILED ->
+      case CARD_ISSUED -> "Delivering the Remittance Advice";
+      case COMPLETED, FAILED ->
           throw new IllegalStateException("A " + state + " Payment has no step to fail.");
     };
   }
@@ -91,6 +97,7 @@ record Payment(
     STARTED,
     HOLD_PLACED,
     CARD_ISSUED,
+    COMPLETED,
     FAILED
   }
 }

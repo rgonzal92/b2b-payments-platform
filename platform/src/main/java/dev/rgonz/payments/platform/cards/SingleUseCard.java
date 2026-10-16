@@ -21,6 +21,7 @@ public record SingleUseCard(
     Status status) {
 
   public enum Status {
-    ACTIVE
+    ACTIVE,
+    CANCELLED
   }
 }

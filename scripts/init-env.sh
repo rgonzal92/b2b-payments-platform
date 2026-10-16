@@ -8,7 +8,9 @@ for name in KEYCLOAK_ADMIN_PASSWORD SIMULATOR_ISSUER_ADMIN_SECRET ACME_ERP_SECRE
 done
 # The vault's keys (ADR-0004): 256 bits each, base64-encoded, one to encrypt card data and one to hash PANs.
 # Changing one later makes the card data already stored unreadable or unfindable.
-for name in VAULT_ENCRYPTION_KEY VAULT_HASH_KEY; do
+# The Remittance Advice link key: 256 bits, base64-encoded. Each link's token is an HMAC of its Payment
+# under it; changing it while a delivery awaits its retry makes the retry send a link that doesn't open.
+for name in VAULT_ENCRYPTION_KEY VAULT_HASH_KEY REMITTANCE_LINK_KEY; do
   grep -q "^${name}=" .env || echo "${name}=$(openssl rand -base64 32)" >> .env
 done
 echo ".env has: $(cut -d= -f1 .env | paste -sd' ')"

@@ -1,5 +1,7 @@
 package dev.rgonz.payments.simulator;
 
+import static dev.rgonz.payments.simulator.GlobexSupplier.ADVICE_PATH;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -16,7 +18,11 @@ class SimulatorSecurity {
   // nothing to protect.
   @Bean
   SecurityFilterChain open(HttpSecurity http) throws Exception {
-    return http.authorizeHttpRequests(requests -> requests.anyRequest().permitAll()).build();
+    return http.authorizeHttpRequests(requests -> requests.anyRequest().permitAll())
+        // The platform POSTs Remittance Advice server to server, without cookies: there is no
+        // session for a forged cross-site request to ride on.
+        .csrf(csrf -> csrf.ignoringRequestMatchers(ADVICE_PATH)) // NOSONAR java:S4502, see above
+        .build();
   }
 
   // Gets client-credentials tokens outside any web request, such as at startup.

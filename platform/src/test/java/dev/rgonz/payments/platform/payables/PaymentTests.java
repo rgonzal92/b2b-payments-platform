@@ -34,6 +34,37 @@ class PaymentTests {
   }
 
   @Test
+  void issuingTheCardMakesDeliveringTheRemittanceAdviceDueAtOnce() {
+    var issued = started().holdPlaced(NOW).stepFailed(NOW).cardIssued(NOW);
+
+    assertThat(issued.state()).isEqualTo(Payment.State.CARD_ISSUED);
+    assertThat(issued.attempts()).isZero();
+    assertThat(issued.nextAttemptAt()).isEqualTo(NOW);
+  }
+
+  @Test
+  void aDeliveredRemittanceAdviceCompletesThePaymentWithNoStepLeft() {
+    var completed = started().holdPlaced(NOW).cardIssued(NOW).stepFailed(NOW).completed();
+
+    assertThat(completed.state()).isEqualTo(Payment.State.COMPLETED);
+    assertThat(completed.attempts()).isZero();
+    assertThat(completed.failureReason()).isNull();
+    assertThat(completed.nextAttemptAt()).isNull();
+  }
+
+  @Test
+  void theFifthFailedDeliveryFailsThePaymentNamingTheStep() {
+    var payment = started().holdPlaced(NOW).cardIssued(NOW);
+    for (var attempt = 1; attempt <= 5; attempt++) {
+      payment = payment.stepFailed(NOW);
+    }
+
+    assertThat(payment.state()).isEqualTo(Payment.State.FAILED);
+    assertThat(payment.failureReason())
+        .isEqualTo("Delivering the Remittance Advice failed 5 times for technical reasons.");
+  }
+
+  @Test
   void aRefusalFailsThePaymentAtOnce() {
     var refused = started().refused("Not enough Available Credit to place the Hold.");
 
