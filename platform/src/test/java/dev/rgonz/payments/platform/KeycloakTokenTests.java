@@ -1,11 +1,10 @@
 package dev.rgonz.payments.platform;
 
+import static dev.rgonz.payments.platform.TestKeycloak.clientCredentialsToken;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.jayway.jsonpath.JsonPath;
 import com.nimbusds.jwt.JWTParser;
-import dasniko.testcontainers.keycloak.KeycloakContainer;
-import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,10 +16,6 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.web.client.RestClient;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Checks the repository's realm file against a real Keycloak: secrets, the roles claim, the issuer.
@@ -28,27 +23,13 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
 @AutoConfigureMockMvc
-@Testcontainers
 class KeycloakTokenTests {
 
-  private static final String CLIENT_SECRET = "test-only-secret";
   private static final String ACME_ID = "dc9a9857-e40f-4d50-9ee3-879f0c7472c5";
-
-  @Container
-  static final KeycloakContainer keycloak =
-      // Same image as compose.yaml: change both together.
-      new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
-          .withRealmImportFile("/keycloak/payments-realm.json")
-          .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)
-          .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
-          .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
-          .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET);
 
   @DynamicPropertySource
   static void issuer(DynamicPropertyRegistry registry) {
-    registry.add(
-        "spring.security.oauth2.resourceserver.jwt.issuer-uri",
-        () -> keycloak.getAuthServerUrl() + "/realms/payments");
+    registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", TestKeycloak::issuerUri);
   }
 
   @Autowired MockMvcTester mvc;
@@ -153,21 +134,5 @@ class KeycloakTokenTests {
             """
                 .formatted(invoiceNumber))
         .exchange();
-  }
-
-  private static String clientCredentialsToken(String clientId) {
-    var form = new LinkedMultiValueMap<String, String>();
-    form.add("grant_type", "client_credentials");
-    form.add("client_id", clientId);
-    form.add("client_secret", CLIENT_SECRET);
-    Map<?, ?> token =
-        RestClient.create()
-            .post()
-            .uri(keycloak.getAuthServerUrl() + "/realms/payments/protocol/openid-connect/token")
-            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-            .body(form)
-            .retrieve()
-            .body(Map.class);
-    return (String) token.get("access_token");
   }
 }
