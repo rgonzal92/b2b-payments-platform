@@ -3,6 +3,8 @@ package dev.rgonz.payments.platform.clearing;
 import static dev.rgonz.payments.platform.clearing.TestClearingFiles.newId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 import com.jayway.jsonpath.JsonPath;
@@ -13,11 +15,13 @@ import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.clearing.TestClearingFiles.Detail;
 import dev.rgonz.payments.platform.ledger.Holds;
+import dev.rgonz.payments.platform.ledger.Journal;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.SupplierOnInvoice;
 import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
+import io.grpc.ManagedChannel;
 import io.grpc.netty.NettyChannelBuilder;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -26,11 +30,15 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
@@ -46,6 +54,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 
@@ -93,7 +102,63 @@ class ClearingFileImportTests {
   @Autowired Vault vault;
   @Autowired Suppliers suppliers;
 
+  // The real journal, which the restart test makes fail once.
+  @MockitoSpyBean Journal journal;
+
   @LocalGrpcServerPort int grpcPort;
+
+  private ManagedChannel channel;
+
+  @BeforeEach
+  void connect() {
+    channel = NettyChannelBuilder.forAddress("127.0.0.1", grpcPort).usePlaintext().build();
+  }
+
+  @AfterEach
+  void disconnect() {
+    channel.shutdownNow();
+  }
+
+  @Test
+  void anImportStoppedInItsSecondChunkRestartsAfterItsFirstAndPostsEveryClearingOnce()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(1_000_000_000);
+    var clearings = new ArrayList<Detail>();
+    for (var i = 0; i < 250; i++) {
+      clearings.add(clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT));
+    }
+    var creditBefore = availableCredit(buyerId);
+    // Posting the 150th Clearing fails, once: partway through the second chunk of 100.
+    var stopsAt = clearings.get(149).networkRecordId();
+    var fault = new AtomicBoolean(true);
+    doAnswer(
+            posting -> {
+              if (stopsAt.equals(posting.getArgument(0)) && fault.getAndSet(false)) {
+                throw new IllegalStateException("Test fault: the import stops here.");
+              }
+              return posting.callRealMethod();
+            })
+        .when(journal)
+        .postClearing(any(), any(), any());
+    var fileName = TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 11, clearings);
+
+    var stopped = importFile(fileName, "ROLE_issuer-admin");
+
+    assertProblem(stopped, 500);
+    // The first chunk committed; the second rolled back whole, and the file waits for a restart.
+    assertThat(postedCount(clearings)).isEqualTo(100);
+    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).exists();
+
+    var restarted = importFile(fileName, "ROLE_issuer-admin");
+
+    assertThat(restarted).hasStatus(201);
+    assertThat(restarted).bodyJson().extractingPath("$.recordCount").isEqualTo(250);
+    assertThat(postedCount(clearings)).isEqualTo(250);
+    assertThat(matchedCount(clearings)).isEqualTo(250);
+    // Each Clearing debited the Buyer Receivable once, and cleared its card's Hold.
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();
+  }
 
   @Test
   void aMatchedClearingBelowItsAuthorizationIsPostedAndClearsItsCardAndAllOfItsHold()
@@ -243,28 +308,23 @@ class ClearingFileImportTests {
     var card = cards.issueSingleUse(paymentId, buyerId, supplier.id(), amount, Instant.now());
     var details = vault.cardDetails(card.cardToken());
     var requestId = newId("Q", 12);
-    var channel = NettyChannelBuilder.forAddress("127.0.0.1", grpcPort).usePlaintext().build();
-    try {
-      var response =
-          IssuerAuthorizationGrpc.newBlockingStub(channel)
-              .withDeadlineAfter(5, TimeUnit.SECONDS)
-              .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"))
-              .authorize(
-                  AuthorizationRequest.newBuilder()
-                      .setPrimaryAccountNumber(details.pan())
-                      .setSecurityCode(details.securityCode())
-                      .setExpirationDate(EXPIRATION_DATE.format(card.expiresAt()))
-                      .setAmountMinor(CARD_AMOUNT)
-                      .setCurrencyCode("USD")
-                      .setRetrievalReferenceNumber(requestId)
-                      .setCardAcceptorId(ACCEPTOR_ID)
-                      .setCardAcceptorName("Globex, Springfield")
-                      .build());
-      assertThat(response.getResponseCode()).isEqualTo("00");
-      return new ChargedCard(card, details.pan(), requestId, response.getAuthorizationCode());
-    } finally {
-      channel.shutdownNow();
-    }
+    var response =
+        IssuerAuthorizationGrpc.newBlockingStub(channel)
+            .withDeadlineAfter(5, TimeUnit.SECONDS)
+            .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"))
+            .authorize(
+                AuthorizationRequest.newBuilder()
+                    .setPrimaryAccountNumber(details.pan())
+                    .setSecurityCode(details.securityCode())
+                    .setExpirationDate(EXPIRATION_DATE.format(card.expiresAt()))
+                    .setAmountMinor(CARD_AMOUNT)
+                    .setCurrencyCode("USD")
+                    .setRetrievalReferenceNumber(requestId)
+                    .setCardAcceptorId(ACCEPTOR_ID)
+                    .setCardAcceptorName("Globex, Springfield")
+                    .build());
+    assertThat(response.getResponseCode()).isEqualTo("00");
+    return new ChargedCard(card, details.pan(), requestId, response.getAuthorizationCode());
   }
 
   private record ChargedCard(
@@ -292,6 +352,29 @@ class ClearingFileImportTests {
             """
                 .formatted(fileName))
         .exchange();
+  }
+
+  // Journal Entries posted for these Clearings: one per Network record ID at most, by its key.
+  private long postedCount(List<Detail> clearings) {
+    return jdbc.sql(
+            """
+            select count(*) from ledger.journal_entry
+             where kind = 'CLEARING' and idempotency_key in (:networkRecordIds)
+            """)
+        .param("networkRecordIds", clearings.stream().map(Detail::networkRecordId).toList())
+        .query(Long.class)
+        .single();
+  }
+
+  private long matchedCount(List<Detail> clearings) {
+    return jdbc.sql(
+            """
+            select count(*) from clearing.clearing
+             where outcome = 'MATCHED' and network_record_id in (:networkRecordIds)
+            """)
+        .param("networkRecordIds", clearings.stream().map(Detail::networkRecordId).toList())
+        .query(Long.class)
+        .single();
   }
 
   private UUID journalEntryFor(String networkRecordId) {
