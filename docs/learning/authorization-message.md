@@ -26,7 +26,7 @@ When Globex charges its Single-Use Card, its Acquirer passes the Charge to the N
   |---|---|---|
   | `00` | Approved | The Charge passed every rule; the card becomes `AUTHORIZED`. |
   | `13` | Invalid amount | A zero or negative amount: no real Charge looks like that, so the message is wrong, not the card. |
-  | `14` | Invalid card number | No card the Issuer issued has this PAN: a typo, or someone guessing numbers. |
+  | `14` | Invalid card | No card the Issuer issued has this PAN: a typo, or someone guessing PANs. |
   | `54` | Expired card | The card is cancelled or expired, or the expiry in the message isn't the card's or has passed. |
   | `N7` | Security code mismatch | The code isn't the card's: whoever charges may have the number but not the card. |
   | `57` | Not permitted | The card can't be used for this Charge: a Single-Use Card already has an approved Charge. |

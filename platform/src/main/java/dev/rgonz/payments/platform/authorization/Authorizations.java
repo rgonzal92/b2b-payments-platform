@@ -52,7 +52,7 @@ class Authorizations {
         responseCode == ResponseCode.APPROVED
             ? Authorization.approved(newAuthorizationCode())
             : Authorization.declined(responseCode);
-    if (!claim(charge, cardToken, authorization)) {
+    if (!insertUnlessAnswered(charge, cardToken, authorization)) {
       var stored = storedAnswer(charge.requestId());
       log.info(
           "Authorization {} was resent and answered {} again",
@@ -73,7 +73,8 @@ class Authorizations {
   // Records the answer unless the request ID already has one. The primary key decides, not a read
   // first: of two requests with one ID at once, the second's insert waits for the first to commit,
   // then inserts nothing, so only one of them ever moves the card.
-  private boolean claim(Charge charge, String cardToken, Authorization authorization) {
+  private boolean insertUnlessAnswered(
+      Charge charge, String cardToken, Authorization authorization) {
     return jdbc.sql(
                 """
                 insert into "authorization".authorizations

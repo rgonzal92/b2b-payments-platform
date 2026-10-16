@@ -74,7 +74,8 @@ class CardSecrets implements Vault {
         .optional();
   }
 
-  // MessageDigest.isEqual takes as long whichever byte differs, so timing tells a caller nothing.
+  // MessageDigest.isEqual takes as long whichever byte differs, so timing can't tell a caller how
+  // much of a guess was right; it only shows whether the lengths differ.
   @Override
   public boolean securityCodeMatches(String cardToken, String securityCode) {
     return jdbc.sql(

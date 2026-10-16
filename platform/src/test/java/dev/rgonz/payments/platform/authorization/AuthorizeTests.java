@@ -117,10 +117,7 @@ class AuthorizeTests {
     assertThat(response.getRetrievalReferenceNumber()).isEqualTo(requestId);
     assertThat(response.getResponseCode()).isEqualTo("00");
     assertThat(response.getAuthorizationCode()).matches("[A-Z0-9]{6}");
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.AUTHORIZED);
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
     assertThat(recorded(requestId))
         .containsEntry("card_token", card.cardToken())
@@ -162,9 +159,11 @@ class AuthorizeTests {
   }
 
   @Test
-  void aCancelledCardIsDeclinedAndStaysCancelled() {
-    var card = issuedCard(buyerWithCreditLine(10_000_000));
+  void aCancelledCardIsDeclinedAndStaysCancelled() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var card = issuedCard(buyerId);
     cards.cancel(card.cardToken());
+    var creditBefore = availableCredit(buyerId);
     var request = chargeOn(card);
     var requestId = request.getRetrievalReferenceNumber();
 
@@ -172,10 +171,8 @@ class AuthorizeTests {
 
     assertThat(response.getResponseCode()).isEqualTo("54");
     assertThat(response.getAuthorizationCode()).isEmpty();
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.CANCELLED);
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.CANCELLED);
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
     assertThat(recorded(requestId))
         .containsEntry("card_token", card.cardToken())
         .containsEntry("response_code", "54")
@@ -197,10 +194,7 @@ class AuthorizeTests {
 
     assertThat(response.getResponseCode()).isEqualTo("N7");
     assertThat(response.getAuthorizationCode()).isEmpty();
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.ACTIVE);
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
     assertThat(recorded(request.getRetrievalReferenceNumber()))
         .containsEntry("card_token", card.cardToken())
@@ -236,10 +230,7 @@ class AuthorizeTests {
 
     assertThat(response.getResponseCode()).isEqualTo(answer);
     assertThat(response.getAuthorizationCode()).isEmpty();
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.ACTIVE);
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
     assertThat(recorded(request.getRetrievalReferenceNumber()))
         .containsEntry("card_token", card.cardToken())
@@ -262,10 +253,7 @@ class AuthorizeTests {
 
     assertThat(response.getResponseCode()).isEqualTo("57");
     assertThat(response.getAuthorizationCode()).isEmpty();
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.AUTHORIZED);
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
     assertThat(recorded(second.getRetrievalReferenceNumber()))
         .containsEntry("card_token", card.cardToken())
@@ -285,10 +273,7 @@ class AuthorizeTests {
                 .getStatus()
                 .getCode())
         .isEqualTo(Status.Code.INVALID_ARGUMENT);
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.ACTIVE);
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
     assertThat(
             jdbc.sql(
                     """
@@ -344,10 +329,37 @@ class AuthorizeTests {
       assertThat(first.getResponseCode()).isEqualTo("00");
     }
     assertThat(recordedCount(request.getRetrievalReferenceNumber())).isOne();
-    assertThat(cards.find(card.cardToken()))
-        .get()
-        .extracting(SingleUseCard::status)
-        .isEqualTo(SingleUseCard.Status.AUTHORIZED);
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
+  }
+
+  @Test
+  void ofChargesWithDifferentRequestIdsAtOnceOnOneCardExactlyOneIsApproved() throws Exception {
+    var card = issuedCard(buyerWithCreditLine(10_000_000));
+    var charges = 8;
+    var start = new CountDownLatch(1);
+    var responses = new ArrayList<Future<AuthorizationResponse>>();
+
+    try (var network = Executors.newFixedThreadPool(charges)) {
+      for (var i = 0; i < charges; i++) {
+        var request = chargeOn(card).build();
+        responses.add(
+            network.submit(
+                () -> {
+                  start.await();
+                  return authorize(request);
+                }));
+      }
+      start.countDown();
+      var answers = new ArrayList<String>();
+      for (var response : responses) {
+        var answer = response.get(10, TimeUnit.SECONDS);
+        answers.add(answer.getResponseCode());
+        assertThat(recorded(answer.getRetrievalReferenceNumber()))
+            .containsEntry("response_code", answer.getResponseCode());
+      }
+      assertThat(answers).containsOnlyOnce("00").containsOnly("00", "57");
+    }
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
   }
 
   // Everything the Network would send for a Charge of the card's whole amount, under a new request
@@ -382,6 +394,10 @@ class AuthorizeTests {
     var amount = new Money(AMOUNT, USD);
     assertThat(holds.place(paymentId, buyerId, amount)).isEqualTo(Holds.Outcome.PLACED);
     return cards.issueSingleUse(paymentId, buyerId, UUID.randomUUID(), amount, Instant.now());
+  }
+
+  private SingleUseCard.Status statusOf(SingleUseCard card) {
+    return cards.find(card.cardToken()).orElseThrow().status();
   }
 
   private Map<String, Object> recorded(String requestId) {

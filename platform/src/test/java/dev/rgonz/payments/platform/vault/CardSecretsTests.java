@@ -15,7 +15,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * The vault stores each card's PAN on PostgreSQL, one card per PAN, and finds a card by its PAN.
+ * The vault stores each card's PAN on PostgreSQL, one card per PAN, finds a card by its PAN, and
+ * checks a security code without returning the stored one.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
