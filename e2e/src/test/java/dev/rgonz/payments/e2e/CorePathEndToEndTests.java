@@ -27,8 +27,9 @@ import org.testcontainers.utility.DockerImageName;
  * The core path the way the demo runs it: the platform and the simulator both running in this JVM,
  * against real PostgreSQL and Keycloak (the repository's realm file). The simulator's demo endpoint
  * has Acme's ERP submit an Invoice from Globex, two of Acme's Approvers approve it, the platform's
- * worker pays it with a Single-Use Card, and Globex opens the card through its Remittance Advice
- * link.
+ * worker pays it with a Single-Use Card, Globex opens the card through its Remittance Advice link,
+ * and Globex charges it: the simulator's Acquirer and Network ask the platform over gRPC, signed in
+ * as the network client, and the platform approves the Charge.
  */
 @Testcontainers
 class CorePathEndToEndTests {
@@ -86,6 +87,8 @@ class CorePathEndToEndTests {
             // Globex's remittance address is built from this port.
             "server.port=" + simulatorPort,
             "simulator.platform-url=http://localhost:" + platformPort,
+            // The Network charges Globex's card through the platform's gRPC server.
+            "simulator.platform-grpc-address=localhost:" + platformGrpcPort,
             "spring.security.oauth2.client.provider.keycloak.token-uri="
                 + issuerUri
                 + "/protocol/openid-connect/token",
@@ -96,6 +99,7 @@ class CorePathEndToEndTests {
                 + CLIENT_SECRET,
             "spring.security.oauth2.client.registration.acme-approver-2.client-secret="
                 + CLIENT_SECRET,
+            "spring.security.oauth2.client.registration.network.client-secret=" + CLIENT_SECRET,
             // The platform's dependencies are on this classpath too: the simulator has no database.
             "spring.autoconfigure.exclude="
                 + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
@@ -149,7 +153,7 @@ class CorePathEndToEndTests {
   @Test
   // The demo itself waits up to 30 seconds for the worker to pay the Invoice.
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
-  void theDemoInvoiceIsApprovedTwicePaidAndGlobexOpensItsCard() {
+  void theDemoInvoiceIsApprovedTwicePaidAndGlobexsChargeOnItsCardIsApproved() {
     var summary =
         RestClient.create()
             .post()
@@ -165,11 +169,13 @@ class CorePathEndToEndTests {
               "amount": {"minorUnits": 1240000, "currency": "USD"},
               "approvedBy": ["service-account-acme-approver-1", "service-account-acme-approver-2"],
               "paymentState": "COMPLETED",
-              "globexReceived": {"amount": {"minorUnits": 1240000, "currency": "USD"}}
+              "globexReceived": {"amount": {"minorUnits": 1240000, "currency": "USD"}},
+              "charge": {"approved": true, "responseCode": "00"}
             }
             """);
     String invoiceNumber = JsonPath.read(summary, "$.invoiceNumber");
     assertThat(json).extractingPath("$.globexReceived.invoiceNumber").isEqualTo(invoiceNumber);
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
+    assertThat(json).extractingPath("$.charge.authorizationCode").asString().hasSize(6);
   }
 }
