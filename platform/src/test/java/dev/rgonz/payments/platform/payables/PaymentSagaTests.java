@@ -62,6 +62,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.modulith.events.CompletedEventPublications;
 import org.springframework.modulith.events.EventPublication;
+import org.springframework.modulith.test.PublishedEvents;
+import org.springframework.modulith.test.PublishedEventsExtension;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.JwtRequestPostProcessor;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -229,6 +231,55 @@ class PaymentSagaTests {
     assertThat(availableCredit(acme)).isEqualTo(9_000_000);
     assertThat(cards.find(card.cardToken()).orElseThrow().status())
         .isEqualTo(SingleUseCard.Status.EXPIRED);
+  }
+
+  @Test
+  void anAuthorizedCardWithNoClearingSevenDaysLaterEndsItsPaymentExpiredAndReturnsTheCredit()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
+    saga.runDueSteps(Instant.now());
+    var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
+    var authorizedAt = Instant.now();
+    cards.authorize(card.cardToken(), authorizedAt);
+    var creditWhileAuthorized = availableCredit(acme);
+
+    CardExpiryJob.runAt(context, authorizedAt.plus(Duration.ofDays(7)));
+
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> "EXPIRED".equals(paymentState(acme, invoiceId)));
+    assertThat(creditWhileAuthorized).isEqualTo(8_760_000);
+    assertThat(availableCredit(acme)).isEqualTo(10_000_000);
+  }
+
+  @Test
+  @ExtendWith(PublishedEventsExtension.class)
+  void theSevenDayRuleRunTwiceExpiresTheCardOnceAndReleasesItsHoldOnce(PublishedEvents events)
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
+    saga.runDueSteps(Instant.now());
+    // Another of the Buyer's Holds, which no release of this card's Hold may touch.
+    holds.place(
+        UUID.randomUUID(), new BuyerId(acme), new Money(1_000_000, Currency.getInstance("USD")));
+    var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
+    var authorizedAt = Instant.now();
+    cards.authorize(card.cardToken(), authorizedAt);
+
+    CardExpiryJob.runAt(context, authorizedAt.plus(Duration.ofDays(7)));
+    CardExpiryJob.runAt(context, authorizedAt.plus(Duration.ofDays(7)));
+    await().atMost(Duration.ofSeconds(10)).until(() -> completedExpiriesOf(card.cardToken()) == 1);
+
+    assertThat(
+            events
+                .ofType(CardExpired.class)
+                .matching(expired -> expired.cardToken().equals(card.cardToken())))
+        .hasSize(1);
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("EXPIRED");
+    assertThat(availableCredit(acme)).isEqualTo(9_000_000);
   }
 
   @Test

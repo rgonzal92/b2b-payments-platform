@@ -30,7 +30,7 @@ class CardCancelTests {
   void onlyAnActiveCardIsCancelled() {
     var active = issuedAt(Instant.now());
     var authorized = issuedAt(Instant.now());
-    cards.authorize(authorized.cardToken());
+    cards.authorize(authorized.cardToken(), Instant.now());
     var expired = issuedAt(Instant.parse("2020-01-01T00:00:00Z"));
     expiry.expireDue(expired.expiresAt());
 

@@ -30,7 +30,7 @@ M2 ends with an approved Authorization and a Hold that never turns into money: n
 | `authorization` | A lookup of a card's Authorization by authorization code, for matching. |
 | `vault` | Unchanged: `cardFor(pan)` finds the card. `clearing` joins the modules that may call it (ADR-0004, amended). |
 | `suppliers` | A Remittance Advice link answers `410` for any card that isn't `ACTIVE` or `AUTHORIZED`. |
-| `payables` | Unchanged: the 7-day rule reuses the `CardExpired` path from #34. |
+| `payables` | Unchanged: the 7-day rule reuses the `CardExpired` path from #34. (Changed during #54: only wording changes; `PaymentSaga.expire`'s log line says "its card expired", no longer "expired uncharged", and its javadoc and `Payment.cardExpired`'s say the same.) |
 
 ### The Clearing File (Q1, Q8)
 
@@ -85,6 +85,11 @@ The settle step totals the file's posted Clearings (Clearing Suspense included) 
 ### The 7-day rule (Q10)
 
 `cards` records when a card became `AUTHORIZED`. The expiry job from #34 also expires an `AUTHORIZED` card 7 days after that, through the same `CardExpired` event, so its Hold is released and its Payment ends `EXPIRED`. A Clearing that arrives later is still posted, as "after Hold expired".
+
+- Decided during #54:
+  - `cards.card.authorized_at` (`cards` migration V3) is set by `Cards.authorize`, to the time the platform approved the Charge, and cleared by `Cards.reverse`, so a reversed card waits for its own expiry. A card already `AUTHORIZED` when V3 runs gets the migration's time: its 7 days can't start before its Charge.
+  - The 7 days are `SingleUseCards.CLEARING_WINDOW`, beside the card's 30-day `VALIDITY`, and the job expires an `AUTHORIZED` card whose `authorized_at` is 7 days or more before its run. Each of its transactions still expires up to 100 cards: `ACTIVE` cards past their expiry first, then `AUTHORIZED` cards past their 7 days in what is left, found through a partial index on `authorized_at` covering `AUTHORIZED` cards, as V2's does for `ACTIVE` ones.
+  - A card authorized just before its 30-day expiry keeps its Hold up to 7 days past it, beyond ADR-0011's "up to 30 days". Before #54 such a card kept it until a Clearing came, possibly forever, so the rule narrows the gap rather than opening it; ADR-0011 is left for the owner to amend.
 
 ### What people read (Q16)
 
