@@ -96,6 +96,16 @@ class GlobexAcquirerTests {
   }
 
   @Test
+  void anApprovalWithinTheNetworksDeadlineComesBackAsSentAndIsNotReversed() {
+    issuer.answerWith("00", "AB12CD");
+
+    var authorization = acquirer.charge(card(OffsetDateTime.parse("2026-11-15T12:00:00Z")));
+
+    assertThat(authorization).isEqualTo(new Authorization(true, "00", "AB12CD"));
+    assertThat(issuer.reversals).isEmpty();
+  }
+
+  @Test
   void eachChargeGetsAFreshRetrievalReferenceNumberAndTraceNumber() {
     var card = card(OffsetDateTime.parse("2026-11-15T12:00:00Z"));
 
