@@ -24,9 +24,9 @@ class CardSecrets implements Vault {
   @Override
   @Transactional
   public String generatePan(String cardToken) {
-    var securityCode = CardNumbers.newSecurityCode(random);
+    var securityCode = Pans.newSecurityCode(random);
     for (var draw = 1; draw <= MAX_PAN_DRAWS; draw++) {
-      var pan = CardNumbers.newPan(random);
+      var pan = Pans.newPan(random);
       if (insertUnlessPanTaken(cardToken, pan, securityCode)) {
         return pan.substring(pan.length() - 4);
       }

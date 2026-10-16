@@ -6,14 +6,14 @@ import java.util.Random;
 import org.junit.jupiter.api.Test;
 
 /** The vault's PANs: 16 digits from the made-up 990000 range, with a valid Luhn check digit. */
-class CardNumbersTests {
+class PansTests {
 
   @Test
   void theLuhnCheckAcceptsKnownValidNumbersAndRejectsAWrongCheckDigit() {
-    assertThat(CardNumbers.isLuhnValid("79927398713")).isTrue();
-    assertThat(CardNumbers.isLuhnValid("4111111111111111")).isTrue();
-    assertThat(CardNumbers.isLuhnValid("79927398710")).isFalse();
-    assertThat(CardNumbers.isLuhnValid("4111111111111112")).isFalse();
+    assertThat(Pans.isLuhnValid("79927398713")).isTrue();
+    assertThat(Pans.isLuhnValid("4111111111111111")).isTrue();
+    assertThat(Pans.isLuhnValid("79927398710")).isFalse();
+    assertThat(Pans.isLuhnValid("4111111111111112")).isFalse();
   }
 
   @Test
@@ -21,10 +21,10 @@ class CardNumbersTests {
     var random = new Random(18);
 
     for (var i = 0; i < 1_000; i++) {
-      var pan = CardNumbers.newPan(random);
+      var pan = Pans.newPan(random);
 
       assertThat(pan).hasSize(16).containsOnlyDigits().startsWith("990000");
-      assertThat(CardNumbers.isLuhnValid(pan)).as("Luhn check of a new PAN").isTrue();
+      assertThat(Pans.isLuhnValid(pan)).as("Luhn check of a new PAN").isTrue();
     }
   }
 
@@ -33,7 +33,7 @@ class CardNumbersTests {
     var random = new Random(18);
 
     for (var i = 0; i < 1_000; i++) {
-      assertThat(CardNumbers.newSecurityCode(random)).hasSize(3).containsOnlyDigits();
+      assertThat(Pans.newSecurityCode(random)).hasSize(3).containsOnlyDigits();
     }
   }
 }

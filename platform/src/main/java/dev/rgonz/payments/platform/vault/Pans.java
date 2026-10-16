@@ -6,12 +6,12 @@ import java.util.random.RandomGenerator;
  * Generates PANs and security codes. Every PAN is synthetic: 16 digits from the made-up {@value
  * #RANGE} range, with a valid Luhn check digit (ADR-0004).
  */
-final class CardNumbers {
+final class Pans {
 
   private static final String RANGE = "990000";
   private static final int PAN_LENGTH = 16;
 
-  private CardNumbers() {}
+  private Pans() {}
 
   /** The range, then random digits, then the Luhn check digit. */
   static String newPan(RandomGenerator random) {

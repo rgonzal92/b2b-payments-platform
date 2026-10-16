@@ -131,9 +131,12 @@ class InvoicesController implements InvoicesApi {
             .find(buyerId, invoiceId)
             .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No such Invoice."));
     var relationship = suppliers.find(buyerId, invoice.supplierId()).orElseThrow();
-    var payment = payments.findForInvoice(invoiceId);
-    return toDto(
-        invoice, relationship, decisions.of(invoiceId), payment.map(this::toDto).orElse(null));
+    var payment =
+        payments
+            .findForInvoice(invoiceId)
+            .map(found -> toDto(found, cards.findForPayment(found.id()).orElse(null)))
+            .orElse(null);
+    return toDto(invoice, relationship, decisions.of(invoiceId), payment);
   }
 
   // The Buyer always comes from the token, never from the request, so one Buyer can't act as
@@ -200,11 +203,12 @@ class InvoicesController implements InvoicesApi {
         .payment(payment);
   }
 
-  private PaymentDto toDto(Payment payment) {
+  // The card is null until the Payment has issued one.
+  private static PaymentDto toDto(Payment payment, SingleUseCard card) {
     return new PaymentDto()
         .state(PaymentDto.StateEnum.fromValue(payment.state().name()))
         .failureReason(payment.failureReason())
-        .card(cards.findForPayment(payment.id()).map(InvoicesController::toDto).orElse(null));
+        .card(card == null ? null : toDto(card));
   }
 
   // What identifies the card to the Buyer without revealing it; the PAN never leaves the vault.

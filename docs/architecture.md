@@ -157,7 +157,7 @@ A Single-Use Card's data is split between two modules so the PAN lives in exactl
 | Read by | `payables` (the Invoice shows Card Token, last four digits, expiry) | nobody yet; the remittance link (#19) |
 
 - **PANs** are synthetic: 16 digits, `990000` followed by nine random digits and a Luhn check digit. A PAN whose hash another card already has is drawn again.
-- **Keys:** two separate 256-bit keys, one to encrypt and one to hash, come from `vault.encryption-key` and `vault.hash-key` (`VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` in `.env`, written by `scripts/init-env.sh`). The platform doesn't start when either is missing or isn't 32 bytes. M7 replaces them with envelope encryption.
+- **Keys:** two separate 256-bit keys, one to encrypt and one to hash, come from `vault.encryption-key` and `vault.hash-key` (`VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` in `.env`, written by `scripts/init-env.sh`). The platform doesn't start when either is missing or isn't 32 bytes ([`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md)). M7 replaces them with envelope encryption.
 - **How it works and why:** [`learning/card-vault.md`](learning/card-vault.md).
 
 ## Quality targets

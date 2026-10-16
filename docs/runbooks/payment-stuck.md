@@ -79,11 +79,3 @@ update payables.payment
  where id = '<payment id>'
    and state = 'FAILED';
 ```
-
-## The platform doesn't start: a vault key is missing or wrong
-
-The platform stops at startup with `vault.encryption-key is missing` (or `vault.hash-key`), `… isn't valid base64` or `… must be 32 bytes (256 bits) once base64-decoded`. The vault refuses to run with a key it can't trust, so no Payment moves.
-
-1. Run `./scripts/init-env.sh`. It adds `VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` to `.env` when they are missing, and never changes existing values.
-2. If a key is present but wrong, look for a hand edit of `.env` or an environment variable of the same name overriding it. Each must be 32 random bytes, base64-encoded (`openssl rand -base64 32`).
-3. Replacing a key that was already used makes the cards stored under it unreadable (encryption key) or unfindable by PAN (hash key). In local development that only loses test cards; drop them with the rest of the database (`docker compose down -v`) if they get in the way.
