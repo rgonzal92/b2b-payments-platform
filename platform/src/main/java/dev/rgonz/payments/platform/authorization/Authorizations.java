@@ -13,9 +13,9 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Answers the Network's Authorization requests and records every answer. For a Single-Use Card the
- * Hold was placed at issuance, so an Authorization checks the card, never Available Credit
- * (ADR-0011).
+ * Answers the Network's Authorization requests and records every answer, and cancels an
+ * Authorization when the Network sends a Reversal for it. For a Single-Use Card the Hold was placed
+ * at issuance, so an Authorization checks the card, never Available Credit (ADR-0011).
  */
 @Repository
 class Authorizations {
@@ -90,8 +90,8 @@ class Authorizations {
       log.info("Reversal {} came before its Authorization, which will answer 05", requestId);
       return;
     }
-    // The request ID has an Authorization, committed: the claim waited for it. One conditional
-    // update locks the row and checks it is still APPROVED.
+    // The request ID's row has committed, an Authorization's or an earlier Reversal's: the claim
+    // waited for it. One conditional update locks the row and checks it is still APPROVED.
     var cardToken =
         jdbc.sql(
                 """

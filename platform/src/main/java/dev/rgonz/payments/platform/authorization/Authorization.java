@@ -69,8 +69,8 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
     APPROVED,
     DECLINED,
     /**
-     * The Network cancelled it with a Reversal. A reversed approval keeps the {@code 00} it was
-     * given; a request ID reversed before its Authorization arrived has {@code 05} and no card.
+     * The Network cancelled it with a Reversal. An approved Authorization keeps the {@code 00} it
+     * was given; a request ID reversed before its Authorization arrived has {@code 05} and no card.
      */
     REVERSED
   }

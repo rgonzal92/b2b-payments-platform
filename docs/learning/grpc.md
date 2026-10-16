@@ -26,7 +26,7 @@ Network ──HTTP/2, authorization: Bearer <network token>──▶ Netty on 12
             │    ├─ insert into "authorization".authorizations … on conflict do nothing
             │    └─ approved: cards.authorize(token)   ACTIVE → AUTHORIZED in one conditional update
             └─ Authorizations.reverse      one transaction, acknowledged 00: claim the request ID as
-                                           reversed, or reverse its approval; cards.reverse(token)
+                                           reversed, or reverse its approved Authorization
 ```
 
 - **Spring Boot's own gRPC support.** `spring-boot-starter-grpc-server` runs a Netty gRPC server beside Tomcat and exposes every `BindableService` bean (`@GrpcService`). Boot's parent configures `io.github.ascopes:protobuf-maven-plugin` with matching `protoc` and `protoc-gen-grpc-java` versions, so `contracts` only declares the plugin. Older guides use other libraries (`net.devh`, LogNet); this project doesn't.
