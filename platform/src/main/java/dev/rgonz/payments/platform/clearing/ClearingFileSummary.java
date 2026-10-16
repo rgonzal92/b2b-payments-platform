@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform.clearing;
 
+import dev.rgonz.payments.platform.shared.Money;
 import java.time.LocalDate;
 
 /**
@@ -7,6 +8,7 @@ import java.time.LocalDate;
  *
  * @param recordCount the number of Clearings in the file; null when it was refused
  * @param skippedCount how many of them were skipped, their Network record ID already recorded
+ * @param settlement the file's Settlement; null until the file is settled
  * @param refusalReason which check refused the file, by line and field; null unless {@code REFUSED}
  */
 record ClearingFileSummary(
@@ -16,6 +18,7 @@ record ClearingFileSummary(
     Status status,
     Long recordCount,
     long skippedCount,
+    Settlement settlement,
     String refusalReason) {
 
   enum Status {
@@ -26,4 +29,14 @@ record ClearingFileSummary(
     /** It failed a check of the validate step: nothing in it was posted. */
     REFUSED
   }
+
+  /**
+   * The file's Settlement with the Network.
+   *
+   * @param amount what the Network settles for the file, its trailer's net settlement amount, and
+   *     what the Settlement posted
+   * @param importedTotal the total of the file's posted Clearings
+   * @param matched whether the two agree
+   */
+  record Settlement(Money amount, Money importedTotal, boolean matched) {}
 }

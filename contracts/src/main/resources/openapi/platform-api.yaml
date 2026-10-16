@@ -272,13 +272,13 @@ paths:
         Issuer staff only (role `issuer-admin`). Imports the named file from the platform's drop folder at once,
         instead of waiting for the next check of the folder (every 30 seconds), and answers when the import is done.
         Each Clearing that matches its approved Authorization is posted to the journal, and its Hold and its card
-        become `CLEARED`; the file is deleted after a successful import. A record whose Network record ID was already
-        imported is skipped and counted. The file's ID and content make a repeat harmless, so there is no
-        `Idempotency-Key`: a file whose ID or content the platform already received answers `409`, naming the earlier
-        file. A file that fails a check (its layout, or its trailer's record count or amount total) answers `422`
-        with the check, and nothing in it is posted; either file moves to the drop folder's `failed/` folder. An
-        import that stopped partway keeps what it committed and answers `500`; importing the same file name again
-        restarts it where it stopped.
+        become `CLEARED`; then the file is settled at its trailer's net settlement amount, and deleted. A record whose
+        Network record ID was already imported is skipped and counted. The file's ID and content make a repeat
+        harmless, so there is no `Idempotency-Key`: a file whose ID or content an imported file already had answers
+        `409`, naming that file. A file that fails a check (its layout, its trailer's record count, amount total or
+        currency) answers `422` with the check, and nothing in it is posted; either file moves to the drop folder's
+        `failed/` folder. An import that stopped partway keeps what it committed and answers `500`; importing the same
+        file name again restarts it where it stopped.
       requestBody:
         required: true
         content:
@@ -626,6 +626,24 @@ components:
           description: >-
             How many of them were skipped, and not posted, because their Network record ID was already imported,
             earlier in the file or in another file.
+        settlement:
+          $ref: '#/components/schemas/Settlement'
+    Settlement:
+      type: object
+      description: >-
+        The file's Settlement: the Issuer pays the Network the file's net settlement amount (`amount`, the Network's
+        figure from the file's trailer), whatever the platform imported (`importedTotal`, the total of the file's posted
+        Clearings). Present once the file is settled, which an imported file always is. When the two differ the
+        Settlement isn't `matched`, and the Network Settlement Payable keeps the gap until M4's Reconciliation resolves
+        it: see `docs/runbooks/settlement-mismatched.md`.
+      required: [amount, importedTotal, matched]
+      properties:
+        amount:
+          $ref: '#/components/schemas/Money'
+        importedTotal:
+          $ref: '#/components/schemas/Money'
+        matched:
+          type: boolean
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.

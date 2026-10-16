@@ -1,7 +1,9 @@
 package dev.rgonz.payments.platform.clearing;
 
+import dev.rgonz.payments.platform.shared.Money;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -159,6 +161,15 @@ class ClearingFileImports {
           imported.sequenceNumber(),
           imported.businessDate(),
           imported.recordCount());
+      var settlement = imported.settlement();
+      if (!settlement.matched()) {
+        log.warn(
+            "Clearing File {} settled at the Network's {}, but its posted Clearings total {}: see"
+                + " docs/runbooks/settlement-mismatched.md",
+            fileId,
+            readable(settlement.amount()),
+            readable(settlement.importedTotal()));
+      }
       return new ImportResult.Imported(imported);
     }
     var refusal = refusal(execution);
@@ -169,6 +180,13 @@ class ClearingFileImports {
     log.error(
         "The import of Clearing File {} stopped partway; importing it again restarts it", fileId);
     return new ImportResult.Stopped(fileId);
+  }
+
+  // In major units for a person reading the log: 9850.00 USD.
+  private static String readable(Money money) {
+    return BigDecimal.valueOf(money.minorUnits(), money.currency().getDefaultFractionDigits())
+        + " "
+        + money.currency().getCurrencyCode();
   }
 
   // A check of the validate step that the file failed: nothing in it was posted. Any other failure,

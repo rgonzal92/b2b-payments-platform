@@ -3,7 +3,10 @@ package dev.rgonz.payments.platform.clearing;
 import dev.rgonz.payments.contracts.server.ClearingFilesApi;
 import dev.rgonz.payments.contracts.server.model.ClearingFileDto;
 import dev.rgonz.payments.contracts.server.model.ClearingFileImportDto;
+import dev.rgonz.payments.contracts.server.model.MoneyDto;
+import dev.rgonz.payments.contracts.server.model.SettlementDto;
 import dev.rgonz.payments.platform.clearing.ClearingFileImports.ImportResult;
+import dev.rgonz.payments.platform.shared.Money;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -64,7 +67,21 @@ class ClearingFilesController implements ClearingFilesApi {
         .businessDate(file.businessDate())
         .status(ClearingFileDto.StatusEnum.fromValue(file.status().name()))
         .recordCount(file.recordCount())
-        .skippedCount(file.skippedCount());
+        .skippedCount(file.skippedCount())
+        .settlement(file.settlement() == null ? null : toDto(file.settlement()));
+  }
+
+  private static SettlementDto toDto(ClearingFileSummary.Settlement settlement) {
+    return new SettlementDto()
+        .amount(toDto(settlement.amount()))
+        .importedTotal(toDto(settlement.importedTotal()))
+        .matched(settlement.matched());
+  }
+
+  private static MoneyDto toDto(Money money) {
+    return new MoneyDto()
+        .minorUnits(money.minorUnits())
+        .currency(MoneyDto.CurrencyEnum.fromValue(money.currency().getCurrencyCode()));
   }
 
   private static ErrorResponseException problem(HttpStatus status, String detail) {

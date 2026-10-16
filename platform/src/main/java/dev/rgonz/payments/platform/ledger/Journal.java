@@ -14,4 +14,12 @@ public interface Journal {
    * the Buyer and amount. Joins the caller's transaction.
    */
   UUID postClearing(String networkRecordId, BuyerId buyerId, Money amount);
+
+  /**
+   * Posts a Clearing File's Settlement: debits the Network Settlement Payable and credits Issuer
+   * Cash by the Network's figure, and returns the entry's ID. The file ID is its idempotency key:
+   * posting it again returns the first entry's ID and posts nothing, whatever the amount. Joins the
+   * caller's transaction.
+   */
+  UUID postSettlement(String fileId, Money amount);
 }

@@ -2,7 +2,7 @@
 
 **Signals:** `POST /v1/clearing-files` answers `500` "The import of Clearing File … stopped partway", or `409` "An import of Clearing File … is running, or stopped without recording it"; the platform logs `The import of Clearing File <file ID> stopped partway; importing it again restarts it`, usually after Spring Batch's `Rolling back chunk transaction` and `Encountered an error executing step import`; a file waits in the drop folder's `processing/` folder (`var/clearing/processing/` in local development) for more than a minute; a Clearing File stays `IMPORTING` in `clearing.clearing_file`.
 
-How an import runs (details in [`docs/learning/spring-batch.md`](../learning/spring-batch.md)): the platform moves the file into `processing/`, checks that it doesn't repeat a file already received, then runs the Spring Batch job `clearingFileImport` for its file ID: `validate` checks every record and the trailer's totals, `import` posts the Clearings in chunks of 100, each chunk one transaction, and `complete` marks the file `IMPORTED`; then the file is deleted. A chunk that fails rolls back whole, and the chunks before it stay committed. **Importing the same file name again restarts the job after its last committed chunk; nothing committed is posted twice.**
+How an import runs (details in [`docs/learning/spring-batch.md`](../learning/spring-batch.md)): the platform moves the file into `processing/`, checks that it doesn't repeat a file already imported, then runs the Spring Batch job `clearingFileImport` for its file ID: `validate` checks every record and the trailer's totals, `import` posts the Clearings in chunks of 100, each chunk one transaction, `settle` posts and records the file's Settlement in one transaction, and `complete` marks the file `IMPORTED`; then the file is deleted. A chunk that fails rolls back whole, and the chunks before it stay committed. **Importing the same file name again restarts the job after its last committed chunk; nothing committed is posted twice.**
 
 Every query below runs against the development database: `docker compose exec postgres psql -U payments payments`.
 
@@ -50,7 +50,7 @@ select outcome, count(*) from clearing.clearing where file_id = '<file ID>' grou
      -H 'Content-Type: application/json' -d '{"fileName": "<file name>"}'
    ```
 
-   The platform finds the file in `processing/` and restarts the job: `validate` is skipped once it completed, and `import` resumes after its last committed chunk. A `201` answer with `"status": "IMPORTED"` means every Clearing is recorded, and the file is deleted. The drop-folder check every 30 seconds doesn't restart stopped imports by itself: only a request like this one does.
+   The platform finds the file in `processing/` and restarts the job: `validate` is skipped once it completed, `import` resumes after its last committed chunk, and `settle` settles the file once, however often it ran. A `201` answer with `"status": "IMPORTED"` means every Clearing is recorded, and the file is deleted. The drop-folder check every 30 seconds doesn't restart stopped imports by itself: only a request like this one does.
 
 ## The run is `STARTED` but nothing is importing: the platform stopped mid-import
 
