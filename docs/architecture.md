@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 foundations are built, and M1 is under way: `shared`, `buyers`, `ledger` (Credit Lines so far), `suppliers` and `payables` (Invoice intake and approvals so far) exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 foundations are built, and M1 is under way: `shared`, `buyers`, `ledger` (Credit Lines and Holds so far), `suppliers` and `payables` (Invoice intake, approvals and the Payment saga's first step so far) exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -59,8 +59,8 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card, or `ledger` asking `buyers` whether a Buyer exists before setting its Credit Line. The callee answers through a public type in its module's top-level package (`buyers.BuyerDirectory`); the rest of the module stays package-private.
-- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction.
-- **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008). The first is `payables.InvoiceApproved` (Invoice, Buyer, Supplier, amount), published by the approval that completes an Invoice; the Payment saga will start from it (#17), and nothing listens to it yet.
+- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places Holds through `ledger.Holds`, inside the worker's transaction, so the Hold and the Payment's new state commit together.
+- **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008). The first is `payables.InvoiceApproved` (Invoice, Buyer, Supplier, amount), published by the approval that completes an Invoice; the Payment saga's listener starts a Payment from it. Publications whose listener didn't complete are delivered again when the platform starts, so a listener must cope with the same event twice.
 - **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`. Spring Modulith's event publication registry keeps its one table, `event_publication`, in a `modulith` schema it creates at startup.
 
 ## Approvals
@@ -121,6 +121,25 @@ sequenceDiagram
 | 1. Place the Hold | `ledger` | The Payment fails; the Invoice stays approved and unpaid |
 | 2. Issue the card and store its PAN | `cards`, `vault` | Release the Hold |
 | 3. Send the Remittance Advice | `suppliers` | Cancel the card, release the Hold |
+
+Step 1 is built (#17); a Payment stops at `HOLD_PLACED` until card issuance arrives (#18).
+
+```mermaid
+stateDiagram-v2
+  [*] --> STARTED: InvoiceApproved (one Payment per Invoice)
+  STARTED --> STARTED: technical error, retried after 10, 20, 40, 80 s
+  STARTED --> HOLD_PLACED: Hold placed
+  STARTED --> FAILED: not enough Available Credit, or the fifth technical error
+  HOLD_PLACED --> [*]: card issuance (#18)
+  FAILED --> [*]
+```
+
+- **The state row (ADR-0014):** each Payment is a row in `payables.payment` with its state, failure reason, failed attempts at the current step and the time its next step is due. `GET /v1/invoices/{invoiceId}` shows the state and any failure reason.
+- **Starting:** `PaymentSaga.start` is an `@ApplicationModuleListener` for `InvoiceApproved`. It runs asynchronously after the approval commits and inserts the Payment unless the Invoice already has one, so a redelivered event changes nothing.
+- **The worker:** `PaymentWorkerSchedule` calls `PaymentSaga.runDueSteps` every second (`payables.payment-worker.enabled=false` turns it off for tests that drive it by hand). Each pass claims up to ten due Payments, one per transaction, with `select ... for update skip locked`, so workers on other threads or instances skip Payments already claimed. In that transaction it runs the step inside a savepoint and saves the Payment's new state: a crash rolls both back, and a technical error rolls back only the step while its failed attempt is saved.
+- **Placing a Hold (`ledger.Holds`):** locks the Buyer's Credit Line row, returns the existing Hold if one has the Payment's ID, sums the open Holds in a separate statement, and inserts the Hold only if the amount fits in Available Credit. A Buyer without a Credit Line has no credit. Holds live in `ledger.hold`; releasing them comes with #18.
+- **Available Credit** is the Credit Line minus open Holds (posted spend arrives in M3). It is negative when Issuer staff lower a Credit Line below the open Holds, and no new Hold is placed until Available Credit covers its amount again.
+- **What to do when a Payment is stuck:** [`runbooks/payment-stuck.md`](runbooks/payment-stuck.md). How the saga and the worker work: [`learning/sagas.md`](learning/sagas.md).
 
 ## Quality targets
 

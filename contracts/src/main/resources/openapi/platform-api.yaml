@@ -327,8 +327,8 @@ components:
       type: object
       description: >-
         A Buyer's Credit Line, and its Available Credit: the Credit Line minus open Holds and posted spend.
-        Available Credit is negative when the Credit Line was lowered below the open Holds; no new Hold is placed
-        until it is back above zero.
+        Available Credit is negative when the Credit Line was lowered below the open Holds; a new Hold is placed only
+        when Available Credit covers its amount.
       required: [creditLine, availableCredit]
       properties:
         creditLine:
