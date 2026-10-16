@@ -152,11 +152,23 @@ class PaymentSaga {
         });
   }
 
-  // Undoes what the steps before the failed one did (ADR-0013).
+  // Undoes what the steps before the failed one did (ADR-0013), last step first. Each undo is
+  // harmless to repeat.
   private void compensate(Payment failed) {
-    if (failed.state() == Payment.State.HOLD_PLACED) {
-      holds.release(failed.id());
-      log.info("Payment {} failed for good; released its Hold", failed.id());
+    switch (failed.state()) {
+      case HOLD_PLACED -> {
+        holds.release(failed.id());
+        log.info("Payment {} failed for good; released its Hold", failed.id());
+      }
+      case CARD_ISSUED -> {
+        cards.findForPayment(failed.id()).ifPresent(card -> cards.cancel(card.cardToken()));
+        holds.release(failed.id());
+        log.info(
+            "Payment {} failed for good; cancelled its card and released its Hold", failed.id());
+      }
+      case STARTED, COMPLETED, FAILED -> {
+        // Placing the Hold is the first step: nothing came before it to undo.
+      }
     }
   }
 }

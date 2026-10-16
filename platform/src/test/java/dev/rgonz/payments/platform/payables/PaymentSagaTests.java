@@ -10,6 +10,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import com.jayway.jsonpath.Configuration;
@@ -387,6 +388,54 @@ class PaymentSagaTests {
                          "failureReason": "Issuing the Single-Use Card failed 5 times for technical reasons."}}
             """);
     assertThat(availableCredit(acme)).isEqualTo(10_000_000);
+  }
+
+  @Test
+  void anAdviceTheSupplierNeverAcceptsCancelsTheCardReleasesTheHoldAndFailsThePayment()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    var deliveries =
+        supplierAnswers(
+            withServerError(),
+            withServerError(),
+            withServerError(),
+            withServerError(),
+            withServerError());
+    // The first pass places the Hold, issues the card, then fails to deliver the advice; each later
+    // pass comes after the longest backoff, so every pass retries.
+    var now = Instant.now();
+
+    for (var attempt = 1; attempt <= 4; attempt++) {
+      saga.runDueSteps(now);
+      now = now.plus(Duration.ofMinutes(5));
+    }
+    var stateAfterFourAttempts = paymentState(acme, invoiceId);
+    saga.runDueSteps(now);
+
+    assertThat(stateAfterFourAttempts).isEqualTo("CARD_ISSUED");
+    assertThat(invoice(acme, invoiceId))
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"status": "APPROVED",
+             "payment": {"state": "FAILED",
+                         "failureReason": "Delivering the Remittance Advice failed 5 times for technical reasons."}}
+            """);
+    var paymentId = paymentIdOf(invoiceId);
+    assertThat(cards.findForPayment(paymentId).orElseThrow().status())
+        .isEqualTo(SingleUseCard.Status.CANCELLED);
+    assertThat(availableCredit(acme)).isEqualTo(10_000_000);
+    // The released Hold keeps its record.
+    assertThat(
+            jdbc.sql("select status from ledger.hold where id = :id")
+                .param("id", paymentId)
+                .query(String.class)
+                .single())
+        .isEqualTo("RELEASED");
+    // The Supplier may have received the link before an answer was lost: it shows nothing now.
+    String link = JsonPath.read(deliveries.getLast().body(), "$.cardLink");
+    assertThat(mvc.get().uri(link).exchange()).hasStatus(410);
   }
 
   @Test
