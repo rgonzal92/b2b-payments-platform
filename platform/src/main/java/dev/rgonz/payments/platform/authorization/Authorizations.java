@@ -41,8 +41,9 @@ class Authorizations {
   /**
    * Answers the Charge by the Authorization rules and records the answer; an approval also moves
    * the card to {@code AUTHORIZED}. A request ID that already has an answer gets that answer back,
-   * whatever the rules would say now, and changes nothing. The PAN and security code go to the
-   * vault and nowhere else. The card's move and the recorded Authorization commit together.
+   * whatever the rules would say now, and changes nothing; one a Reversal recorded first answers
+   * {@code 05} (do not honour) the same way. The PAN and security code go to the vault and nowhere
+   * else. The card's move and the recorded Authorization commit together.
    */
   @Transactional
   Authorization authorize(Charge charge, Instant now) {
@@ -61,7 +62,7 @@ class Authorizations {
     if (!insertUnlessAnswered(charge, cardToken, authorization)) {
       var stored = storedAnswer(charge.requestId());
       log.info(
-          "Authorization {} was resent and answered {} again",
+          "Authorization {} already had an answer or a Reversal, and answered {}",
           charge.requestId(),
           stored.responseCode().code());
       return stored;
@@ -74,6 +75,55 @@ class Authorizations {
     log.info(
         "Authorization {} answered {}", charge.requestId(), authorization.responseCode().code());
     return authorization;
+  }
+
+  /**
+   * Cancels the Authorization with this request ID: an approved one becomes {@code REVERSED} and
+   * its card {@code ACTIVE} again, so the card can be charged again. A request ID with no
+   * Authorization yet is recorded as reversed, so its Authorization, arriving later or still
+   * running, answers {@code 05} and moves no card. The Hold stays: a Reversal never touches the
+   * ledger.
+   */
+  @Transactional
+  void reverse(String requestId) {
+    if (claimAsReversed(requestId)) {
+      log.info("Reversal {} came before its Authorization, which will answer 05", requestId);
+      return;
+    }
+    // The request ID has an Authorization, committed: the claim waited for it. One conditional
+    // update locks the row and checks it is still APPROVED.
+    var cardToken =
+        jdbc.sql(
+                """
+                update "authorization".authorizations set status = :reversed
+                 where request_id = :requestId and status = :approved
+                returning card_token
+                """)
+            .param("reversed", Authorization.Status.REVERSED.name())
+            .param("requestId", requestId)
+            .param("approved", Authorization.Status.APPROVED.name())
+            .query(String.class)
+            .optional();
+    cardToken.ifPresent(cards::reverse);
+    log.info("Reversal {} acknowledged", requestId);
+  }
+
+  // Claims the request ID for a Reversal the way an Authorization claims it: whichever insert
+  // commits first owns it. An Authorization still running when this commits then inserts nothing
+  // and answers this row's 05; one that committed first makes this insert wait, then insert
+  // nothing.
+  private boolean claimAsReversed(String requestId) {
+    return jdbc.sql(
+                """
+                insert into "authorization".authorizations (request_id, response_code, status)
+                values (:requestId, :responseCode, :status)
+                on conflict (request_id) do nothing
+                """)
+            .param("requestId", requestId)
+            .param("responseCode", ResponseCode.DO_NOT_HONOUR.code())
+            .param("status", Authorization.Status.REVERSED.name())
+            .update()
+        == 1;
   }
 
   // Records the answer unless the request ID already has one. The primary key decides, not a read
