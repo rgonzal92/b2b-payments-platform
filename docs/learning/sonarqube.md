@@ -13,6 +13,10 @@ Agents write the code and you review it, but some problems are easy to miss in a
 
 ## Gotchas we hit
 
+- **Java 25 needed no fallback.** The first run analysed at `sonar.java.source: 25` with no warnings, so the design's "closest supported level" plan wasn't needed.
+- **The scanner brings its own Java.** The log shows a second JVM (Eclipse Adoptium 21): the scanner downloads a JRE for its analysis engine, independent of the Corretto 25 that builds the project.
+- **Pull requests are detected automatically.** On GitHub Actions the plugin reads the pull request number and branches from the environment ("Auto-configuring pull request 10"); no extra parameters are needed.
+- **SonarQube Cloud adds its own check.** Its GitHub app posts "SonarCloud Code Analysis" on each pull request with a link to the results. The ruleset doesn't require it: the `build` check already fails when the gate fails.
 - **Automatic analysis had to be turned off.** SonarQube Cloud can analyse a repository on its own, but that conflicts with analysis from CI; only one may run.
 - **The analysis needs the full history.** CI checks out every commit (`fetch-depth: 0`) so SonarQube can use blame data to tell new code from old.
 - **Pull requests from forks and from Dependabot skip the analysis.** Neither receives the repository's secrets, so the step would fail without a token and turn `build` red. Dependabot's changes are analysed after merging, on the push to `main`.
