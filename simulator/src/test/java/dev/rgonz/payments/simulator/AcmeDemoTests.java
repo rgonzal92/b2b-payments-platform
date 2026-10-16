@@ -195,7 +195,7 @@ class AcmeDemoTests {
         .isLenientlyEqualTo(
             """
             {"id": "NET-STUB-0001", "sequenceNumber": 7, "businessDate": "2026-10-16",
-             "status": "IMPORTED", "recordCount": 1,
+             "status": "IMPORTED", "recordCount": 1, "outcomes": {"matched": 1},
              "settlement": {"amount": {"minorUnits": 1240000, "currency": "USD"},
                             "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
                             "matched": true}}
@@ -386,6 +386,9 @@ class AcmeDemoTests {
           """
           {"id": "NET-STUB-0001", "sequenceNumber": 7, "businessDate": "2026-10-16",
            "status": "IMPORTED", "recordCount": 1,
+           "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
+                        "unknownCard": 0, "otherCurrency": 0, "againstReversedAuthorization": 0,
+                        "afterHoldExpired": 0, "authorizationAlreadyCleared": 0},
            "settlement": {"amount": {"minorUnits": 1240000, "currency": "USD"},
                           "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
                           "matched": true}}

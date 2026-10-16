@@ -216,13 +216,18 @@ class CorePathEndToEndTests {
             .retrieve()
             .body(String.class);
 
-    // The Charge's Clearing posted (importedTotal), and the Network's trailer settles exactly that.
+    // The Charge's Clearing matched its Authorization, which moves the card to CLEARED, and the
+    // Network's trailer settles exactly what was posted.
     assertThat(new JsonContent(imported))
         .isLenientlyEqualTo(
             """
             {
               "status": "IMPORTED",
               "recordCount": 1,
+              "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
+                           "unknownCard": 0, "otherCurrency": 0,
+                           "againstReversedAuthorization": 0, "afterHoldExpired": 0,
+                           "authorizationAlreadyCleared": 0},
               "settlement": {
                 "amount": {"minorUnits": 1240000, "currency": "USD"},
                 "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
