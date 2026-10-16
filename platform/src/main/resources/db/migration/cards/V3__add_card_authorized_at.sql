@@ -1,5 +1,6 @@
 -- When the card became AUTHORIZED: the expiry job expires an AUTHORIZED card 7 days later, as its Charge won't clear.
--- Null while the card isn't AUTHORIZED; a Reversal back to ACTIVE clears it.
+-- Set as the card becomes AUTHORIZED and cleared as a Reversal moves it back to ACTIVE; no other change of status touches
+-- it.
 alter table card add column authorized_at timestamptz;
 
 -- A card already AUTHORIZED has no recorded time: its 7 days count from this migration, never from before its Charge.

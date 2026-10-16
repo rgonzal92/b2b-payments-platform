@@ -171,7 +171,7 @@ A Single-Use Card's data is split between two modules so the PAN lives in exactl
 
 ## Card expiry
 
-A Single-Use Card nobody charged before its expiry, 30 days after issuance, returns its credit to the Buyer (ADR-0011). So does an `AUTHORIZED` card with no Clearing 7 days after its Authorization: by then the Charge isn't coming (Q40).
+A Single-Use Card nobody charged before its expiry, 30 days after issuance, returns its credit to the Buyer (ADR-0011). So does an `AUTHORIZED` card with no Clearing 7 days after its Authorization: by then the Charge isn't coming (M3 design, [The 7-day rule](design/m3-clearing-and-settlement.md#the-7-day-rule-q10)).
 
 ```mermaid
 sequenceDiagram
@@ -179,14 +179,14 @@ sequenceDiagram
   participant PAY as payables
   participant LED as ledger
 
-  Note over JOB: every minute, up to 100 cards of each kind per transaction
+  Note over JOB: every minute, 100 cards per transaction
   JOB->>JOB: ACTIVE cards past their expiry, and AUTHORIZED cards 7 days after their Authorization, become EXPIRED (for update skip locked)
   JOB-)PAY: CardExpired, one per card (event publication registry)
   PAY->>PAY: lock the Payment; COMPLETED or CARD_ISSUED becomes EXPIRED
   PAY->>LED: Holds.release(Payment ID)
 ```
 
-- **The job (`cards.CardExpiry`):** `CardExpirySchedule` runs it every minute (`cards.expiry-job.enabled=false` turns it off for tests that run it by hand). Each batch claims up to 100 `ACTIVE` cards whose `expires_at` has come, and up to 100 `AUTHORIZED` cards whose `authorized_at` is 7 days or more ago (`CardExpiry.CLEARING_WINDOW`), each kind with one `update ... where card_token in (select ... for update skip locked) returning ...`, and publishes a `CardExpired` for each, in the same transaction: a stop mid-run leaves each card as it was for the next run, or `EXPIRED` with its event in the registry. Cards in any other status are left alone; an index on `expires_at` covers only `ACTIVE` cards, and one on `authorized_at` only `AUTHORIZED` cards.
+- **The job (`cards.CardExpiry`):** `CardExpirySchedule` runs it every minute (`cards.expiry-job.enabled=false` turns it off for tests that run it by hand). Each batch claims up to 100 cards, each kind with one `update ... where card_token in (select ... for update skip locked) returning ...`: first `ACTIVE` cards whose `expires_at` has come, then, in what is left of the batch, `AUTHORIZED` cards whose `authorized_at` is 7 days or more ago (`SingleUseCards.CLEARING_WINDOW`). It publishes a `CardExpired` for each, in the same transaction: a stop mid-run leaves each card as it was for the next run, or `EXPIRED` with its event in the registry. Cards in any other status are left alone; an index on `expires_at` covers only `ACTIVE` cards, and one on `authorized_at` only `AUTHORIZED` cards.
 - **The 7 days (`authorized_at`):** `Cards.authorize` records the Authorization's time as it moves the card to `AUTHORIZED`, and `Cards.reverse` clears it as the card goes back to `ACTIVE`, so a reversed card waits for its own expiry and a second Charge starts a new 7 days.
 - **The listener (`PaymentSaga.expire`):** in one transaction, it locks the Payment (waiting for a worker that is running its step), moves a `COMPLETED` Payment, or a `CARD_ISSUED` one still retrying its delivery, to `EXPIRED` with no step left, and releases the Hold through `ledger.Holds`. `payables`, not `cards`, releases the Hold because it owns the Hold's lifecycle in the saga, and `cards` needs no dependency on `ledger`. Another state stays as it is, but the Hold is still released.
 - **Exactly once:** the registry may deliver `CardExpired` again; a second delivery finds the Payment `EXPIRED` and the Hold `RELEASED`, and changes nothing. Re-paying the Invoice is out of scope; it stays `APPROVED`.

@@ -24,6 +24,8 @@ import org.springframework.transaction.annotation.Transactional;
 class SingleUseCards implements Cards {
 
   private static final Duration VALIDITY = Duration.ofDays(30);
+  // No Clearing within 7 days of an Authorization means the Charge isn't coming (M2 design, Q40).
+  private static final Duration CLEARING_WINDOW = Duration.ofDays(7);
   private static final int CARD_TOKEN_BYTES = 16;
   private static final String COLUMNS =
       """
@@ -145,7 +147,7 @@ class SingleUseCards implements Cards {
    * {@code EXPIRED} and returns them, skipping cards other transactions have locked. Joins the
    * caller's transaction, which keeps them locked until it ends.
    */
-  List<SingleUseCard> expireDue(Instant now, int batchSize) {
+  List<SingleUseCard> expireUncharged(Instant now, int batchSize) {
     // The literal 'ACTIVE' matches card_expires_at_idx's predicate; a bound parameter wouldn't,
     // once PostgreSQL switches the prepared statement to a generic plan.
     return jdbc.sql(
@@ -169,12 +171,12 @@ class SingleUseCards implements Cards {
   }
 
   /**
-   * Marks up to {@code batchSize} {@code AUTHORIZED} cards authorized at or before {@code
-   * authorizedBefore} {@code EXPIRED} and returns them, skipping cards other transactions have
-   * locked. Joins the caller's transaction, which keeps them locked until it ends.
+   * Marks up to {@code batchSize} {@code AUTHORIZED} cards authorized 7 days or more before {@code
+   * now} {@code EXPIRED} and returns them, skipping cards other transactions have locked. Joins the
+   * caller's transaction, which keeps them locked until it ends.
    */
-  List<SingleUseCard> expireAuthorizedBefore(Instant authorizedBefore, int batchSize) {
-    // The literal 'AUTHORIZED' matches card_authorized_at_idx's predicate, as in expireDue.
+  List<SingleUseCard> expireUncleared(Instant now, int batchSize) {
+    // The literal 'AUTHORIZED' matches card_authorized_at_idx's predicate, as in expireUncharged.
     return jdbc.sql(
             """
             update cards.card
@@ -182,14 +184,14 @@ class SingleUseCards implements Cards {
              where card_token in (select card_token
                                     from cards.card
                                    where status = 'AUTHORIZED'
-                                     and authorized_at <= :authorizedBefore
+                                     and authorized_at <= :authorizedBy
                                    order by authorized_at
                                    limit :batchSize
                                      for update skip locked)
             returning
             """
                 + COLUMNS)
-        .param("authorizedBefore", authorizedBefore.atOffset(ZoneOffset.UTC))
+        .param("authorizedBy", now.minus(CLEARING_WINDOW).atOffset(ZoneOffset.UTC))
         .param("batchSize", batchSize)
         .query(SingleUseCards::toCard)
         .list();

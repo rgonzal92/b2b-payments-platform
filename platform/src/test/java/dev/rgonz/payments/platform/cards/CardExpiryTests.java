@@ -28,7 +28,7 @@ class CardExpiryTests {
 
   private static final Instant ISSUED = Instant.parse("2020-01-01T00:00:00Z");
   // A day after issuance, so the 7 days end long before the card's own 30-day expiry.
-  private static final Instant AUTHORIZED = ISSUED.plus(Duration.ofDays(1));
+  private static final Instant AUTHORIZED_AT = ISSUED.plus(Duration.ofDays(1));
   private static final Money AMOUNT = new Money(1_240_000, Currency.getInstance("USD"));
 
   @Autowired Cards cards;
@@ -52,9 +52,9 @@ class CardExpiryTests {
   void anAuthorizedCardExpiresSevenDaysAfterItsAuthorizationAndPublishesCardExpired(
       PublishedEvents events) {
     var card = issuedAt(ISSUED);
-    cards.authorize(card.cardToken(), AUTHORIZED);
+    cards.authorize(card.cardToken(), AUTHORIZED_AT);
 
-    expiry.expireDue(AUTHORIZED.plus(Duration.ofDays(7)));
+    expiry.expireDue(AUTHORIZED_AT.plus(Duration.ofDays(7)));
 
     assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.EXPIRED);
     assertThat(
@@ -68,9 +68,9 @@ class CardExpiryTests {
   @Test
   void aCardAuthorizedLessThanSevenDaysAgoStaysAuthorized() {
     var card = issuedAt(ISSUED);
-    cards.authorize(card.cardToken(), AUTHORIZED);
+    cards.authorize(card.cardToken(), AUTHORIZED_AT);
 
-    expiry.expireDue(AUTHORIZED.plus(Duration.ofDays(7)).minusSeconds(1));
+    expiry.expireDue(AUTHORIZED_AT.plus(Duration.ofDays(7)).minusSeconds(1));
 
     assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
   }
@@ -78,10 +78,10 @@ class CardExpiryTests {
   @Test
   void aCardReversedBackToActiveExpiresOnlyAtItsOwnExpiry() {
     var card = issuedAt(ISSUED);
-    cards.authorize(card.cardToken(), AUTHORIZED);
+    cards.authorize(card.cardToken(), AUTHORIZED_AT);
     cards.reverse(card.cardToken());
 
-    expiry.expireDue(AUTHORIZED.plus(Duration.ofDays(7)));
+    expiry.expireDue(AUTHORIZED_AT.plus(Duration.ofDays(7)));
     var afterSevenDays = statusOf(card);
     expiry.expireDue(card.expiresAt());
 
