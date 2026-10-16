@@ -65,6 +65,14 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 - One Approver at or under the Approval Threshold, two different Approvers above it; the same Approver twice counts once. A rejection is final.
 - Each approval and rejection is recorded with who and when; that record is the audit trail for M1.
 - The final approval publishes `InvoiceApproved` through Spring Modulith (ADR-0008), which creates a Payment.
+- Decided during #16:
+  - An Approver is the token's subject (`sub`), stored with its `preferred_username` so the record reads without Keycloak. The simulator's demo Approvers are the service accounts of two Keycloak clients, `acme-approver-1` and `acme-approver-2`.
+  - `payables` gets the Approval Threshold from `buyers.BuyerDirectory`, never from `buyers`' tables.
+  - The Invoice stays `RECEIVED` until it is `APPROVED` or `REJECTED`; above the threshold its first approval shows only in its `decisions`, so no state outside the glossary is needed.
+  - Neither action takes an `Idempotency-Key`: the same Approver deciding the same way again changes nothing and returns the Invoice. That covers a repeated rejection too, so its retry is answered `200` like an approval's; any other decision on a rejected Invoice is `409`.
+  - An approved Invoice takes no new decisions (`409`), a rejection included, because its Payment may already be under way.
+  - Concurrent decisions on one Invoice take turns on its row lock (`select ... for update`), so two Approvers can't both be counted as the first.
+  - `InvoiceApproved` carries the Invoice, Buyer, Supplier and amount, which is what the saga needs to place the Hold and issue the card.
 
 ### The Payment saga
 
@@ -102,7 +110,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 ### Persistence
 
 - Each module's Flyway migrations live in their own folder and run with their own history table inside the module's schema, so a module's schema moves with it at extraction (ADR-0009).
-- Spring Modulith keeps its event publications in its own table through `spring-modulith-starter-jdbc`.
+- Spring Modulith keeps its event publications in its own table through `spring-modulith-starter-jdbc`. (Decided during #16: the table is `modulith.event_publication`, in a schema of its own that the registry creates at startup with its table; no Flyway migration owns it.)
 
 ### Simulator
 
