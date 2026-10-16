@@ -314,6 +314,45 @@ paths:
         '409':
           $ref: '#/components/responses/Problem'
   /v1/clearing-files:
+    get:
+      tags: [ClearingFiles]
+      operationId: listClearingFiles
+      summary: List the Clearing Files the platform received, newest first
+      description: >-
+        Issuer staff only (role `issuer-admin`). Every Clearing File the platform received, newest first by when it
+        received them, a page at a time: pass a page's `nextCursor` as `cursor` for the next page. Every page also
+        shows the gaps in the Network's sequence numbers (`missingSequenceNumbers`), so a file that never arrived
+        stands out. A `limit` outside 1 to 100, or a `cursor` no page gave, is `400`.
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the page before; leave it out for the first page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: The most files on a page, from 1 to 100.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: A page of Clearing Files.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearingFileList'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
     post:
       tags: [ClearingFiles]
       operationId: importClearingFile
@@ -353,6 +392,34 @@ paths:
         '422':
           $ref: '#/components/responses/Problem'
         '500':
+          $ref: '#/components/responses/Problem'
+  /v1/clearing-files/{fileId}:
+    get:
+      tags: [ClearingFiles]
+      operationId: getClearingFile
+      summary: Get a Clearing File
+      description: >-
+        Issuer staff only (role `issuer-admin`). The file's summary, as its import answered it, now: its status, its
+        Clearings counted by outcome and its Settlement.
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          description: The Network's ID for the file, from its header.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The Clearing File.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearingFile'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
           $ref: '#/components/responses/Problem'
   /v1/remittance-links/{token}:
     get:
@@ -676,7 +743,7 @@ components:
           pattern: '^[A-Za-z0-9_-][A-Za-z0-9._-]*$'
     ClearingFile:
       type: object
-      description: A Clearing File the platform imported, as its header and its Clearings describe it.
+      description: A Clearing File the platform received, as its header and its Clearings describe it.
       required: [id, sequenceNumber, businessDate, status, recordCount, outcomes]
       properties:
         id:
@@ -704,6 +771,31 @@ components:
           $ref: '#/components/schemas/ClearingOutcomeCounts'
         settlement:
           $ref: '#/components/schemas/Settlement'
+    ClearingFileList:
+      type: object
+      description: >-
+        A page of the Clearing Files the platform received, newest first, and the gaps in the Network's sequence
+        numbers.
+      required: [items, missingSequenceNumbers]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClearingFile'
+        nextCursor:
+          type: string
+          description: Pass it as `cursor` for the next page; absent on the last page.
+          # Left out of the JSON rather than null, so "absent" holds: the generator puts this on the field.
+          x-field-extra-annotation: '@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)'
+        missingSequenceNumbers:
+          type: array
+          description: >-
+            The Network's sequence numbers, between the lowest and the highest of the imported files', that no
+            imported file has, lowest first: the first 100 only. A file the Network sent that never arrived, was
+            refused, or isn't imported yet: see `docs/runbooks/clearing-file-missing.md`. The same on every page.
+          items:
+            type: integer
+            format: int64
     ClearingOutcomeCounts:
       type: object
       description: >-

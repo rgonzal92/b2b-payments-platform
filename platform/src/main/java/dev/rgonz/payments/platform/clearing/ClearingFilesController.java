@@ -3,11 +3,16 @@ package dev.rgonz.payments.platform.clearing;
 import dev.rgonz.payments.contracts.server.ClearingFilesApi;
 import dev.rgonz.payments.contracts.server.model.ClearingFileDto;
 import dev.rgonz.payments.contracts.server.model.ClearingFileImportDto;
+import dev.rgonz.payments.contracts.server.model.ClearingFileListDto;
 import dev.rgonz.payments.contracts.server.model.ClearingOutcomeCountsDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
 import dev.rgonz.payments.contracts.server.model.SettlementDto;
 import dev.rgonz.payments.platform.clearing.ClearingFileImports.ImportResult;
 import dev.rgonz.payments.platform.shared.Money;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.Base64;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -16,14 +21,62 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.ErrorResponseException;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Issuer staff import a Clearing File from the drop folder at once. */
+/**
+ * Issuer staff import a Clearing File from the drop folder at once, and read the files received.
+ */
 @RestController
 class ClearingFilesController implements ClearingFilesApi {
 
-  private final ClearingFileImports imports;
+  // The list shows the first 100 gaps in the Network's sequence numbers, as the OpenAPI document
+  // says: any more, and the first are the ones to chase.
+  private static final int MISSING_SEQUENCE_NUMBERS_SHOWN = 100;
 
-  ClearingFilesController(ClearingFileImports imports) {
+  private final ClearingFileImports imports;
+  private final ClearingFiles files;
+
+  ClearingFilesController(ClearingFileImports imports, ClearingFiles files) {
     this.imports = imports;
+    this.files = files;
+  }
+
+  @Override
+  @PreAuthorize("hasRole('issuer-admin')")
+  public ResponseEntity<ClearingFileListDto> listClearingFiles(String cursor, Integer limit) {
+    var page = files.list(cursor == null ? null : position(cursor), limit);
+    return ResponseEntity.ok(
+        new ClearingFileListDto()
+            .items(page.files().stream().map(ClearingFilesController::toDto).toList())
+            .nextCursor(page.next() == null ? null : cursor(page.next()))
+            .missingSequenceNumbers(files.missingSequenceNumbers(MISSING_SEQUENCE_NUMBERS_SHOWN)));
+  }
+
+  @Override
+  @PreAuthorize("hasRole('issuer-admin')")
+  public ResponseEntity<ClearingFileDto> getClearingFile(String fileId) {
+    return files
+        .find(fileId)
+        .map(file -> ResponseEntity.ok(toDto(file)))
+        .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No Clearing File has this ID."));
+  }
+
+  // The cursor is opaque to callers: the position's fields, in base64url.
+  private static String cursor(ClearingFiles.Position position) {
+    var fields = position.receivedAt() + " " + position.fileId();
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(fields.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static ClearingFiles.Position position(String cursor) {
+    try {
+      var fields = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+      var separator = fields.indexOf(' ');
+      return new ClearingFiles.Position(
+          Instant.parse(fields.substring(0, separator)), fields.substring(separator + 1));
+    } catch (IllegalArgumentException | IndexOutOfBoundsException | DateTimeParseException e) {
+      throw problem(
+          HttpStatus.BAD_REQUEST, "This cursor isn't one a page of the list gave: leave it out.");
+    }
   }
 
   @Override
