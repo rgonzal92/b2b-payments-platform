@@ -8,6 +8,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
@@ -26,23 +29,29 @@ import java.util.Currency;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.restclient.test.autoconfigure.AutoConfigureMockRestServiceServer;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.TransientDataAccessResourceException;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.modulith.events.CompletedEventPublications;
 import org.springframework.modulith.events.EventPublication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.JwtRequestPostProcessor;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.test.web.client.ResponseCreator;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -54,10 +63,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest(properties = "payables.payment-worker.enabled=false")
 @AutoConfigureMockMvc
+@AutoConfigureMockRestServiceServer
 class PaymentSagaTests {
 
   // High enough that one approval completes every Invoice here.
   private static final long APPROVAL_THRESHOLD = 100_000_000;
+  // Every Invoice here names this remittance address, which supplier stands in for.
+  private static final String GLOBEX = "https://globex.example/remittance-advice";
 
   @Autowired MockMvcTester mvc;
   @Autowired PaymentSaga saga;
@@ -65,6 +77,7 @@ class PaymentSagaTests {
   @Autowired ApplicationEventPublisher events;
   @Autowired CompletedEventPublications completedEvents;
   @Autowired JdbcClient jdbc;
+  @Autowired MockRestServiceServer supplier;
   @MockitoSpyBean Holds holds;
   @MockitoSpyBean Cards cards;
 
@@ -73,12 +86,13 @@ class PaymentSagaTests {
       throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
     var now = Instant.now();
 
     saga.runDueSteps(now);
 
     var body = invoice(acme, invoiceId).getResponse().getContentAsString();
-    assertThat(JsonPath.<String>read(body, "$.payment.state")).isEqualTo("CARD_ISSUED");
+    assertThat(JsonPath.<String>read(body, "$.payment.state")).isEqualTo("COMPLETED");
     // Only what is safe to show: no PAN, no security code.
     assertThat(JsonPath.<Map<String, Object>>read(body, "$.payment.card"))
         .containsOnlyKeys("cardToken", "lastFour", "expiresAt");
@@ -93,10 +107,45 @@ class PaymentSagaTests {
   }
 
   @Test
+  void theRemittanceAdviceReachesTheSupplierWithAOneTimeLinkAndCompletesThePayment()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    var deliveries = supplierAnswers(withSuccess());
+    var now = Instant.now();
+
+    saga.runDueSteps(now);
+
+    var paymentId = paymentIdOf(invoiceId).toString();
+    assertThat(deliveries).hasSize(1);
+    var advice = deliveries.getFirst().body();
+    // The advice's ID is the Payment's, sent as the Idempotency-Key so the Supplier can drop
+    // repeats.
+    assertThat(deliveries.getFirst().idempotencyKey()).isEqualTo(paymentId);
+    assertThat(JsonPath.<String>read(advice, "$.id")).isEqualTo(paymentId);
+    assertThat(JsonPath.<String>read(advice, "$.invoiceId")).isEqualTo(invoiceId);
+    assertThat(JsonPath.<String>read(advice, "$.invoiceNumber")).isEqualTo("INV-1");
+    assertThat(JsonPath.<Map<String, Object>>read(advice, "$.amount"))
+        .isEqualTo(Map.of("minorUnits", 1_240_000, "currency", "USD"));
+    // A 256-bit token, base64url-encoded, under the platform's public URL.
+    assertThat(JsonPath.<String>read(advice, "$.cardLink"))
+        .matches("http://localhost:8080/v1/remittance-links/[A-Za-z0-9_-]{43}");
+    assertThat(Instant.parse(JsonPath.read(advice, "$.cardLinkExpiresAt")))
+        .isEqualTo(now.plus(Duration.ofDays(7)).truncatedTo(ChronoUnit.MICROS));
+    assertThat(invoice(acme, invoiceId))
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"status": "APPROVED", "payment": {"state": "COMPLETED"}}
+            """);
+  }
+
+  @Test
   void theCardIsLockedToTheInvoicesSupplierAndAmountAndIssuingItAgainReturnsTheSameCard()
       throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
     saga.runDueSteps(Instant.now());
     var body = invoice(acme, invoiceId).getResponse().getContentAsString();
     var paymentId = paymentIdOf(invoiceId);
@@ -120,6 +169,7 @@ class PaymentSagaTests {
   void noTableOutsideTheVaultHoldsAPan() throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
     saga.runDueSteps(Instant.now());
     String cardToken =
         JsonPath.read(
@@ -178,6 +228,7 @@ class PaymentSagaTests {
       throws Exception {
     var acme = newBuyerWithCreditLine(1_000_000);
     approvedInvoice(acme, 800_000);
+    supplierAnswers(withSuccess());
     saga.runDueSteps(Instant.now());
 
     setCreditLine(acme, 500_000, 200);
@@ -205,9 +256,10 @@ class PaymentSagaTests {
     // The same event again, as the registry redelivers one whose listener didn't complete.
     transactions.executeWithoutResult(status -> events.publishEvent(event));
     await().atMost(Duration.ofSeconds(10)).until(() -> completedDeliveriesOf(invoiceId) == 2);
+    supplierAnswers(withSuccess());
     saga.runDueSteps(Instant.now());
 
-    assertThat(paymentState(acme, invoiceId.toString())).isEqualTo("CARD_ISSUED");
+    assertThat(paymentState(acme, invoiceId.toString())).isEqualTo("COMPLETED");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
   }
 
@@ -225,6 +277,7 @@ class PaymentSagaTests {
             })
         .when(holds)
         .place(any(), eq(new BuyerId(acme)), any());
+    supplierAnswers(withSuccess());
     var now = Instant.now();
 
     try (var workers = Executors.newFixedThreadPool(2)) {
@@ -238,7 +291,7 @@ class PaymentSagaTests {
     }
 
     assertThat(List.of(paymentState(acme, first), paymentState(acme, second)))
-        .containsExactlyInAnyOrder("CARD_ISSUED", "FAILED");
+        .containsExactlyInAnyOrder("COMPLETED", "FAILED");
     assertThat(availableCredit(acme)).isZero();
   }
 
@@ -257,6 +310,7 @@ class PaymentSagaTests {
         .doCallRealMethod()
         .when(holds)
         .place(any(), eq(new BuyerId(acme)), any());
+    supplierAnswers(withSuccess());
     var failedAt = Instant.now();
 
     saga.runDueSteps(failedAt);
@@ -269,7 +323,7 @@ class PaymentSagaTests {
     assertThat(stateAfterFailure).isEqualTo("STARTED");
     assertThat(creditAfterFailure).isEqualTo(10_000_000);
     assertThat(stateBeforeBackoffEnds).isEqualTo("STARTED");
-    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
   }
 
@@ -348,6 +402,7 @@ class PaymentSagaTests {
         .doCallRealMethod()
         .when(holds)
         .place(any(), eq(new BuyerId(acme)), any());
+    supplierAnswers(withSuccess());
 
     assertThatThrownBy(() -> saga.runDueSteps(Instant.now())).isInstanceOf(PlatformStopped.class);
     var stateAfterStop = paymentState(acme, invoiceId);
@@ -356,7 +411,7 @@ class PaymentSagaTests {
 
     assertThat(stateAfterStop).isEqualTo("STARTED");
     assertThat(creditAfterStop).isEqualTo(10_000_000);
-    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
   }
 
@@ -374,6 +429,7 @@ class PaymentSagaTests {
         .doCallRealMethod()
         .when(cards)
         .issueSingleUse(any(), eq(new BuyerId(acme)), any(), any(), any());
+    supplierAnswers(withSuccess());
 
     assertThatThrownBy(() -> saga.runDueSteps(Instant.now())).isInstanceOf(PlatformStopped.class);
     var stateAfterStop = paymentState(acme, invoiceId);
@@ -382,7 +438,7 @@ class PaymentSagaTests {
 
     assertThat(stateAfterStop).isEqualTo("HOLD_PLACED");
     assertThat(cardAfterStop).isEmpty();
-    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
     assertThat(cards.findForPayment(paymentIdOf(invoiceId))).isPresent();
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
     // No PAN left in the vault for a card that was rolled back.
@@ -395,6 +451,28 @@ class PaymentSagaTests {
                 .query(Long.class)
                 .single())
         .isZero();
+  }
+
+  /** A Remittance Advice as the Supplier's address received it. */
+  record Delivery(String idempotencyKey, String body) {}
+
+  // The Supplier's remittance address answers one advice with each response, in turn; the list
+  // records every advice it receives. An advice beyond the responses fails the test.
+  private List<Delivery> supplierAnswers(ResponseCreator... responses) {
+    var deliveries = new CopyOnWriteArrayList<Delivery>();
+    for (var response : responses) {
+      supplier
+          .expect(requestTo(GLOBEX))
+          .andExpect(method(HttpMethod.POST))
+          .andExpect(
+              request ->
+                  deliveries.add(
+                      new Delivery(
+                          request.getHeaders().getFirst("Idempotency-Key"),
+                          ((MockClientHttpRequest) request).getBodyAsString())))
+          .andRespond(response);
+    }
+    return deliveries;
   }
 
   /**

@@ -2,6 +2,8 @@ package dev.rgonz.payments.platform.payables;
 
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.ledger.Holds;
+import dev.rgonz.payments.platform.suppliers.RemittanceAdvice;
+import dev.rgonz.payments.platform.suppliers.RemittanceAdvices;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
@@ -21,14 +23,24 @@ class PaymentSaga {
   private static final int BATCH_SIZE = 10;
 
   private final Payments payments;
+  private final Invoices invoices;
   private final Holds holds;
   private final Cards cards;
+  private final RemittanceAdvices remittanceAdvices;
   private final TransactionTemplate transaction;
 
-  PaymentSaga(Payments payments, Holds holds, Cards cards, TransactionTemplate transaction) {
+  PaymentSaga(
+      Payments payments,
+      Invoices invoices,
+      Holds holds,
+      Cards cards,
+      RemittanceAdvices remittanceAdvices,
+      TransactionTemplate transaction) {
     this.payments = payments;
+    this.invoices = invoices;
     this.holds = holds;
     this.cards = cards;
+    this.remittanceAdvices = remittanceAdvices;
     this.transaction = transaction;
   }
 
@@ -77,7 +89,8 @@ class PaymentSaga {
         switch (payment.state()) {
           case STARTED -> placeHold(payment, now);
           case HOLD_PLACED -> issueCard(payment, now);
-          case CARD_ISSUED, FAILED ->
+          case CARD_ISSUED -> deliverRemittanceAdvice(payment, now);
+          case COMPLETED, FAILED ->
               throw new IllegalStateException(
                   "Payment %s is %s: no step is left to run."
                       .formatted(payment.id(), payment.state()));
@@ -99,7 +112,24 @@ class PaymentSaga {
   private Payment issueCard(Payment payment, Instant now) {
     cards.issueSingleUse(
         payment.id(), payment.buyerId(), payment.supplierId(), payment.amount(), now);
-    return payment.cardIssued();
+    return payment.cardIssued(now);
+  }
+
+  // The advice is the Payment's too, so delivering it again sends the same link, under the same
+  // Idempotency-Key for the Supplier to drop the repeat.
+  private Payment deliverRemittanceAdvice(Payment payment, Instant now) {
+    var card = cards.findForPayment(payment.id()).orElseThrow();
+    var invoice = invoices.find(payment.buyerId(), payment.invoiceId()).orElseThrow();
+    remittanceAdvices.deliver(
+        new RemittanceAdvice(
+            payment.id(),
+            invoice.id(),
+            invoice.invoiceNumber(),
+            payment.supplierId(),
+            payment.amount(),
+            card.cardToken()),
+        now);
+    return payment.completed();
   }
 
   // The step's transaction rolled back, undoing what the step did, so a new transaction counts the

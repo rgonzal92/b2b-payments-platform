@@ -262,6 +262,39 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+  /v1/remittance-links/{token}:
+    get:
+      tags: [RemittanceLinks]
+      operationId: openRemittanceLink
+      summary: Open the card link of a Remittance Advice
+      description: >-
+        No sign-in: the token, sent to the Supplier in its Remittance Advice (`cardLink`), is the credential. The first
+        open answers with the Single-Use Card's details and uses the link up. A later open, an open after the link
+        expired (7 days after the Remittance Advice was created) or after the card was cancelled answers `410`; a token
+        that matches no link answers `404`.
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The card's details, shown this once.
+          headers:
+            Cache-Control:
+              description: Always `no-store`, so no cache keeps the card's details.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleUseCardDetails'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
 components:
   securitySchemes:
     bearerAuth:
@@ -417,9 +450,10 @@ components:
           type: string
           description: >-
             `STARTED` until the Hold for the Invoice amount is placed (`HOLD_PLACED`), then `CARD_ISSUED` once the
-            Single-Use Card is issued. `FAILED` when a step fails for good: the Invoice stays approved and unpaid, and
-            a Hold already placed is released.
-          enum: [STARTED, HOLD_PLACED, CARD_ISSUED, FAILED]
+            Single-Use Card is issued, then `COMPLETED` once the Supplier has received the Remittance Advice. `FAILED`
+            when a step fails for good: the Invoice stays approved and unpaid, a card already issued is cancelled and a
+            Hold already placed is released.
+          enum: [STARTED, HOLD_PLACED, CARD_ISSUED, COMPLETED, FAILED]
         failureReason:
           type: string
           description: Why the Payment failed; present only when `state` is `FAILED`.
@@ -443,6 +477,57 @@ components:
           type: string
           format: date-time
           description: When the card stops accepting Charges, 30 days after it was issued.
+    RemittanceAdvice:
+      type: object
+      description: >-
+        What the platform POSTs to a Supplier's `remittanceAddress` to pay one of its Invoices, with the advice's `id` in
+        an `Idempotency-Key` header. Any 2xx answer acknowledges it. Delivery is at least once: a Supplier may receive
+        the same advice again, under the same key and with the same link, and should keep only the first.
+      required: [id, invoiceId, invoiceNumber, amount, cardLink, cardLinkExpiresAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        invoiceId:
+          type: string
+          format: uuid
+        invoiceNumber:
+          type: string
+          description: The Supplier's number for the Invoice.
+        amount:
+          $ref: '#/components/schemas/Money'
+        cardLink:
+          type: string
+          format: uri
+          description: >-
+            Shows the Single-Use Card that pays the Invoice, once (`GET`, no sign-in). Anyone holding the link can open
+            it, so keep it as secret as the card itself.
+        cardLinkExpiresAt:
+          type: string
+          format: date-time
+    SingleUseCardDetails:
+      type: object
+      description: >-
+        What a Supplier needs to charge the Single-Use Card that pays its Invoice. Shown once, through the card link of
+        the Remittance Advice.
+      required: [pan, securityCode, expiresAt, amount, invoiceNumber]
+      properties:
+        pan:
+          type: string
+          description: The card's full number.
+          pattern: '^\d{16}$'
+        securityCode:
+          type: string
+          pattern: '^\d{3}$'
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the card stops accepting Charges.
+        amount:
+          $ref: '#/components/schemas/Money'
+        invoiceNumber:
+          type: string
+          description: The Supplier's number for the Invoice the card pays.
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.
