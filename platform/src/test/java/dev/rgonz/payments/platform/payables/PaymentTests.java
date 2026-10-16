@@ -25,12 +25,12 @@ class PaymentTests {
   }
 
   @Test
-  void placingTheHoldLeavesNothingDueUntilCardIssuanceArrives() {
-    var placed = started().stepFailed(NOW).holdPlaced();
+  void placingTheHoldMakesIssuingTheCardDueAtOnce() {
+    var placed = started().stepFailed(NOW).holdPlaced(NOW);
 
     assertThat(placed.state()).isEqualTo(Payment.State.HOLD_PLACED);
     assertThat(placed.attempts()).isZero();
-    assertThat(placed.nextAttemptAt()).isNull();
+    assertThat(placed.nextAttemptAt()).isEqualTo(NOW);
   }
 
   @Test

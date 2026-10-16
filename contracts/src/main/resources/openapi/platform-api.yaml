@@ -416,12 +416,33 @@ components:
         state:
           type: string
           description: >-
-            `STARTED` until the Hold for the Invoice amount is placed (`HOLD_PLACED`), or until the Payment fails
-            (`FAILED`), leaving the Invoice approved and unpaid.
-          enum: [STARTED, HOLD_PLACED, FAILED]
+            `STARTED` until the Hold for the Invoice amount is placed (`HOLD_PLACED`), then `CARD_ISSUED` once the
+            Single-Use Card is issued. `FAILED` when a step fails for good: the Invoice stays approved and unpaid, and
+            a Hold already placed is released.
+          enum: [STARTED, HOLD_PLACED, CARD_ISSUED, FAILED]
         failureReason:
           type: string
           description: Why the Payment failed; present only when `state` is `FAILED`.
+        card:
+          $ref: '#/components/schemas/SingleUseCard'
+    SingleUseCard:
+      type: object
+      description: >-
+        The Single-Use Card issued to pay the Invoice, valid only for its Supplier and amount. Present once the card is
+        issued. Shows only what identifies the card without revealing it: never the PAN or security code.
+      required: [cardToken, lastFour, expiresAt]
+      properties:
+        cardToken:
+          type: string
+          description: The opaque Card Token that stands in for the card's PAN.
+        lastFour:
+          type: string
+          description: The last four digits of the card's PAN.
+          pattern: '^\d{4}$'
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the card stops accepting Charges, 30 days after it was issued.
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.

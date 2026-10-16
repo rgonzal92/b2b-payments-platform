@@ -7,7 +7,10 @@ import dev.rgonz.payments.contracts.server.model.InvoiceRequestDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceSupplierDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
 import dev.rgonz.payments.contracts.server.model.PaymentDto;
+import dev.rgonz.payments.contracts.server.model.SingleUseCardDto;
 import dev.rgonz.payments.platform.buyers.BuyerDirectory;
+import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.SupplierOnInvoice;
@@ -36,6 +39,7 @@ class InvoicesController implements InvoicesApi {
   private final Approvals approvals;
   private final Decisions decisions;
   private final Payments payments;
+  private final Cards cards;
 
   InvoicesController(
       Invoices invoices,
@@ -44,7 +48,8 @@ class InvoicesController implements InvoicesApi {
       BuyerDirectory buyers,
       Approvals approvals,
       Decisions decisions,
-      Payments payments) {
+      Payments payments,
+      Cards cards) {
     this.invoices = invoices;
     this.suppliers = suppliers;
     this.idempotentRequests = idempotentRequests;
@@ -52,6 +57,7 @@ class InvoicesController implements InvoicesApi {
     this.approvals = approvals;
     this.decisions = decisions;
     this.payments = payments;
+    this.cards = cards;
   }
 
   @Override
@@ -125,11 +131,9 @@ class InvoicesController implements InvoicesApi {
             .find(buyerId, invoiceId)
             .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No such Invoice."));
     var relationship = suppliers.find(buyerId, invoice.supplierId()).orElseThrow();
+    var payment = payments.findForInvoice(invoiceId);
     return toDto(
-        invoice,
-        relationship,
-        decisions.of(invoiceId),
-        payments.findForInvoice(invoiceId).orElse(null));
+        invoice, relationship, decisions.of(invoiceId), payment.map(this::toDto).orElse(null));
   }
 
   // The Buyer always comes from the token, never from the request, so one Buyer can't act as
@@ -173,7 +177,7 @@ class InvoicesController implements InvoicesApi {
       Invoice invoice,
       SupplierRelationship relationship,
       List<Decision> decisions,
-      Payment payment) {
+      PaymentDto payment) {
     var supplier = relationship.supplier();
     return new InvoiceDto()
         .id(invoice.id())
@@ -193,13 +197,22 @@ class InvoicesController implements InvoicesApi {
                     MoneyDto.CurrencyEnum.fromValue(invoice.amount().currency().getCurrencyCode())))
         .dueDate(invoice.dueDate())
         .decisions(decisions.stream().map(InvoicesController::toDto).toList())
-        .payment(payment == null ? null : toDto(payment));
+        .payment(payment);
   }
 
-  private static PaymentDto toDto(Payment payment) {
+  private PaymentDto toDto(Payment payment) {
     return new PaymentDto()
         .state(PaymentDto.StateEnum.fromValue(payment.state().name()))
-        .failureReason(payment.failureReason());
+        .failureReason(payment.failureReason())
+        .card(cards.findForPayment(payment.id()).map(InvoicesController::toDto).orElse(null));
+  }
+
+  // What identifies the card to the Buyer without revealing it; the PAN never leaves the vault.
+  private static SingleUseCardDto toDto(SingleUseCard card) {
+    return new SingleUseCardDto()
+        .cardToken(card.cardToken())
+        .lastFour(card.lastFour())
+        .expiresAt(card.expiresAt().atOffset(ZoneOffset.UTC));
   }
 
   private static DecisionDto toDto(Decision decision) {
