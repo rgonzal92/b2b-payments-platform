@@ -6,6 +6,9 @@ import com.jayway.jsonpath.JsonPath;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
 import dev.rgonz.payments.platform.PlatformApplication;
 import dev.rgonz.payments.simulator.SimulatorApplication;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -13,8 +16,11 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.json.JsonContent;
 import org.springframework.test.util.TestSocketUtils;
 import org.springframework.web.client.RestClient;
@@ -29,7 +35,8 @@ import org.testcontainers.utility.DockerImageName;
  * has Acme's ERP submit an Invoice from Globex, two of Acme's Approvers approve it, the platform's
  * worker pays it with a Single-Use Card, Globex opens the card through its Remittance Advice link,
  * and Globex charges it: the simulator's Acquirer and Network ask the platform over gRPC, signed in
- * as the network client, and the platform approves the Charge.
+ * as the network client, and the platform approves the Charge. Then the demo's second call has the
+ * Network write its Clearing File into the platform's drop folder and Issuer staff import it.
  */
 @Testcontainers
 class CorePathEndToEndTests {
@@ -53,13 +60,18 @@ class CorePathEndToEndTests {
           .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
+  // The Issuer's drop folder: the simulator's Network writes its Clearing Files here and the
+  // platform imports them from here.
+  @TempDir static Path dropFolder;
+
   private static ConfigurableApplicationContext platform;
   private static ConfigurableApplicationContext simulator;
+  private static int platformPort;
   private static int simulatorPort;
 
   @BeforeAll
   static void startBothApps() {
-    var platformPort = TestSocketUtils.findAvailableTcpPort();
+    platformPort = TestSocketUtils.findAvailableTcpPort();
     // The Network link's gRPC server, off the fixed 9090 another build may be using.
     var platformGrpcPort = TestSocketUtils.findAvailableTcpPort();
     simulatorPort = TestSocketUtils.findAvailableTcpPort();
@@ -80,8 +92,9 @@ class CorePathEndToEndTests {
             "vault.encryption-key=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
             "vault.hash-key=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
             "remittance.link-key=AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
-            // Its drop folder defaults to the repository's var/clearing, where a developer's own
-            // Clearing Files may wait: this run doesn't check it.
+            // Not the repository's var/clearing, where a developer's own Clearing Files may wait.
+            "clearing.drop-folder=" + dropFolder,
+            // The demo has Issuer staff import its file at once.
             "clearing.drop-folder-check.enabled=false");
     // Returns once AcmeSeeder has created Acme and its Credit Line through the platform.
     simulator =
@@ -103,6 +116,10 @@ class CorePathEndToEndTests {
             "spring.security.oauth2.client.registration.acme-approver-2.client-secret="
                 + CLIENT_SECRET,
             "spring.security.oauth2.client.registration.network.client-secret=" + CLIENT_SECRET,
+            // The Network writes its Clearing File into the platform's drop folder, only when the
+            // demo asks: not at midnight.
+            "simulator.network.drop-folder=" + dropFolder,
+            "simulator.network.clearing-file-cron=-",
             // The platform's dependencies are on this classpath too: the simulator has no database.
             "spring.autoconfigure.exclude="
                 + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
@@ -156,7 +173,8 @@ class CorePathEndToEndTests {
   @Test
   // The demo itself waits up to 30 seconds for the worker to pay the Invoice.
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
-  void theDemoInvoiceIsApprovedTwicePaidAndGlobexsChargeOnItsCardIsApproved() {
+  void theDemoInvoiceIsPaidGlobexsChargeApprovedAndItsClearingImportedFromTheNetworksFile()
+      throws IOException {
     var summary =
         RestClient.create()
             .post()
@@ -180,5 +198,81 @@ class CorePathEndToEndTests {
     assertThat(json).extractingPath("$.globexReceived.invoiceNumber").isEqualTo(invoiceNumber);
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
     assertThat(json).extractingPath("$.authorization.authorizationCode").asString().hasSize(6);
+    // Until the Charge clears, its Hold reserves Acme's credit.
+    assertThat(acmesCredit())
+        .isLenientlyEqualTo(
+            """
+            {
+              "openHolds": {"minorUnits": 1240000, "currency": "USD"},
+              "buyerReceivable": {"minorUnits": 0, "currency": "USD"},
+              "availableCredit": {"minorUnits": 8760000, "currency": "USD"}
+            }
+            """);
+
+    var imported =
+        RestClient.create()
+            .post()
+            .uri("http://localhost:{port}/demo/clearing-file", simulatorPort)
+            .retrieve()
+            .body(String.class);
+
+    // The Charge's Clearing matched its Authorization, which moves the card to CLEARED, and the
+    // Network's trailer settles exactly what was posted.
+    assertThat(new JsonContent(imported))
+        .isLenientlyEqualTo(
+            """
+            {
+              "status": "IMPORTED",
+              "recordCount": 1,
+              "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
+                           "unknownCard": 0, "otherCurrency": 0,
+                           "againstReversedAuthorization": 0, "afterHoldExpired": 0,
+                           "authorizationAlreadyCleared": 0},
+              "settlement": {
+                "amount": {"minorUnits": 1240000, "currency": "USD"},
+                "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
+                "matched": true
+              }
+            }
+            """);
+    // The Hold became posted spend: Acme owes the cleared amount, and its Available Credit counts
+    // that instead of the Hold.
+    assertThat(acmesCredit())
+        .isLenientlyEqualTo(
+            """
+            {
+              "openHolds": {"minorUnits": 0, "currency": "USD"},
+              "buyerReceivable": {"minorUnits": 1240000, "currency": "USD"},
+              "availableCredit": {"minorUnits": 8760000, "currency": "USD"}
+            }
+            """);
+    // The platform deletes a file once it has imported it: the shared drop folder is empty again.
+    try (var left = Files.walk(dropFolder)) {
+      assertThat(left.filter(Files::isRegularFile)).isEmpty();
+    }
+  }
+
+  // Acme's credit, as Issuer staff read it: signed in through Keycloak as the simulator's
+  // issuer-admin client.
+  private static JsonContent acmesCredit() {
+    String tokenResponse =
+        RestClient.create()
+            .post()
+            .uri(keycloak.getAuthServerUrl() + "/realms/payments/protocol/openid-connect/token")
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .body(
+                "grant_type=client_credentials&client_id=simulator-issuer-admin&client_secret="
+                    + CLIENT_SECRET)
+            .retrieve()
+            .body(String.class);
+    String accessToken = JsonPath.read(tokenResponse, "$.access_token");
+    var acme = simulator.getEnvironment().getRequiredProperty("simulator.acme.buyer-id");
+    return new JsonContent(
+        RestClient.create()
+            .get()
+            .uri("http://localhost:{port}/v1/buyers/{buyerId}/credit", platformPort, acme)
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+            .retrieve()
+            .body(String.class));
   }
 }

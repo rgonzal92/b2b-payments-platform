@@ -4,8 +4,10 @@ import com.google.protobuf.Timestamp;
 import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.contracts.network.AuthorizationResponse;
 import dev.rgonz.payments.simulator.GlobexSupplier.ReceivedCard;
+import dev.rgonz.payments.simulator.NetworkClearingFiles.Clearing;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -30,16 +32,25 @@ class GlobexAcquirer {
   private static final Logger log = LoggerFactory.getLogger(GlobexAcquirer.class);
 
   private final Network network;
+  private final NetworkClearingFiles clearingFiles;
   private final String acceptorId;
   private final SecureRandom random = new SecureRandom();
   private final AtomicInteger traceNumbers = new AtomicInteger();
 
-  GlobexAcquirer(Network network, @Value("${simulator.globex.acceptor-id}") String acceptorId) {
+  GlobexAcquirer(
+      Network network,
+      NetworkClearingFiles clearingFiles,
+      @Value("${simulator.globex.acceptor-id}") String acceptorId) {
     this.network = network;
+    this.clearingFiles = clearingFiles;
     this.acceptorId = acceptorId;
   }
 
-  /** Charges the card for its full amount and returns the Issuer's answer. */
+  /**
+   * Charges the card for its full amount and returns the Issuer's answer. An approved Charge is
+   * submitted for Clearing at once, so it goes to the Issuer in the Network's next Clearing File; a
+   * declined one, the Network's own {@code 91} on a Charge it reversed included, never is.
+   */
   Authorization charge(ReceivedCard card) {
     var now = Instant.now();
     var request =
@@ -59,6 +70,16 @@ class GlobexAcquirer {
             .setSecurityCode(card.securityCode())
             .build();
     var authorization = Authorization.of(network.authorize(request));
+    if (authorization.approved()) {
+      clearingFiles.submit(
+          new Clearing(
+              card.pan(),
+              card.amount(),
+              request.getRetrievalReferenceNumber(),
+              authorization.authorizationCode(),
+              acceptorId,
+              LocalDate.ofInstant(now, ZoneOffset.UTC)));
+    }
     log.info(
         "Globex's Charge {} on the card ending {} for {}: response code {}",
         request.getRetrievalReferenceNumber(),
