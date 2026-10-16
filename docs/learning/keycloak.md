@@ -8,10 +8,10 @@ Three kinds of caller reach the platform: Issuer staff, people at many different
 
 - **A realm is one isolated set of users, clients and roles.** This project's is `payments`, defined in `keycloak/payments-realm.json` and imported when Keycloak starts.
 - **A client is an application that asks for tokens.** A machine client like `simulator-issuer-admin` uses the client-credentials grant: it sends its ID and secret and gets a token for itself, with no person involved. Its roles come from its service-account user.
-- **Realm roles** (`approver`, `erp`, `issuer-admin`) say what a caller may do. A protocol mapper copies them into a flat `roles` claim, which Spring Boot turns into `ROLE_` authorities (`authorities-claim-name=roles`).
+- **Realm roles** (`approver`, `erp`, `issuer-admin`, `network`) say what a caller may do. A protocol mapper copies them into a flat `roles` claim, which Spring Boot turns into `ROLE_` authorities (`authorities-claim-name=roles`).
 - **A Buyer-side client carries its Buyer in a `buyer_id` claim.** A hardcoded-claim mapper on the client (`acme-erp`, `acme-approver-1`, `acme-approver-2`) writes the Buyer's fixed ID into every token, and the platform takes the Buyer only from there, never from a request body.
 - **The token's subject (`sub`) says who acted.** It is the user's ID in the realm, which never changes; `preferred_username` is the readable name. A client-credentials token's subject is the client's service-account user, named `service-account-<client>`, so each demo Approver is a client of its own. The platform records approvals by subject and keeps the name beside it.
-- **The platform is a resource server.** It checks each token's signature against Keycloak's published keys and its `iss` against `http://localhost:8180/realms/payments`; it never calls Keycloak per request.
+- **The platform is a resource server.** It checks each token's signature against Keycloak's published keys and its `iss` against `http://localhost:8180/realms/payments`; it never calls Keycloak per request. The Network's gRPC calls carry their token in `authorization` metadata and are checked the same way ([`grpc.md`](grpc.md)).
 
 ## Gotchas we hit
 
