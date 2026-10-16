@@ -51,6 +51,78 @@ paths:
           $ref: '#/components/responses/Problem'
         '409':
           $ref: '#/components/responses/Problem'
+  /v1/buyers/{buyerId}/credit-line:
+    put:
+      tags: [Credit]
+      operationId: putCreditLine
+      summary: Set a Buyer's Credit Line
+      description: >-
+        Issuer staff only (role `issuer-admin`). Sets the most the Buyer may owe the Issuer at once,
+        replacing any Credit Line it already has.
+      parameters:
+        - name: buyerId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Money'
+      responses:
+        '200':
+          description: The Buyer's Credit Line was replaced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Money'
+        '201':
+          description: The Buyer had no Credit Line; now it has this one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Money'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /v1/buyers/{buyerId}/credit:
+    get:
+      tags: [Credit]
+      operationId: getCredit
+      summary: Read a Buyer's Credit Line and Available Credit
+      description: >-
+        Issuer staff only (role `issuer-admin`). A Buyer whose Credit Line was never set answers `404`,
+        like an unknown Buyer.
+      parameters:
+        - name: buyerId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The Buyer's Credit Line and Available Credit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Credit'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
   /v1/invoices:
     post:
       tags: [Invoices]
@@ -168,6 +240,16 @@ components:
         name:
           type: string
         approvalThreshold:
+          $ref: '#/components/schemas/Money'
+    Credit:
+      type: object
+      description: >-
+        A Buyer's Credit Line, and its Available Credit: the Credit Line minus open Holds and posted spend.
+      required: [creditLine, availableCredit]
+      properties:
+        creditLine:
+          $ref: '#/components/schemas/Money'
+        availableCredit:
           $ref: '#/components/schemas/Money'
     InvoiceSupplier:
       type: object

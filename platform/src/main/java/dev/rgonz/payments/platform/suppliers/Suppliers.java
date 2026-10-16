@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform.suppliers;
 
+import dev.rgonz.payments.platform.shared.BuyerId;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -21,7 +22,7 @@ public class Suppliers {
    * tax ID) and the Relationship if they don't exist yet. Existing ones are reused unchanged.
    */
   @Transactional
-  public SupplierRelationship relate(UUID buyerId, SupplierOnInvoice named) {
+  public SupplierRelationship relate(BuyerId buyerId, SupplierOnInvoice named) {
     // "On conflict do nothing" makes concurrent first Invoices safe: one insert wins, the others
     // wait for it and then read its row.
     jdbc.sql(
@@ -46,7 +47,7 @@ public class Suppliers {
             values (:buyerId, :supplierId, :buyerReference)
             on conflict (buyer_id, supplier_id) do nothing
             """)
-        .param("buyerId", buyerId)
+        .param("buyerId", buyerId.value())
         .param("supplierId", supplierId)
         .param("buyerReference", named.buyerReference())
         .update();
@@ -54,7 +55,7 @@ public class Suppliers {
   }
 
   /** The Buyer's Supplier Relationship to this Supplier, if it has one. */
-  public Optional<SupplierRelationship> find(UUID buyerId, UUID supplierId) {
+  public Optional<SupplierRelationship> find(BuyerId buyerId, UUID supplierId) {
     return jdbc.sql(
             """
             select s.id, s.tax_id, s.name, s.remittance_address, r.buyer_reference
@@ -63,7 +64,7 @@ public class Suppliers {
              where r.buyer_id = :buyerId
                and r.supplier_id = :supplierId
             """)
-        .param("buyerId", buyerId)
+        .param("buyerId", buyerId.value())
         .param("supplierId", supplierId)
         .query(
             (row, rowNumber) ->

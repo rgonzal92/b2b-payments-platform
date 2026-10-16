@@ -5,7 +5,8 @@ import dev.rgonz.payments.contracts.server.model.InvoiceDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceRequestDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceSupplierDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
-import dev.rgonz.payments.platform.buyers.Buyers;
+import dev.rgonz.payments.platform.buyers.BuyerDirectory;
+import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.SupplierOnInvoice;
 import dev.rgonz.payments.platform.suppliers.SupplierRelationship;
@@ -27,13 +28,13 @@ class InvoicesController implements InvoicesApi {
   private final Invoices invoices;
   private final Suppliers suppliers;
   private final IdempotentRequests idempotentRequests;
-  private final Buyers buyers;
+  private final BuyerDirectory buyers;
 
   InvoicesController(
       Invoices invoices,
       Suppliers suppliers,
       IdempotentRequests idempotentRequests,
-      Buyers buyers) {
+      BuyerDirectory buyers) {
     this.invoices = invoices;
     this.suppliers = suppliers;
     this.idempotentRequests = idempotentRequests;
@@ -54,7 +55,7 @@ class InvoicesController implements InvoicesApi {
         buyerId, idempotencyKey, request, InvoiceDto.class, () -> receive(buyerId, request));
   }
 
-  private ResponseEntity<InvoiceDto> receive(UUID buyerId, InvoiceRequestDto request) {
+  private ResponseEntity<InvoiceDto> receive(BuyerId buyerId, InvoiceRequestDto request) {
     var supplier = request.getSupplier();
     var relationship =
         suppliers.relate(
@@ -96,12 +97,12 @@ class InvoicesController implements InvoicesApi {
 
   // The Buyer always comes from the token, never from the request, so one Buyer can't act as
   // another.
-  private UUID currentBuyer() {
+  private BuyerId currentBuyer() {
     if (SecurityContextHolder.getContext().getAuthentication()
             instanceof JwtAuthenticationToken token
         && token.getToken().getClaimAsString("buyer_id") instanceof String claim) {
       try {
-        var buyerId = UUID.fromString(claim);
+        var buyerId = new BuyerId(UUID.fromString(claim));
         if (buyers.exists(buyerId)) {
           return buyerId;
         }

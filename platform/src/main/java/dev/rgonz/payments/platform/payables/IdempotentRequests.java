@@ -1,8 +1,8 @@
 package dev.rgonz.payments.platform.payables;
 
+import dev.rgonz.payments.platform.shared.BuyerId;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.UUID;
 import java.util.function.Supplier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -34,7 +34,7 @@ class IdempotentRequests {
    */
   @Transactional
   <T> ResponseEntity<T> once(
-      UUID buyerId,
+      BuyerId buyerId,
       String key,
       Object request,
       Class<T> responseType,
@@ -48,7 +48,7 @@ class IdempotentRequests {
                     values (:buyerId, :key, :hash)
                     on conflict (buyer_id, idempotency_key) do nothing
                     """)
-                .param("buyerId", buyerId)
+                .param("buyerId", buyerId.value())
                 .param("key", key)
                 .param("hash", requestHash)
                 .update()
@@ -63,7 +63,7 @@ class IdempotentRequests {
               """)
           .param("status", response.getStatusCode().value())
           .param("body", json.writeValueAsString(response.getBody()))
-          .param("buyerId", buyerId)
+          .param("buyerId", buyerId.value())
           .param("key", key)
           .update();
       return response;
@@ -75,7 +75,7 @@ class IdempotentRequests {
                   from payables.idempotent_request
                  where buyer_id = :buyerId and idempotency_key = :key
                 """)
-            .param("buyerId", buyerId)
+            .param("buyerId", buyerId.value())
             .param("key", key)
             .query(
                 (row, rowNumber) ->

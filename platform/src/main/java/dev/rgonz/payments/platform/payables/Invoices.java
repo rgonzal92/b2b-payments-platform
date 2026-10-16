@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform.payables;
 
+import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.time.LocalDate;
 import java.util.Currency;
@@ -30,7 +31,7 @@ class Invoices {
                 on conflict (buyer_id, supplier_id, invoice_number) do nothing
                 """)
             .param("id", invoice.id())
-            .param("buyerId", invoice.buyerId())
+            .param("buyerId", invoice.buyerId().value())
             .param("supplierId", invoice.supplierId())
             .param("invoiceNumber", invoice.invoiceNumber())
             .param("amount", invoice.amount().minorUnits())
@@ -42,7 +43,7 @@ class Invoices {
   }
 
   /** The Buyer's Invoice with this ID; empty when it doesn't exist or is another Buyer's. */
-  Optional<Invoice> find(UUID buyerId, UUID id) {
+  Optional<Invoice> find(BuyerId buyerId, UUID id) {
     return jdbc.sql(
             """
             select id, buyer_id, supplier_id, invoice_number, amount_minor, currency, due_date, status
@@ -51,12 +52,12 @@ class Invoices {
                and buyer_id = :buyerId
             """)
         .param("id", id)
-        .param("buyerId", buyerId)
+        .param("buyerId", buyerId.value())
         .query(
             (row, rowNumber) ->
                 new Invoice(
                     row.getObject("id", UUID.class),
-                    row.getObject("buyer_id", UUID.class),
+                    new BuyerId(row.getObject("buyer_id", UUID.class)),
                     row.getObject("supplier_id", UUID.class),
                     row.getString("invoice_number"),
                     new Money(
