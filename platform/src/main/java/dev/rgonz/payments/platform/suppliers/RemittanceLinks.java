@@ -10,7 +10,6 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.Currency;
-import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Propagation;
@@ -71,10 +70,11 @@ class RemittanceLinks {
 
   /**
    * Uses up the link with this token and returns its card's details, fetched from the vault now and
-   * never stored here; empty when the link can't be opened.
+   * never stored here.
    */
   @Transactional
-  public Optional<OpenedLink> open(String token) {
+  public Opening open(String token) {
+    var tokenHash = LinkTokens.hash(token);
     // Reads the link and marks it used in one statement: of two opens at once, one updates the row
     // and the other waits for its lock, then finds it used.
     var opened =
@@ -87,7 +87,7 @@ class RemittanceLinks {
                    and link_expires_at > now()
                 returning invoice_number, amount_minor, currency, card_token
                 """)
-            .param("tokenHash", LinkTokens.hash(token))
+            .param("tokenHash", tokenHash)
             .query(
                 (row, rowNumber) ->
                     new UsedLink(
@@ -98,17 +98,38 @@ class RemittanceLinks {
                         row.getString("card_token")))
             .optional();
     if (opened.isEmpty()) {
-      return Optional.empty();
+      return exists(tokenHash) ? new Opening.Gone() : new Opening.Unknown();
     }
     var used = opened.get();
     var card = cards.find(used.cardToken()).orElseThrow();
-    return Optional.of(
-        new OpenedLink(
-            used.invoiceNumber(), used.amount(), card, vault.cardDetails(card.cardToken())));
+    if (card.status() == SingleUseCard.Status.CANCELLED) {
+      return new Opening.Gone();
+    }
+    return new Opening.Opened(
+        used.invoiceNumber(), used.amount(), card, vault.cardDetails(card.cardToken()));
   }
 
-  /** What an opened link shows: the card's details come from the vault, never from here. */
-  record OpenedLink(String invoiceNumber, Money amount, SingleUseCard card, CardDetails details) {}
+  private boolean exists(byte[] tokenHash) {
+    return jdbc.sql(
+            "select exists (select 1 from suppliers.remittance_advice where link_token_hash = :h)")
+        .param("h", tokenHash)
+        .query(Boolean.class)
+        .single();
+  }
+
+  /** What opening a link found. */
+  sealed interface Opening {
+
+    /** An unused link within its 7 days: the card's details, from the vault, shown this once. */
+    record Opened(String invoiceNumber, Money amount, SingleUseCard card, CardDetails details)
+        implements Opening {}
+
+    /** The link was opened before, has expired, or its card was cancelled. */
+    record Gone() implements Opening {}
+
+    /** No link has this token. */
+    record Unknown() implements Opening {}
+  }
 
   private record UsedLink(String invoiceNumber, Money amount, String cardToken) {}
 

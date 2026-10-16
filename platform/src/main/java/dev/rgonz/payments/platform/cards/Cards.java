@@ -23,4 +23,11 @@ public interface Cards {
 
   /** The card with this Card Token, if there is one. */
   Optional<SingleUseCard> find(String cardToken);
+
+  /**
+   * Cancels the card for good, so it accepts no Charge and its details are shown to no one.
+   * Cancelling it again, or a card that doesn't exist, changes nothing. Joins the caller's
+   * transaction.
+   */
+  void cancel(String cardToken);
 }

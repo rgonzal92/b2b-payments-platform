@@ -101,6 +101,14 @@ class SingleUseCards implements Cards {
         .optional();
   }
 
+  @Override
+  public void cancel(String cardToken) {
+    jdbc.sql("update cards.card set status = :status where card_token = :cardToken")
+        .param("status", SingleUseCard.Status.CANCELLED.name())
+        .param("cardToken", cardToken)
+        .update();
+  }
+
   // Random and opaque: nothing about the card, its PAN included, can be worked out from it.
   private String newCardToken() {
     var bytes = new byte[CARD_TOKEN_BYTES];

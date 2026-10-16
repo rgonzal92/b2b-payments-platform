@@ -1,6 +1,8 @@
 package dev.rgonz.payments.platform.suppliers;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
@@ -10,9 +12,15 @@ import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Currency;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +29,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.mock.http.client.MockClientHttpRequest;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 
@@ -42,6 +51,7 @@ class RemittanceLinksTests {
   @Autowired Suppliers suppliers;
   @Autowired Cards cards;
   @Autowired RemittanceAdvices remittanceAdvices;
+  @MockitoSpyBean RemittanceLinks links;
 
   @Test
   void theFirstOpenShowsTheCardsDetailsAndKeepsThemOutOfCaches() throws Exception {
@@ -66,6 +76,73 @@ class RemittanceLinksTests {
     assertThat(Instant.parse(JsonPath.read(body, "$.expiresAt"))).isEqualTo(card.expiresAt());
   }
 
+  @Test
+  void aSecondOpenIsGone() {
+    var link = deliveredLink(issuedCard(), Instant.now());
+    assertThat(mvc.get().uri(link).exchange()).hasStatusOk();
+
+    var second = mvc.get().uri(link).exchange();
+
+    assertThat(second).hasStatus(410);
+    assertThat(second).bodyJson().extractingPath("$.status").isEqualTo(410);
+    assertThat(second).bodyText().doesNotContainPattern("990000\\d{10}");
+  }
+
+  @Test
+  void aTokenThatMatchesNoLinkIsNotFound() {
+    var unknown = mvc.get().uri("/v1/remittance-links/{token}", "A".repeat(43)).exchange();
+
+    assertThat(unknown).hasStatus(404);
+    assertThat(unknown).bodyJson().extractingPath("$.status").isEqualTo(404);
+  }
+
+  @Test
+  void aLinkOpensForSevenDaysAfterItsAdviceAndIsGoneAfterThat() {
+    var sevenDaysAgo = Instant.now().minus(Duration.ofDays(7));
+    var stillValid = deliveredLink(issuedCard(), sevenDaysAgo.plus(Duration.ofMinutes(1)));
+    var expired = deliveredLink(issuedCard(), sevenDaysAgo.minus(Duration.ofMinutes(1)));
+
+    assertThat(mvc.get().uri(stillValid).exchange()).hasStatusOk();
+    assertThat(mvc.get().uri(expired).exchange()).hasStatus(410);
+  }
+
+  @Test
+  void theLinkOfACancelledCardIsGone() {
+    var card = issuedCard();
+    var link = deliveredLink(card, Instant.now());
+
+    cards.cancel(card.cardToken());
+
+    assertThat(mvc.get().uri(link).exchange()).hasStatus(410);
+  }
+
+  @Test
+  void ofTwoOpensAtTheSameTimeExactlyOneShowsTheCard() throws Exception {
+    var link = deliveredLink(issuedCard(), Instant.now());
+    // Each open waits until the other arrives, so both reach the link at once.
+    var bothArrived = new CyclicBarrier(2);
+    doAnswer(
+            invocation -> {
+              bothArrived.await(10, TimeUnit.SECONDS);
+              return invocation.callRealMethod();
+            })
+        .when(links)
+        .open(any());
+
+    var statuses = new ArrayList<Integer>();
+    try (var opener = Executors.newFixedThreadPool(2)) {
+      var opens =
+          List.of(
+              opener.submit(() -> mvc.get().uri(link).exchange().getResponse().getStatus()),
+              opener.submit(() -> mvc.get().uri(link).exchange().getResponse().getStatus()));
+      for (var open : opens) {
+        statuses.add(open.get(30, TimeUnit.SECONDS));
+      }
+    }
+
+    assertThat(statuses).containsExactlyInAnyOrder(200, 410);
+  }
+
   // A new Supplier for each card, so tests don't share one.
   private SingleUseCard issuedCard() {
     var buyerId = new BuyerId(UUID.randomUUID());
@@ -81,6 +158,9 @@ class RemittanceLinksTests {
   // Delivers the card's Remittance Advice as of now and returns the link the Supplier received.
   private String deliveredLink(SingleUseCard card, Instant now) {
     var link = new AtomicReference<String>();
+    // The stub takes no new expectations once it has served a request, so each delivery starts it
+    // afresh.
+    supplierAddress.reset();
     supplierAddress
         .expect(requestTo(GLOBEX))
         .andExpect(

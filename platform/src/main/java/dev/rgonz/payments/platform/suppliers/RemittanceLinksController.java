@@ -3,6 +3,7 @@ package dev.rgonz.payments.platform.suppliers;
 import dev.rgonz.payments.contracts.server.RemittanceLinksApi;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
 import dev.rgonz.payments.contracts.server.model.SingleUseCardDetailsDto;
+import dev.rgonz.payments.platform.suppliers.RemittanceLinks.Opening;
 import java.time.ZoneOffset;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -26,14 +27,17 @@ class RemittanceLinksController implements RemittanceLinksApi {
 
   @Override
   public ResponseEntity<SingleUseCardDetailsDto> openRemittanceLink(String token) {
-    var opened =
-        links
-            .open(token)
-            .orElseThrow(
-                () ->
-                    problem(
-                        HttpStatus.GONE,
-                        "This link was already opened, has expired, or its card was cancelled."));
+    return switch (links.open(token)) {
+      case Opening.Opened opened -> cardDetails(opened);
+      case Opening.Gone _ ->
+          throw problem(
+              HttpStatus.GONE,
+              "This link was already opened, has expired, or its card was cancelled.");
+      case Opening.Unknown _ -> throw problem(HttpStatus.NOT_FOUND, "No such link.");
+    };
+  }
+
+  private static ResponseEntity<SingleUseCardDetailsDto> cardDetails(Opening.Opened opened) {
     var card = opened.card();
     var amount = opened.amount();
     // No cache, shared or private, may keep the card's details.
