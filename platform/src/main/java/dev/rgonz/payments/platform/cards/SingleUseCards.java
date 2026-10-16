@@ -13,6 +13,7 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.Currency;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -107,6 +108,34 @@ class SingleUseCards implements Cards {
         .param("status", SingleUseCard.Status.CANCELLED.name())
         .param("cardToken", cardToken)
         .update();
+  }
+
+  /**
+   * Marks up to {@code batchSize} {@code ACTIVE} cards whose expiry is at or before {@code now}
+   * {@code EXPIRED} and returns them, skipping cards other transactions have locked. Joins the
+   * caller's transaction, which keeps them locked until it ends.
+   */
+  List<SingleUseCard> expireDue(Instant now, int batchSize) {
+    // The literal 'ACTIVE' matches card_expires_at_idx's predicate; a bound parameter wouldn't,
+    // once PostgreSQL switches the prepared statement to a generic plan.
+    return jdbc.sql(
+            """
+            update cards.card
+               set status = 'EXPIRED'
+             where card_token in (select card_token
+                                    from cards.card
+                                   where status = 'ACTIVE'
+                                     and expires_at <= :now
+                                   order by expires_at
+                                   limit :batchSize
+                                     for update skip locked)
+            returning
+            """
+                + COLUMNS)
+        .param("now", now.atOffset(ZoneOffset.UTC))
+        .param("batchSize", batchSize)
+        .query(SingleUseCards::toCard)
+        .list();
   }
 
   // Random and opaque: nothing about the card, its PAN included, can be worked out from it.

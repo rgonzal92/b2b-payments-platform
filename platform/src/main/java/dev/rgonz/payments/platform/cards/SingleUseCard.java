@@ -22,6 +22,8 @@ public record SingleUseCard(
 
   public enum Status {
     ACTIVE,
-    CANCELLED
+    CANCELLED,
+    /** Its expiry came before anyone charged it; its Hold is released. */
+    EXPIRED
   }
 }

@@ -452,8 +452,9 @@ components:
             `STARTED` until the Hold for the Invoice amount is placed (`HOLD_PLACED`), then `CARD_ISSUED` once the
             Single-Use Card is issued, then `COMPLETED` once the Supplier has received the Remittance Advice. `FAILED`
             when a step fails for good: the Invoice stays approved and unpaid, a card already issued is cancelled and a
-            Hold already placed is released.
-          enum: [STARTED, HOLD_PLACED, CARD_ISSUED, COMPLETED, FAILED]
+            Hold already placed is released. `EXPIRED` when nobody charged the card before its expiry: its Hold is
+            released and the Invoice stays approved and unpaid.
+          enum: [STARTED, HOLD_PLACED, CARD_ISSUED, COMPLETED, FAILED, EXPIRED]
         failureReason:
           type: string
           description: Why the Payment failed; present only when `state` is `FAILED`.
