@@ -34,3 +34,6 @@ build/
 ### Local secrets ###
 .env
 .env.*
+
+### Clearing Files (they hold PANs) ###
+/var/
