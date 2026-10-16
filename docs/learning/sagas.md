@@ -27,7 +27,9 @@ worker, every second (PaymentWorkerSchedule → PaymentSaga.runDueSteps):
       select … from payables.payment
        where next_attempt_at <= now order by next_attempt_at
        limit 1 for update skip locked                 ── claim one due Payment
-      ledger.Holds.place(payment id, Buyer, amount)   ── the step
+      the step for its state:
+        STARTED      → ledger.Holds.place(payment id, Buyer, amount)
+        HOLD_PLACED  → cards.Cards.issueSingleUse(payment id, …)
       update payables.payment set state = …           ── its new state
     commit                                            ── step and state, together
 
@@ -35,6 +37,7 @@ worker, every second (PaymentWorkerSchedule → PaymentSaga.runDueSteps):
     begin
       update payables.payment set attempts = attempts + 1, next_attempt_at = now + backoff
        where id = … and state = <as claimed> and attempts = <as claimed>
+      fifth attempt at HOLD_PLACED → ledger.Holds.release(payment id)   ── compensation
     commit
 ```
 
@@ -43,6 +46,7 @@ worker, every second (PaymentWorkerSchedule → PaymentSaga.runDueSteps):
 - **One Payment per transaction.** A pass claims one Payment at a time, up to ten. Claiming ten in one transaction would let one Payment's failure roll back the other nine, and a transaction holding two Buyers' Credit Line locks could deadlock with a worker that took them in the opposite order.
 - **A technical error rolls back the whole step, then a new transaction counts the attempt.** The rollback undoes the Hold. The second transaction saves the failed attempt only if the row is still as it was claimed: in the moment between the two, another worker may have claimed the Payment and moved it on, and then its record wins. At worst that worker retries once before the backoff, which is harmless because the step is idempotent.
 - **Retries are columns, not framework behaviour.** After a technical error the step is due again 10, 20, 40 and 80 seconds later; the fifth failure fails the Payment for good. `Payment.stepFailed` holds that rule, and `PaymentTests` checks it without a database.
+- **Compensation rides on the final failed attempt (from #18).** The second step issues the Single-Use Card (`cards.Cards`). When it fails for the fifth time, the transaction that records that attempt also releases the Hold (`ledger.Holds.release`), so the Payment turns `FAILED` and its credit comes back in one commit. If that transaction fails too, nothing is recorded and the next pass tries the step again; releasing a Hold twice is harmless, so a repeat does no damage.
 - **Placing a Hold locks the Buyer's Credit Line row** (`select … for update`), then sums the open Holds and inserts the new one in the same transaction, so two Payments for one Buyer take turns on the last of its credit.
 - **Tests drive the worker by hand.** `payables.payment-worker.enabled=false` leaves the schedule out, and tests call `runDueSteps(now)` with a later `now` to skip a backoff instead of sleeping.
 
