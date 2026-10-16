@@ -14,6 +14,7 @@ record Payment(
     UUID id,
     UUID invoiceId,
     BuyerId buyerId,
+    UUID supplierId,
     Money amount,
     State state,
     String failureReason,
@@ -29,6 +30,7 @@ record Payment(
         UUID.randomUUID(),
         approved.invoiceId(),
         approved.buyerId(),
+        approved.supplierId(),
         approved.amount(),
         State.STARTED,
         null,
@@ -36,9 +38,14 @@ record Payment(
         now);
   }
 
-  /** The Hold is placed; card issuance (#18) will be the next step, so nothing is due yet. */
-  Payment holdPlaced() {
-    return moved(State.HOLD_PLACED, null, 0, null);
+  /** The Hold is placed, so issuing the card is due at once. */
+  Payment holdPlaced(Instant now) {
+    return moved(State.HOLD_PLACED, null, 0, now);
+  }
+
+  /** The card is issued; delivering the Remittance Advice (#19) will be the next step. */
+  Payment cardIssued() {
+    return moved(State.CARD_ISSUED, null, 0, null);
   }
 
   /**
@@ -57,7 +64,7 @@ record Payment(
     if (failed >= MAX_ATTEMPTS) {
       return moved(
           State.FAILED,
-          "Placing the Hold failed " + failed + " times for technical reasons.",
+          nextStep() + " failed " + failed + " times for technical reasons.",
           failed,
           null);
     }
@@ -65,14 +72,25 @@ record Payment(
     return moved(state, failureReason, failed, now.plus(backoff));
   }
 
+  // The step the Payment's state leads to, as a failure reason names it.
+  private String nextStep() {
+    return switch (state) {
+      case STARTED -> "Placing the Hold";
+      case HOLD_PLACED -> "Issuing the Single-Use Card";
+      case CARD_ISSUED, FAILED ->
+          throw new IllegalStateException("A " + state + " Payment has no step to fail.");
+    };
+  }
+
   private Payment moved(State state, String failureReason, int attempts, Instant nextAttemptAt) {
     return new Payment(
-        id, invoiceId, buyerId, amount, state, failureReason, attempts, nextAttemptAt);
+        id, invoiceId, buyerId, supplierId, amount, state, failureReason, attempts, nextAttemptAt);
   }
 
   enum State {
     STARTED,
     HOLD_PLACED,
+    CARD_ISSUED,
     FAILED
   }
 }

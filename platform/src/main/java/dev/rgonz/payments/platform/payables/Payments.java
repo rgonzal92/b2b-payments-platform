@@ -19,8 +19,8 @@ class Payments {
 
   private static final String COLUMNS =
       """
-      id, invoice_id, buyer_id, amount_minor, currency, state, failure_reason, attempts,
-      next_attempt_at
+      id, invoice_id, buyer_id, supplier_id, amount_minor, currency, state, failure_reason,
+      attempts, next_attempt_at
       """;
 
   private final JdbcClient jdbc;
@@ -37,13 +37,16 @@ class Payments {
     return jdbc.sql(
                 """
                 insert into payables.payment
-                       (id, invoice_id, buyer_id, amount_minor, currency, state, attempts, next_attempt_at)
-                values (:id, :invoiceId, :buyerId, :amount, :currency, :state, :attempts, :nextAttemptAt)
+                       (id, invoice_id, buyer_id, supplier_id, amount_minor, currency, state, attempts,
+                        next_attempt_at)
+                values (:id, :invoiceId, :buyerId, :supplierId, :amount, :currency, :state, :attempts,
+                        :nextAttemptAt)
                 on conflict (invoice_id) do nothing
                 """)
             .param("id", payment.id())
             .param("invoiceId", payment.invoiceId())
             .param("buyerId", payment.buyerId().value())
+            .param("supplierId", payment.supplierId())
             .param("amount", payment.amount().minorUnits())
             .param("currency", payment.amount().currency().getCurrencyCode())
             .param("state", payment.state().name())
@@ -68,35 +71,36 @@ class Payments {
                  limit 1
                    for update skip locked
                 """)
-        .param("now", toTimestamp(now))
+        .param("now", now.atOffset(ZoneOffset.UTC))
         .query(Payments::toPayment)
         .optional();
   }
 
   /**
    * Saves the Payment's new state, unless the row is no longer as it was when read: another worker
-   * has moved the Payment on since, and its state wins.
+   * has moved the Payment on since, and its state wins. True when it was saved.
    */
-  void update(Payment read, Payment next) {
-    jdbc.sql(
-            """
-            update payables.payment
-               set state = :state,
-                   failure_reason = :failureReason,
-                   attempts = :attempts,
-                   next_attempt_at = :nextAttemptAt
-             where id = :id
-               and state = :readState
-               and attempts = :readAttempts
-            """)
-        .param("state", next.state().name())
-        .param("failureReason", next.failureReason())
-        .param("attempts", next.attempts())
-        .param("nextAttemptAt", toTimestamp(next.nextAttemptAt()))
-        .param("id", read.id())
-        .param("readState", read.state().name())
-        .param("readAttempts", read.attempts())
-        .update();
+  boolean update(Payment read, Payment next) {
+    return jdbc.sql(
+                """
+                update payables.payment
+                   set state = :state,
+                       failure_reason = :failureReason,
+                       attempts = :attempts,
+                       next_attempt_at = :nextAttemptAt
+                 where id = :id
+                   and state = :readState
+                   and attempts = :readAttempts
+                """)
+            .param("state", next.state().name())
+            .param("failureReason", next.failureReason())
+            .param("attempts", next.attempts())
+            .param("nextAttemptAt", toTimestamp(next.nextAttemptAt()))
+            .param("id", read.id())
+            .param("readState", read.state().name())
+            .param("readAttempts", read.attempts())
+            .update()
+        == 1;
   }
 
   Optional<Payment> findForInvoice(UUID invoiceId) {
@@ -116,6 +120,7 @@ class Payments {
         row.getObject("id", UUID.class),
         row.getObject("invoice_id", UUID.class),
         new BuyerId(row.getObject("buyer_id", UUID.class)),
+        row.getObject("supplier_id", UUID.class),
         new Money(row.getLong("amount_minor"), Currency.getInstance(row.getString("currency"))),
         Payment.State.valueOf(row.getString("state")),
         row.getString("failure_reason"),

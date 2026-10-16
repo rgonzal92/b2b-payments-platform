@@ -13,14 +13,18 @@ import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.io.UnsupportedEncodingException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Currency;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
@@ -62,19 +66,76 @@ class PaymentSagaTests {
   @Autowired CompletedEventPublications completedEvents;
   @Autowired JdbcClient jdbc;
   @MockitoSpyBean Holds holds;
+  @MockitoSpyBean Cards cards;
 
   @Test
-  void anApprovedInvoicesPaymentPlacesAHoldForTheInvoiceAmount() throws Exception {
+  void anApprovedInvoicesPaymentPlacesAHoldThenIssuesASingleUseCardShownWithoutItsPan()
+      throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
+    var now = Instant.now();
 
-    saga.runDueSteps(Instant.now());
+    saga.runDueSteps(now);
 
-    assertThat(invoice(acme, invoiceId))
-        .bodyJson()
-        .extractingPath("$.payment.state")
-        .isEqualTo("HOLD_PLACED");
+    var body = invoice(acme, invoiceId).getResponse().getContentAsString();
+    assertThat(JsonPath.<String>read(body, "$.payment.state")).isEqualTo("CARD_ISSUED");
+    // Only what is safe to show: no PAN, no security code.
+    assertThat(JsonPath.<Map<String, Object>>read(body, "$.payment.card"))
+        .containsOnlyKeys("cardToken", "lastFour", "expiresAt");
+    // At least 128 random bits, base64url-encoded.
+    assertThat(JsonPath.<String>read(body, "$.payment.card.cardToken"))
+        .matches("[A-Za-z0-9_-]{22,}");
+    assertThat(JsonPath.<String>read(body, "$.payment.card.lastFour")).matches("\\d{4}");
+    assertThat(Instant.parse(JsonPath.read(body, "$.payment.card.expiresAt")))
+        .isEqualTo(now.plus(Duration.ofDays(30)).truncatedTo(ChronoUnit.MICROS));
+    assertThat(body).doesNotContainPattern("990000\\d{10}");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
+  }
+
+  @Test
+  void theCardIsLockedToTheInvoicesSupplierAndAmountAndIssuingItAgainReturnsTheSameCard()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    saga.runDueSteps(Instant.now());
+    var body = invoice(acme, invoiceId).getResponse().getContentAsString();
+    var paymentId = paymentIdOf(invoiceId);
+    var supplierId = UUID.fromString(JsonPath.read(body, "$.supplierId"));
+    var amount = new Money(1_240_000, Currency.getInstance("USD"));
+
+    var card = cards.findForPayment(paymentId).orElseThrow();
+    var again =
+        cards.issueSingleUse(
+            paymentId, new BuyerId(acme), supplierId, amount, Instant.now().plusSeconds(3_600));
+
+    assertThat(card.cardToken()).isEqualTo(JsonPath.read(body, "$.payment.card.cardToken"));
+    assertThat(card.buyerId()).isEqualTo(new BuyerId(acme));
+    assertThat(card.supplierId()).isEqualTo(supplierId);
+    assertThat(card.amount()).isEqualTo(amount);
+    assertThat(card.status()).isEqualTo(SingleUseCard.Status.ACTIVE);
+    assertThat(again).isEqualTo(card);
+  }
+
+  @Test
+  void noTableOutsideTheVaultHoldsAPan() throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    saga.runDueSteps(Instant.now());
+    String cardToken =
+        JsonPath.read(
+            invoice(acme, invoiceId).getResponse().getContentAsString(),
+            "$.payment.card.cardToken");
+
+    // A simple check: #20 adds the exhaustive search of every table and log line.
+    assertThat(tablesOutsideTheVaultMatching("990000[0-9]{10}")).isEmpty();
+    // The search does find a value that is stored, such as the Card Token.
+    assertThat(tablesOutsideTheVaultMatching(cardToken)).contains("cards.card");
+    assertThat(
+            jdbc.sql("select count(*) from vault.card_secret where card_token = :cardToken")
+                .param("cardToken", cardToken)
+                .query(Long.class)
+                .single())
+        .isOne();
   }
 
   @Test
@@ -146,7 +207,7 @@ class PaymentSagaTests {
     await().atMost(Duration.ofSeconds(10)).until(() -> completedDeliveriesOf(invoiceId) == 2);
     saga.runDueSteps(Instant.now());
 
-    assertThat(paymentState(acme, invoiceId.toString())).isEqualTo("HOLD_PLACED");
+    assertThat(paymentState(acme, invoiceId.toString())).isEqualTo("CARD_ISSUED");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
   }
 
@@ -177,7 +238,7 @@ class PaymentSagaTests {
     }
 
     assertThat(List.of(paymentState(acme, first), paymentState(acme, second)))
-        .containsExactlyInAnyOrder("HOLD_PLACED", "FAILED");
+        .containsExactlyInAnyOrder("CARD_ISSUED", "FAILED");
     assertThat(availableCredit(acme)).isZero();
   }
 
@@ -208,7 +269,7 @@ class PaymentSagaTests {
     assertThat(stateAfterFailure).isEqualTo("STARTED");
     assertThat(creditAfterFailure).isEqualTo(10_000_000);
     assertThat(stateBeforeBackoffEnds).isEqualTo("STARTED");
-    assertThat(paymentState(acme, invoiceId)).isEqualTo("HOLD_PLACED");
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
   }
 
@@ -242,6 +303,39 @@ class PaymentSagaTests {
   }
 
   @Test
+  void aCardThatKeepsFailingToIssueReleasesTheHoldAndFailsThePaymentOnTheFifthAttempt()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    doThrow(new TransientDataAccessResourceException("Connection lost"))
+        .when(cards)
+        .issueSingleUse(any(), eq(new BuyerId(acme)), any(), any(), any());
+    // The first pass places the Hold, then fails to issue the card; each later pass comes after the
+    // longest backoff, so every pass retries.
+    var now = Instant.now();
+
+    for (var attempt = 1; attempt <= 4; attempt++) {
+      saga.runDueSteps(now);
+      now = now.plus(Duration.ofMinutes(5));
+    }
+    var stateAfterFourAttempts = paymentState(acme, invoiceId);
+    var creditAfterFourAttempts = availableCredit(acme);
+    saga.runDueSteps(now);
+
+    assertThat(stateAfterFourAttempts).isEqualTo("HOLD_PLACED");
+    assertThat(creditAfterFourAttempts).isEqualTo(8_760_000);
+    assertThat(invoice(acme, invoiceId))
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"status": "APPROVED",
+             "payment": {"state": "FAILED",
+                         "failureReason": "Issuing the Single-Use Card failed 5 times for technical reasons."}}
+            """);
+    assertThat(availableCredit(acme)).isEqualTo(10_000_000);
+  }
+
+  @Test
   void aPlatformStoppedMidStepLeavesNoHoldAndTheNextPassPlacesExactlyOne() throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
@@ -262,8 +356,45 @@ class PaymentSagaTests {
 
     assertThat(stateAfterStop).isEqualTo("STARTED");
     assertThat(creditAfterStop).isEqualTo(10_000_000);
-    assertThat(paymentState(acme, invoiceId)).isEqualTo("HOLD_PLACED");
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
+  }
+
+  @Test
+  void aPlatformStoppedWhileIssuingTheCardLeavesNoCardDataAndTheNextPassIssuesExactlyOne()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    // The platform stops after the card and its PAN are stored, before the Payment's new state.
+    doAnswer(
+            invocation -> {
+              invocation.callRealMethod();
+              throw new PlatformStopped();
+            })
+        .doCallRealMethod()
+        .when(cards)
+        .issueSingleUse(any(), eq(new BuyerId(acme)), any(), any(), any());
+
+    assertThatThrownBy(() -> saga.runDueSteps(Instant.now())).isInstanceOf(PlatformStopped.class);
+    var stateAfterStop = paymentState(acme, invoiceId);
+    var cardAfterStop = cards.findForPayment(paymentIdOf(invoiceId));
+    saga.runDueSteps(Instant.now());
+
+    assertThat(stateAfterStop).isEqualTo("HOLD_PLACED");
+    assertThat(cardAfterStop).isEmpty();
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
+    assertThat(cards.findForPayment(paymentIdOf(invoiceId))).isPresent();
+    assertThat(availableCredit(acme)).isEqualTo(8_760_000);
+    // No PAN left in the vault for a card that was rolled back.
+    assertThat(
+            jdbc.sql(
+                    """
+                    select count(*) from vault.card_secret
+                     where card_token not in (select card_token from cards.card)
+                    """)
+                .query(Long.class)
+                .single())
+        .isZero();
   }
 
   /**
@@ -347,6 +478,35 @@ class PaymentSagaTests {
         .atMost(Duration.ofSeconds(10))
         .until(() -> "STARTED".equals(paymentState(buyerId, invoiceId)));
     return invoiceId;
+  }
+
+  private UUID paymentIdOf(String invoiceId) {
+    return jdbc.sql("select id from payables.payment where invoice_id = :invoiceId")
+        .param("invoiceId", UUID.fromString(invoiceId))
+        .query(UUID.class)
+        .single();
+  }
+
+  // Every table outside the vault's schema (and PostgreSQL's own) with a row whose text matches.
+  private List<String> tablesOutsideTheVaultMatching(String regex) {
+    var tables =
+        jdbc.sql(
+                """
+                select format('%I.%I', table_schema, table_name)
+                  from information_schema.tables
+                 where table_type = 'BASE TABLE'
+                   and table_schema not in ('vault', 'pg_catalog', 'information_schema')
+                """)
+            .query(String.class)
+            .list();
+    return tables.stream()
+        .filter(
+            table ->
+                jdbc.sql("select exists (select 1 from " + table + " t where t::text ~ :regex)")
+                    .param("regex", regex)
+                    .query(Boolean.class)
+                    .single())
+        .toList();
   }
 
   private long completedDeliveriesOf(UUID invoiceId) {

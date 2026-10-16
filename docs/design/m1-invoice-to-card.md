@@ -90,11 +90,16 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 - **Business refusals compensate at once; technical errors retry** with backoff (5 attempts), then fail for good.
 - **A crashed worker loses nothing:** its claimed row is released when the transaction rolls back, and the next pass picks it up.
 - Decided during #17:
-  - `InvoiceApproved` reaches the saga through an `@ApplicationModuleListener` in `payables`, which inserts the Payment unless its Invoice has one (a unique `invoice_id`), so a redelivered event starts no second Payment. Incomplete publications are delivered again at startup (`spring.modulith.events.republish-outstanding-events-on-restart=true`, off by default). (Open for the owner's sign-off: the setting applies to every listener, not only the saga's.)
-  - The Payment row copies the Buyer and amount from the event, and carries `attempts` (failed attempts at the current step) and `next_attempt_at` (null once no step is left to run). A Payment stops at `HOLD_PLACED` until #18 adds card issuance.
-  - Each worker transaction claims one Payment (`limit 1`); a pass repeats that up to ten times, every second. Claiming a batch in one transaction would let one Payment's failure roll back the rest, and could deadlock two workers that lock two Buyers' Credit Lines in opposite orders. (Open for the owner's sign-off: the ticket's plan said a small batch per claim.)
+  - `InvoiceApproved` reaches the saga through an `@ApplicationModuleListener` in `payables`, which inserts the Payment unless its Invoice has one (a unique `invoice_id`), so a redelivered event starts no second Payment. Incomplete publications are delivered again at startup (`spring.modulith.events.republish-outstanding-events-on-restart=true`, off by default). The setting applies to every listener, not only the saga's. (Approved by the owner.)
+  - The Payment row copies the Buyer and amount from the event, and carries `attempts` (failed attempts at the current step) and `next_attempt_at` (null once no step is left to run). A Payment stopped at `HOLD_PLACED` until #18 added card issuance.
+  - Each worker transaction claims one Payment (`limit 1`); a pass repeats that up to ten times, every second. Claiming a batch in one transaction would let one Payment's failure roll back the rest, and could deadlock two workers that lock two Buyers' Credit Lines in opposite orders. (Approved by the owner: the ticket's plan said a small batch per claim.)
   - A technical error anywhere in that transaction, a lost connection included, rolls it all back; a new transaction then counts the failed attempt, unless another worker has moved the Payment on meanwhile (the update checks the state and attempt count it claimed). Retries come 10, 20, 40 and 80 seconds after each failure; the fifth fails the Payment for good. A first version used a savepoint instead, which can't be rolled back to once the connection is gone.
   - A Payment that fails says why (`failureReason`), shown with its state on `GET /v1/invoices/{invoiceId}`. Technical errors are logged with the Payment's ID, not shown to the Buyer.
+- Decided during #18:
+  - Placing the Hold makes card issuance due at once, so one worker pass usually runs both steps, each in its own transaction. A Payment stops at `CARD_ISSUED` until #19 adds the Remittance Advice.
+  - The Payment row copies the Supplier from `InvoiceApproved` too, since the card is locked to it. The migration fills it in for existing Payments from their Invoice, and makes Payments left at `HOLD_PLACED` by #17 due for card issuance.
+  - Card issuance has no business refusal, so it fails for good only on its fifth technical error. The failure reason names the step that failed ("Issuing the Single-Use Card failed 5 times for technical reasons.").
+  - Compensation runs in the transaction that records the final failed attempt: the Payment becomes `FAILED` and its Hold is released together, so it is never `FAILED` with credit still reserved. If that transaction fails, the attempt isn't counted and the next pass tries the step again; releasing twice is harmless.
 
 ### Ledger: Credit Lines and Holds
 
@@ -106,12 +111,24 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
   - A Buyer without a Credit Line has no credit: placing a Hold is refused, not an error.
   - Open Holds are summed in a statement after the one that locks the Credit Line row. Under READ COMMITTED a subquery inside the locking statement keeps the snapshot from before the wait and misses a Hold committed meanwhile; the race test caught exactly that.
   - Available Credit may be negative: Issuer staff may lower a Credit Line below the open Holds, which then blocks new Holds. The contract's `availableCredit` uses a new `SignedMoney` schema without the minimum of zero.
+- Decided during #18:
+  - `Holds.release(holdId)` deletes the Hold's row, so releasing it again, or releasing a Hold never placed, changes nothing. Placing a released Hold again reserves the credit afresh, after the usual check, which is what rerunning a failed Payment by hand needs (see the stuck-Payment runbook). A released Hold leaves no record in `ledger` until the journal arrives with Clearing in M3; the Payment's failure reason records why. (Open for the owner's sign-off: marking the row released instead would keep that record, but placing the Hold again would then find it and reserve nothing.)
 
 ### Cards and the vault
 
 - **Issuing a Single-Use Card:** a Card Token (random, opaque), an expiry 30 days out, and locks to the Invoice's Supplier and amount.
 - **`vault` generates the PAN** (16 digits, Luhn-valid, from a made-up `990000` range) and a security code, and stores both encrypted with AES-256-GCM under a key from `.env`. M7 replaces the key-from-config with envelope encryption.
 - **A keyed hash (HMAC-SHA-256) of each PAN is stored beside it,** so `vault` can reject a duplicate PAN now, and find a card by PAN for Authorization in M2, without decrypting anything.
+- Decided during #18:
+  - The saga issues the card through `cards.Cards.issueSingleUse`, keyed by the Payment's ID (`payment_id` is unique), so issuing again returns the card the Payment already has, with the first issuance's details. Like `ledger.Holds`, it joins the worker's transaction: the card, its PAN and the Payment's new state commit or roll back together.
+  - A Card Token is 16 random bytes from `SecureRandom` (128 bits), base64url-encoded without padding: 22 characters, never all digits, so it can't be mistaken for a PAN.
+  - `cards` stores the PAN's last four digits beside the Card Token, so the Invoice can show them without asking the vault. `vault.Vault.generatePan(cardToken)` returns those four digits and nothing else of the PAN.
+  - The card's expiry is the worker pass's time plus 30 days, kept to the microsecond as PostgreSQL stores it, so the card returned at issuance equals the card read back later.
+  - `GET /v1/invoices/{invoiceId}` shows the Payment's `card`: its Card Token, last four digits and expiry. Never the PAN or security code.
+  - Each ciphertext is a fresh 12-byte nonce followed by the AES-256-GCM output (the encrypted value and its 16-byte tag), with the Card Token as associated data, so a ciphertext copied to another card's row fails to decrypt. The PAN and the security code are encrypted separately, each under its own nonce.
+  - Encryption and hashing use two separate 256-bit keys, `vault.encryption-key` and `vault.hash-key`, base64-encoded in `.env` as `VAULT_ENCRYPTION_KEY` and `VAULT_HASH_KEY` (written by `scripts/init-env.sh` with `openssl rand -base64 32`). The platform refuses to start when either is missing, isn't base64 or isn't exactly 32 bytes; the message names the property, never its value. Tests use fixed, obviously fake keys (every byte `0x01` or `0x02`) from `platform/src/test/resources/config/application.properties`, which Spring Boot loads on top of the main file instead of hiding it.
+  - The PAN's hash is unique. A new PAN is inserted with `on conflict (pan_hash) do nothing`; no row inserted means another card has that PAN, so the vault draws another (up to ten draws, then a technical error). A plain insert's unique violation would abort the worker's whole transaction instead. (Open for the owner's sign-off: no test forces a collision, since none of the seams agreed for #18 can control the vault's random draws; a vault integration test with a seeded random source would.)
+  - Only `cards` may depend on `vault`. Spring Modulith's `allowedDependencies` limits what a module may use, not who may use it, so declaring it would mean listing allowed dependencies on every other module; `ModularityTests.onlyCardsUsesTheVault` checks the rule directly on Modulith's module model instead. #19 adds `suppliers` to it for the remittance link.
 
 ### Remittance Advice
 
@@ -133,7 +150,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 
 ### Tests
 
-- **Unit tests:** approval rules, the credit check, Luhn and PAN generation, the saga's state transitions. (Changed during #17: the credit check is a comparison inside the transaction that locks the Credit Line, so it is tested through `ledger.Holds` and the Payment flow on PostgreSQL, the test seams agreed for #17, not as a unit test. Open for the owner's sign-off.)
+- **Unit tests:** approval rules, the credit check, Luhn and PAN generation, the saga's state transitions. (Changed during #17: the credit check is a comparison inside the transaction that locks the Credit Line, so it is tested through `ledger.Holds` and the Payment flow on PostgreSQL, the test seams agreed for #17, not as a unit test. Approved by the owner.)
 - **Module integration tests** on PostgreSQL Testcontainers, with mocked JWTs (`spring-security-test`).
 - **A core-path test** against real Keycloak (`testcontainers-keycloak` 4.4.0, importing the same realm file) and PostgreSQL, with the Supplier's address stubbed by `MockRestServiceServer`.
 - **A test that greps every table outside `vault`, and the captured logs, for the issued PAN.**

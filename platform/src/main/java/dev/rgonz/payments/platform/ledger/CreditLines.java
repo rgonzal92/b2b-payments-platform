@@ -95,6 +95,13 @@ class CreditLines implements Holds {
     return Outcome.PLACED;
   }
 
+  // Deleting the row leaves nothing for a second release to do. Placing the same Hold again would
+  // reserve the credit afresh, after the usual check.
+  @Override
+  public void release(UUID holdId) {
+    jdbc.sql("delete from ledger.hold where id = :id").param("id", holdId).update();
+  }
+
   // A statement of its own: after place's lock, it sees what other transactions committed while
   // that one waited (READ COMMITTED); a subquery inside the locking statement would not.
   private Money openHolds(BuyerId buyerId, Currency currency) {

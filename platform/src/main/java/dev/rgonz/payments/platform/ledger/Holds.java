@@ -15,6 +15,12 @@ public interface Holds {
    */
   Outcome place(UUID holdId, BuyerId buyerId, Money amount);
 
+  /**
+   * Releases the Hold, so its amount is Available Credit again. Releasing a Hold that is already
+   * released, or was never placed, changes nothing. Joins the caller's transaction.
+   */
+  void release(UUID holdId);
+
   enum Outcome {
     PLACED,
     /** The amount is more than the Buyer's Available Credit, so nothing was placed. */

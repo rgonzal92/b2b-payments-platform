@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform.payables;
 
+import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.ledger.Holds;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicReference;
@@ -21,11 +22,13 @@ class PaymentSaga {
 
   private final Payments payments;
   private final Holds holds;
+  private final Cards cards;
   private final TransactionTemplate transaction;
 
-  PaymentSaga(Payments payments, Holds holds, TransactionTemplate transaction) {
+  PaymentSaga(Payments payments, Holds holds, Cards cards, TransactionTemplate transaction) {
     this.payments = payments;
     this.holds = holds;
+    this.cards = cards;
     this.transaction = transaction;
   }
 
@@ -70,22 +73,39 @@ class PaymentSaga {
     }
     var payment = due.get();
     claimed.set(payment);
-    var next = placeHold(payment);
+    var next =
+        switch (payment.state()) {
+          case STARTED -> placeHold(payment, now);
+          case HOLD_PLACED -> issueCard(payment, now);
+          case CARD_ISSUED, FAILED ->
+              throw new IllegalStateException(
+                  "Payment %s is %s: no step is left to run."
+                      .formatted(payment.id(), payment.state()));
+        };
     payments.update(payment, next);
     log.info("Payment {} is {}", payment.id(), next.state());
     return true;
   }
 
   // The Payment's ID is the Hold's, so placing it again after a crash finds the same Hold.
-  private Payment placeHold(Payment payment) {
+  private Payment placeHold(Payment payment, Instant now) {
     return switch (holds.place(payment.id(), payment.buyerId(), payment.amount())) {
-      case PLACED -> payment.holdPlaced();
+      case PLACED -> payment.holdPlaced(now);
       case INSUFFICIENT_CREDIT -> payment.refused("Not enough Available Credit to place the Hold.");
     };
   }
 
+  // Keyed by the Payment's ID too, so issuing again finds the same card.
+  private Payment issueCard(Payment payment, Instant now) {
+    cards.issueSingleUse(
+        payment.id(), payment.buyerId(), payment.supplierId(), payment.amount(), now);
+    return payment.cardIssued();
+  }
+
   // The step's transaction rolled back, undoing what the step did, so a new transaction counts the
-  // attempt. If another worker claimed the Payment in between, its record wins.
+  // attempt. If another worker claimed the Payment in between, its record wins. A Payment that
+  // fails for good is compensated in the same transaction, so it is never FAILED with its Hold
+  // still placed.
   private void recordFailedAttempt(Payment claimed, Instant now, RuntimeException cause) {
     var next = claimed.stepFailed(now);
     log.warn(
@@ -94,6 +114,19 @@ class PaymentSaga {
         next.attempts(),
         Payment.MAX_ATTEMPTS,
         cause);
-    transaction.executeWithoutResult(status -> payments.update(claimed, next));
+    transaction.executeWithoutResult(
+        status -> {
+          if (payments.update(claimed, next) && next.state() == Payment.State.FAILED) {
+            compensate(claimed);
+          }
+        });
+  }
+
+  // Undoes what the steps before the failed one did (ADR-0013).
+  private void compensate(Payment failed) {
+    if (failed.state() == Payment.State.HOLD_PLACED) {
+      holds.release(failed.id());
+      log.info("Payment {} failed for good; released its Hold", failed.id());
+    }
   }
 }

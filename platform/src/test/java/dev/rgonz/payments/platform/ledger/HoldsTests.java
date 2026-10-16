@@ -44,6 +44,19 @@ class HoldsTests {
     assertThat(availableCredit(buyerId)).isZero();
   }
 
+  @Test
+  void releasingAHoldTwiceReturnsItsCreditOnceAndLeavesTheBuyersOtherHolds() throws Exception {
+    var buyerId = buyerWithCreditLine(1_240_000);
+    var holdId = UUID.randomUUID();
+    holds.place(holdId, buyerId, new Money(1_000_000, Currency.getInstance("USD")));
+    holds.place(UUID.randomUUID(), buyerId, new Money(240_000, Currency.getInstance("USD")));
+
+    holds.release(holdId);
+    holds.release(holdId);
+
+    assertThat(availableCredit(buyerId)).isEqualTo(1_000_000);
+  }
+
   private BuyerId buyerWithCreditLine(long creditLine) {
     var buyerId = UUID.randomUUID();
     var buyer =
