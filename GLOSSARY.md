@@ -127,5 +127,39 @@ The most a Buyer may owe the Issuer at once.
 _Avoid_: Credit limit, limit
 
 **Available Credit**:
-A Buyer's Credit Line minus cleared spend not yet repaid and minus open Holds.
+A Buyer's Credit Line minus its Buyer Receivable and minus open Holds.
 _Avoid_: Open-to-buy, available balance
+
+### Books
+
+**Journal Entry**:
+A balanced record of money moving between Accounts in the Issuer's books; once written, never changed or deleted.
+_Avoid_: Transaction, posting row
+
+**Account**:
+A running balance in the Issuer's books that Journal Entries move money into and out of.
+_Avoid_: Wallet, balance
+
+**Buyer Receivable**:
+The Account holding what one Buyer owes the Issuer for its cleared Charges.
+_Avoid_: Balance due, statement balance
+
+**Network Settlement Payable**:
+The Account holding what the Issuer owes the Network for cleared Charges not yet settled.
+_Avoid_: Network balance
+
+**Issuer Cash**:
+The Account for the Issuer's bank account, which Settlements are paid from and Repayments arrive in.
+_Avoid_: Settlement cash, bank balance, funding account
+
+**Repayment**:
+A Buyer's payment to the Issuer that reduces its Buyer Receivable.
+_Avoid_: Payment, refund, top-up
+
+**Clearing Suspense**:
+The Account a Clearing is posted to when its card can't be identified, until a person resolves it.
+_Avoid_: Unknown account, holding account
+
+**Business Date**:
+The day, by the Network's calendar in UTC, that a Clearing File covers.
+_Avoid_: Settlement date, file date
