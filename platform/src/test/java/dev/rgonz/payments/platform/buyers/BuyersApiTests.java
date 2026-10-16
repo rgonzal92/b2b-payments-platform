@@ -26,16 +26,7 @@ class BuyersApiTests {
   void issuerStaffCreateABuyer() {
     var buyerId = UUID.randomUUID();
 
-    var response =
-        mvc.put()
-            .uri("/v1/buyers/{buyerId}", buyerId)
-            .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_issuer-admin")))
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(
-                """
-                {"name": "Acme", "approvalThreshold": {"minorUnits": 1000000, "currency": "USD"}}
-                """)
-            .exchange();
+    var response = put(buyerId, ISSUER_ADMIN, buyerJson("Acme", 1_000_000));
 
     assertThat(response).hasStatus(201);
     assertThat(response)
@@ -48,20 +39,25 @@ class BuyersApiTests {
   }
 
   @Test
-  void repeatingThePutReplacesTheBuyer() {
+  void repeatingTheSamePutIsSafe() {
+    var buyerId = UUID.randomUUID();
+    put(buyerId, ISSUER_ADMIN, buyerJson("Acme", 1_000_000));
+
+    var response = put(buyerId, ISSUER_ADMIN, buyerJson("Acme", 1_000_000));
+
+    assertThat(response).hasStatus(200);
+    assertThat(response).bodyJson().extractingPath("$.name").isEqualTo("Acme");
+  }
+
+  @Test
+  void aDifferentBuyerUnderAnExistingIdIsAConflict() {
     var buyerId = UUID.randomUUID();
     put(buyerId, ISSUER_ADMIN, buyerJson("Acme", 1_000_000));
 
     var response = put(buyerId, ISSUER_ADMIN, buyerJson("Acme Corp", 2_500_000));
 
-    assertThat(response).hasStatus(200);
-    assertThat(response)
-        .bodyJson()
-        .isLenientlyEqualTo(
-            """
-            {"id": "%s", "name": "Acme Corp", "approvalThreshold": {"minorUnits": 2500000, "currency": "USD"}}
-            """
-                .formatted(buyerId));
+    assertThat(response).hasStatus(409);
+    assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
   }
 
   @Test
@@ -83,11 +79,14 @@ class BuyersApiTests {
             .exchange();
 
     assertThat(response).hasStatus(401);
+    assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
+    assertThat(response).headers().containsHeader("WWW-Authenticate");
   }
 
   @Test
   void invalidBuyersAreRejectedAsProblems() {
     var blankName = put(UUID.randomUUID(), ISSUER_ADMIN, buyerJson("", 1_000_000));
+    var spacesOnly = put(UUID.randomUUID(), ISSUER_ADMIN, buyerJson("   ", 1_000_000));
     var negativeThreshold = put(UUID.randomUUID(), ISSUER_ADMIN, buyerJson("Acme", -1));
     var otherCurrency =
         put(
@@ -97,7 +96,8 @@ class BuyersApiTests {
             {"name": "Acme", "approvalThreshold": {"minorUnits": 100, "currency": "EUR"}}
             """);
 
-    for (var response : java.util.List.of(blankName, negativeThreshold, otherCurrency)) {
+    for (var response :
+        java.util.List.of(blankName, spacesOnly, negativeThreshold, otherCurrency)) {
       assertThat(response).hasStatus(400);
       assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
     }

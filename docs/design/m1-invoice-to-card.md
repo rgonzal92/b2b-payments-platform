@@ -37,7 +37,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 
 - **Keycloak 26.8.1** joins `compose.yaml` on `127.0.0.1:8180` in development mode, importing a `payments` realm from a file in the repository.
 - **Three roles:** `approver` (people at a Buyer), `erp` (a Buyer's ERP, signing in as a machine with client credentials) and `issuer-admin` (Issuer staff).
-- **Issuer staff choose a Buyer's ID when creating it** (`PUT /v1/buyers/{buyerId}`, safe to repeat), so the same ID can be written into that Buyer's clients in Keycloak ahead of time. (Changed during #13: the ticket said `POST /v1/buyers`, which would leave Keycloak no way to know the ID in advance.)
+- **Issuer staff choose a Buyer's ID when creating it** (`PUT /v1/buyers/{buyerId}`), so the same ID can be written into that Buyer's clients in Keycloak ahead of time. Repeating the same request answers `200`; a different Buyer under an existing ID is `409`, so the endpoint never silently edits a Buyer. (Changed during #13: the ticket said `POST /v1/buyers`, which would leave Keycloak no way to know the ID in advance.)
 - **Every Buyer-side token carries a `buyer_id` claim.** The platform is an OAuth2 resource server; every Buyer-side query filters by that claim, and a resource belonging to another Buyer answers `404` so its existence doesn't leak.
 - **Client secrets never enter the repository.** A small script writes random development secrets into the gitignored `.env`; Docker Compose hands them to Keycloak (the realm file references them as placeholders), and both apps import `.env`.
 
@@ -45,7 +45,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 
 - The REST API is written as an OpenAPI document in a new `contracts` Maven module, reviewed before any code (Q34).
 - `openapi-generator` (7.26.0) generates the Spring server interfaces the platform implements and the Java client the simulator calls, so both sides compile against the same contract.
-- Conventions as in `CLAUDE.md`: `/v1` paths, RFC 9457 problem details, `Idempotency-Key` on creating POSTs, cursor paging.
+- Conventions as in `CLAUDE.md`: `/v1` paths, RFC 9457 problem details (a `401` too, with `WWW-Authenticate` kept), `Idempotency-Key` on creating POSTs, cursor paging.
 
 ### Invoice intake
 

@@ -12,10 +12,11 @@ paths:
     put:
       tags: [Buyers]
       operationId: putBuyer
-      summary: Create or replace a Buyer
+      summary: Create a Buyer
       description: >-
         Issuer staff only (role `issuer-admin`). The caller chooses the Buyer ID, so the same ID can be
-        provisioned into Buyer-side tokens ahead of time; repeating the request is safe.
+        provisioned into Buyer-side tokens ahead of time. Repeating the same request is safe; a different
+        Buyer under an existing ID is a conflict.
       parameters:
         - name: buyerId
           in: path
@@ -31,7 +32,7 @@ paths:
               $ref: '#/components/schemas/BuyerRequest'
       responses:
         '200':
-          description: The Buyer already existed and now matches the request.
+          description: The same Buyer already existed; nothing changed.
           content:
             application/json:
               schema:
@@ -45,8 +46,10 @@ paths:
         '400':
           $ref: '#/components/responses/Problem'
         '401':
-          description: Missing or invalid bearer token.
+          $ref: '#/components/responses/Problem'
         '403':
+          $ref: '#/components/responses/Problem'
+        '409':
           $ref: '#/components/responses/Problem'
 components:
   securitySchemes:
@@ -80,8 +83,9 @@ components:
       properties:
         name:
           type: string
-          minLength: 1
           maxLength: 200
+          # At least one character that isn't whitespace.
+          pattern: '.*\S.*'
         approvalThreshold:
           $ref: '#/components/schemas/Money'
     Buyer:

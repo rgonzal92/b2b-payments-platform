@@ -32,6 +32,7 @@ class KeycloakTokenTests {
 
   @Container
   static final KeycloakContainer keycloak =
+      // Same image as compose.yaml: change both together.
       new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
           .withRealmImportFile("/keycloak/payments-realm.json")
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET);

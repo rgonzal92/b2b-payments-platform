@@ -1,0 +1,17 @@
+# Keycloak is unavailable
+
+**Signals:** every `/v1` request answers `401`; the platform logs failures fetching Keycloak's keys (`JwkSet`, `issuer`); the simulator fails to start with a connection error to `localhost:8180`; `docker compose ps` doesn't show `keycloak` as running.
+
+The platform checks each token against Keycloak's published keys and caches them, so a short Keycloak outage can pass unnoticed by callers holding valid tokens; new tokens can't be issued until it's back.
+
+## Local development
+
+1. `docker compose ps`. If `keycloak` isn't running, `docker compose up -d` starts whatever is missing. Spring Boot only starts the stack when none of it is running, so a half-started stack needs this by hand.
+2. If it starts and stops again, read `docker compose logs keycloak`:
+   - **"run scripts/init-env.sh first"** from Docker Compose: `.env` is missing a value. Run `./scripts/init-env.sh`, then `docker compose up -d`.
+   - **A realm import error:** the realm file is invalid or references a placeholder that isn't in the environment. `KeycloakTokenTests` checks the same file; run `./mvnw -pl platform -am test -Dtest=KeycloakTokenTests` for a precise error.
+3. Port `8180` taken by something else: stop it, or change the host port in `compose.yaml` together with `issuer-uri` in the platform and `token-uri` in the simulator.
+
+## Tokens are issued but rejected
+
+The platform answers `401` while Keycloak is up: the token's `iss` must equal the platform's `spring.security.oauth2.resourceserver.jwt.issuer-uri` exactly. A token fetched through a different host name or port than `localhost:8180` carries a different issuer.

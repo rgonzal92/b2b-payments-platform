@@ -9,8 +9,9 @@ The `platform` is the Issuer's system. Everything it talks to, apart from Keyclo
 ```mermaid
 flowchart LR
   buyerStaff["Buyer staff<br/>(Approvers)"]
-  issuerStaff["Issuer staff<br/>(resolve Breaks)"]
+  issuerStaff["Issuer staff<br/>(set up Buyers, resolve Breaks)"]
   subgraph sim["simulator app"]
+    simIssuer["Issuer staff<br/>(creates Acme at startup)"]
     erp["Buyer ERP"]
     supplier["Supplier"]
     acquirer["Acquirer"]
@@ -19,9 +20,10 @@ flowchart LR
   platform["platform<br/>(the Issuer's system)"]
   keycloak["Keycloak"]
 
+  simIssuer -- "create Buyers (REST)" --> platform
   erp -- "Invoices (REST)" --> platform
   buyerStaff -- "approve Invoices (REST)" --> platform
-  issuerStaff -- "resolve Breaks (REST)" --> platform
+  issuerStaff -- "set up Buyers, resolve Breaks (REST)" --> platform
   platform -- "Remittance Advice link" --> supplier
   supplier -- "charges card" --> acquirer
   acquirer --> network
@@ -58,7 +60,7 @@ How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card.
 - **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008).
-- **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009).
+- **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`.
 
 ## Core payment path
 

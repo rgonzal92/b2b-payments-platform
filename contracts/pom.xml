@@ -40,6 +40,20 @@
 				<groupId>org.openapitools</groupId>
 				<artifactId>openapi-generator-maven-plugin</artifactId>
 				<version>7.26.0</version>
+				<!-- Settings both executions share; each execution adds its own. -->
+				<configuration>
+					<inputSpec>${project.basedir}/src/main/resources/openapi/platform-api.yaml</inputSpec>
+					<generatorName>spring</generatorName>
+					<generateSupportingFiles>false</generateSupportingFiles>
+					<configOptions>
+						<useSpringBoot4>true</useSpringBoot4>
+						<useJackson3>true</useJackson3>
+						<useTags>true</useTags>
+						<openApiNullable>false</openApiNullable>
+						<documentationProvider>none</documentationProvider>
+						<annotationLibrary>none</annotationLibrary>
+					</configOptions>
+				</configuration>
 				<executions>
 					<execution>
 						<id>platform-server</id>
@@ -47,21 +61,14 @@
 							<goal>generate</goal>
 						</goals>
 						<configuration>
-							<inputSpec>${project.basedir}/src/main/resources/openapi/platform-api.yaml</inputSpec>
-							<generatorName>spring</generatorName>
 							<library>spring-boot</library>
 							<apiPackage>dev.rgonz.payments.contracts.server</apiPackage>
 							<modelPackage>dev.rgonz.payments.contracts.server.model</modelPackage>
-							<generateSupportingFiles>false</generateSupportingFiles>
+							<!-- BuyerDto, not Buyer: the platform's own domain types keep the glossary names. -->
+							<modelNameSuffix>Dto</modelNameSuffix>
 							<configOptions>
 								<interfaceOnly>true</interfaceOnly>
-								<useSpringBoot4>true</useSpringBoot4>
-								<useJackson3>true</useJackson3>
-								<useTags>true</useTags>
 								<skipDefaultInterface>true</skipDefaultInterface>
-								<openApiNullable>false</openApiNullable>
-								<documentationProvider>none</documentationProvider>
-								<annotationLibrary>none</annotationLibrary>
 								<useBeanValidation>true</useBeanValidation>
 							</configOptions>
 						</configuration>
@@ -72,20 +79,9 @@
 							<goal>generate</goal>
 						</goals>
 						<configuration>
-							<inputSpec>${project.basedir}/src/main/resources/openapi/platform-api.yaml</inputSpec>
-							<generatorName>spring</generatorName>
 							<library>spring-http-interface</library>
 							<apiPackage>dev.rgonz.payments.contracts.client</apiPackage>
 							<modelPackage>dev.rgonz.payments.contracts.client.model</modelPackage>
-							<generateSupportingFiles>false</generateSupportingFiles>
-							<configOptions>
-								<useSpringBoot4>true</useSpringBoot4>
-								<useJackson3>true</useJackson3>
-								<useTags>true</useTags>
-								<openApiNullable>false</openApiNullable>
-								<documentationProvider>none</documentationProvider>
-								<annotationLibrary>none</annotationLibrary>
-							</configOptions>
 						</configuration>
 					</execution>
 				</executions>

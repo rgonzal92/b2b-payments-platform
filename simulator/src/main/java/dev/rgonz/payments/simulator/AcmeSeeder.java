@@ -25,9 +25,9 @@ class AcmeSeeder {
   private final BuyersApi buyers;
   private final UUID acmeId;
 
-  // The platform may still be starting: keep trying for about half a minute.
+  // The platform may still be starting: keep trying for about two minutes.
   private final RetryTemplate retry =
-      new RetryTemplate(RetryPolicy.builder().maxRetries(10).delay(Duration.ofSeconds(3)).build());
+      new RetryTemplate(RetryPolicy.builder().maxRetries(40).delay(Duration.ofSeconds(3)).build());
 
   AcmeSeeder(BuyersApi buyers, @Value("${simulator.acme.buyer-id}") UUID acmeId) {
     this.buyers = buyers;
@@ -40,11 +40,9 @@ class AcmeSeeder {
         new BuyerRequest()
             .name("Acme")
             .approvalThreshold(new Money().minorUnits(1_000_000L).currency(Money.CurrencyEnum.USD));
-    try {
-      retry.invoke(() -> buyers.putBuyer(acmeId, request));
-      log.info("Acme is ready as Buyer {}", acmeId);
-    } catch (RuntimeException e) {
-      log.warn("Couldn't create Acme on the platform; is it running?", e);
-    }
+    // Without Acme every scenario fails, so a platform that never answers stops the simulator's
+    // startup.
+    retry.invoke(() -> buyers.putBuyer(acmeId, request));
+    log.info("Acme is ready as Buyer {}", acmeId);
   }
 }

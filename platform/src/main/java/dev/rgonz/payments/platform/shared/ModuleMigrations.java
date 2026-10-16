@@ -1,4 +1,4 @@
-package dev.rgonz.payments.platform;
+package dev.rgonz.payments.platform.shared;
 
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;

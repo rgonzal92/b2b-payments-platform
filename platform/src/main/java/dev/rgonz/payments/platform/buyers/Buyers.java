@@ -1,5 +1,9 @@
 package dev.rgonz.payments.platform.buyers;
 
+import dev.rgonz.payments.platform.shared.Money;
+import java.util.Currency;
+import java.util.Optional;
+import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -12,23 +16,38 @@ class Buyers {
     this.jdbc = jdbc;
   }
 
-  /** Creates the Buyer, or replaces the one with the same ID; returns true when it was created. */
-  boolean save(Buyer buyer) {
+  /** Inserts the Buyer unless one with its ID already exists; true when it was inserted. */
+  boolean insertIfAbsent(Buyer buyer) {
+    return jdbc.sql(
+                """
+                insert into buyers.buyer (id, name, approval_threshold_minor, currency)
+                values (:id, :name, :threshold, :currency)
+                on conflict (id) do nothing
+                """)
+            .param("id", buyer.id())
+            .param("name", buyer.name())
+            .param("threshold", buyer.approvalThreshold().minorUnits())
+            .param("currency", buyer.approvalThreshold().currency().getCurrencyCode())
+            .update()
+        == 1;
+  }
+
+  Optional<Buyer> find(UUID id) {
     return jdbc.sql(
             """
-            insert into buyers.buyer (id, name, approval_threshold_minor, currency)
-            values (:id, :name, :threshold, :currency)
-            on conflict (id) do update
-               set name = excluded.name,
-                   approval_threshold_minor = excluded.approval_threshold_minor,
-                   currency = excluded.currency
-            returning (xmax = 0) as created
+            select id, name, approval_threshold_minor, currency
+              from buyers.buyer
+             where id = :id
             """)
-        .param("id", buyer.id())
-        .param("name", buyer.name())
-        .param("threshold", buyer.approvalThreshold().minorUnits())
-        .param("currency", buyer.approvalThreshold().currency().getCurrencyCode())
-        .query(Boolean.class)
-        .single();
+        .param("id", id)
+        .query(
+            (row, rowNumber) ->
+                new Buyer(
+                    row.getObject("id", UUID.class),
+                    row.getString("name"),
+                    new Money(
+                        row.getLong("approval_threshold_minor"),
+                        Currency.getInstance(row.getString("currency")))))
+        .optional();
   }
 }
