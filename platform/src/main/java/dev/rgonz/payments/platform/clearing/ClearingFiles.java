@@ -16,20 +16,29 @@ class ClearingFiles {
   }
 
   /**
-   * Records a file the validate step accepted, as {@code IMPORTING}. Joins the step's transaction.
+   * Records a file the validate step accepted, as {@code IMPORTING}, with its header's and its
+   * trailer's figures and its content hash. Joins the step's transaction.
    */
-  void receive(FileHeader header, long recordCount) {
+  void receive(ClearingFileLayout.Envelope file, String contentHash) {
+    var header = file.header();
+    var trailer = file.trailer();
     jdbc.sql(
             """
             insert into clearing.clearing_file
-                   (id, sequence_number, business_date, status, record_count)
-            values (:id, :sequenceNumber, :businessDate, :status, :recordCount)
+                   (id, sequence_number, business_date, status, record_count, amount_total_minor,
+                    net_settlement_amount_minor, totals_currency, content_hash)
+            values (:id, :sequenceNumber, :businessDate, :status, :recordCount, :amountTotal,
+                    :netSettlementAmount, :currency, :contentHash)
             """)
         .param("id", header.fileId())
         .param("sequenceNumber", header.sequenceNumber())
         .param("businessDate", header.businessDate())
         .param("status", ClearingFileSummary.Status.IMPORTING.name())
-        .param("recordCount", recordCount)
+        .param("recordCount", trailer.recordCount())
+        .param("amountTotal", trailer.amountTotal().minorUnits())
+        .param("netSettlementAmount", trailer.netSettlementAmount().minorUnits())
+        .param("currency", trailer.amountTotal().currency().getCurrencyCode())
+        .param("contentHash", contentHash)
         .update();
   }
 

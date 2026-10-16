@@ -3,15 +3,20 @@ package dev.rgonz.payments.platform.clearing;
 import dev.rgonz.payments.platform.shared.Money;
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.DigestOutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Currency;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.function.Consumer;
 
 /**
@@ -24,10 +29,32 @@ final class ClearingFileLayout {
 
   static final int RECORD_LENGTH = 120;
 
+  // The header's file ID is its positions 3–22.
+  private static final int FILE_ID_END = 22;
+
   private static final DateTimeFormatter DATE =
       DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
 
   private ClearingFileLayout() {}
+
+  /**
+   * The SHA-256 of the file from position 23 of its header on, in hex: everything but its record
+   * type and its file ID, so the same file sent again under another file ID has the same hash. Of
+   * the file's bytes as they are, line ends included.
+   */
+  static String contentHash(Path file) throws IOException {
+    MessageDigest sha256;
+    try {
+      sha256 = MessageDigest.getInstance("SHA-256");
+    } catch (NoSuchAlgorithmException everyJavaHasIt) {
+      throw new IllegalStateException(everyJavaHasIt);
+    }
+    try (var bytes = Files.newInputStream(file)) {
+      bytes.skipNBytes(FILE_ID_END);
+      bytes.transferTo(new DigestOutputStream(OutputStream.nullOutputStream(), sha256));
+    }
+    return HexFormat.of().formatHex(sha256.digest());
+  }
 
   /** Opens the file for reading, in the layout's character set (US-ASCII). */
   static BufferedReader open(Path file) throws IOException {

@@ -28,7 +28,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Date;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -326,6 +328,74 @@ class ClearingFileImportTests {
 
   private static Function<Detail, List<String>> records(Function<Detail, List<String>> records) {
     return records;
+  }
+
+  @Test
+  void anImportedFileIsDeletedAndItsHashAndHeaderAndTrailerFiguresAreKept() {
+    var fileId = newId("F", 16);
+    // The same content whatever its file ID, so its hash is known: `tail -c +23 <file> | sha256sum`
+    // over this file gives the hash below. Its card is one the vault doesn't know. The Network
+    // settles a figure of its own, which the trailer carries beside the amount total.
+    var fileName =
+        TestClearingFiles.write(
+            DROP_FOLDER,
+            List.of(
+                TestClearingFiles.header(fileId, 15),
+                TestClearingFiles.detail(
+                    new Detail(
+                        "NR-HASH-0000000001",
+                        "9900000000000010",
+                        125_000,
+                        "HASH00000001",
+                        "HASH01",
+                        ACCEPTOR_ID)),
+                TestClearingFiles.trailer(1, 125_000, 124_000)));
+
+    assertThat(importFile(fileName, "ROLE_issuer-admin")).hasStatus(201);
+
+    assertThat(DROP_FOLDER.resolve(fileName)).doesNotExist();
+    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();
+    assertThat(
+            jdbc.sql(
+                    """
+                    select sequence_number, business_date, record_count, amount_total_minor,
+                           net_settlement_amount_minor, totals_currency, content_hash
+                      from clearing.clearing_file
+                     where id = :id
+                    """)
+                .param("id", fileId)
+                .query()
+                .singleRow())
+        .containsEntry("sequence_number", 15L)
+        .containsEntry("business_date", Date.valueOf(LocalDate.of(2026, 10, 15)))
+        .containsEntry("record_count", 1L)
+        .containsEntry("amount_total_minor", 125_000L)
+        .containsEntry("net_settlement_amount_minor", 124_000L)
+        .containsEntry("totals_currency", "USD")
+        .containsEntry(
+            "content_hash", "eec2dfdddd1cdd636feec674c8dc18e1e6060fde00cd7fe6bec15afb7be660dc");
+  }
+
+  @Test
+  void aFileWithTheIdOfAnImportedFileIsRefusedAndPostsNothingTwice() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var imported = clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT);
+    var notImported = clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT);
+    var fileId = newId("F", 16);
+    var first = TestClearingFiles.drop(DROP_FOLDER, fileId, 13, List.of(imported));
+    assertThat(importFile(first, "ROLE_issuer-admin")).hasStatus(201);
+    var creditBefore = availableCredit(buyerId);
+    var again = TestClearingFiles.drop(DROP_FOLDER, fileId, 14, List.of(imported, notImported));
+
+    var response = importFile(again, "ROLE_issuer-admin");
+
+    assertProblem(response, 409);
+    assertThat(response).bodyJson().extractingPath("$.detail").asString().contains(fileId);
+    assertThat(postedCount(List.of(imported))).isEqualTo(1);
+    assertThat(postedCount(List.of(notImported))).isZero();
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(DROP_FOLDER.resolve("failed").resolve(again)).exists();
+    assertThat(DROP_FOLDER.resolve("processing").resolve(again)).doesNotExist();
   }
 
   @Test

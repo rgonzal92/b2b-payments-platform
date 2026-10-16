@@ -8,3 +8,12 @@ alter table clearing_file
     add constraint clearing_file_record_count_check check (status = 'REFUSED' or record_count is not null),
     add column refusal_reason text,
     add constraint clearing_file_refusal_reason_check check ((status = 'REFUSED') = (refusal_reason is not null));
+
+-- What a file the validate step accepted keeps once it is imported and deleted (#50): the SHA-256 of its content after
+-- its file ID, in hex, which finds the same file sent again under another file ID, and its trailer's figures. Null for
+-- a refused file, and for a file received before #50.
+alter table clearing_file
+    add column content_hash text unique,
+    add column amount_total_minor bigint,
+    add column net_settlement_amount_minor bigint,
+    add column totals_currency char(3);

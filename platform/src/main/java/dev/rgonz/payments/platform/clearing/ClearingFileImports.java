@@ -133,13 +133,14 @@ class ClearingFileImports {
         new JobParametersBuilder()
             .addString(ClearingFileImportJob.FILE_ID, fileId)
             .addString(ClearingFileImportJob.FILE, file.toString(), false)
+            .addString(
+                ClearingFileImportJob.CONTENT_HASH, ClearingFileLayout.contentHash(file), false)
             .toJobParameters();
     JobExecution execution;
     try {
       execution = jobOperator.start(clearingFileImport, parameters);
     } catch (JobInstanceAlreadyCompleteException alreadyImported) {
-      log.warn("Clearing File {} was already imported", fileId);
-      return new ImportResult.AlreadyImported(fileId);
+      return repeated(file, fileId);
     } catch (JobExecutionAlreadyRunningException running) {
       log.warn("Clearing File {} is being imported, or its import stopped abruptly", fileId);
       return new ImportResult.Running(fileId);
@@ -179,12 +180,23 @@ class ClearingFileImports {
         .findFirst();
   }
 
-  // Moves a refused file on to failed/, where it waits until a person resolves it.
   private ImportResult refused(Path file, String reason) throws IOException {
-    Files.createDirectories(failedFolder);
-    Files.move(file, failedFolder.resolve(file.getFileName()), StandardCopyOption.ATOMIC_MOVE);
+    moveToFailed(file);
     log.warn("Refused Clearing File {}: {}", file.getFileName(), reason);
     return new ImportResult.Refused(reason);
+  }
+
+  private ImportResult repeated(Path file, String earlierFileId) throws IOException {
+    moveToFailed(file);
+    log.warn(
+        "Refused Clearing File {}: it repeats Clearing File {}", file.getFileName(), earlierFileId);
+    return new ImportResult.Repeated(earlierFileId);
+  }
+
+  // A refused file waits in failed/ until a person resolves it.
+  private void moveToFailed(Path file) throws IOException {
+    Files.createDirectories(failedFolder);
+    Files.move(file, failedFolder.resolve(file.getFileName()), StandardCopyOption.ATOMIC_MOVE);
   }
 
   /** How an import ended. */
@@ -201,7 +213,11 @@ class ClearingFileImports {
      */
     record Refused(String reason) implements ImportResult {}
 
-    record AlreadyImported(String fileId) implements ImportResult {}
+    /**
+     * The file repeats one the platform already received, so nothing was posted, and it moved to
+     * {@code failed/}.
+     */
+    record Repeated(String earlierFileId) implements ImportResult {}
 
     /** An import of the file is running, or stopped without its end being recorded. */
     record Running(String fileId) implements ImportResult {}

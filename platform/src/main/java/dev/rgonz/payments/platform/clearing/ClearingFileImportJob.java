@@ -2,7 +2,6 @@ package dev.rgonz.payments.platform.clearing;
 
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.builder.JobBuilder;
@@ -37,6 +36,9 @@ class ClearingFileImportJob {
   /** Where the file waits during its import: not identifying, so it names no new run. */
   static final String FILE = "file";
 
+  /** The file's {@link ClearingFileLayout#contentHash}: not identifying either. */
+  static final String CONTENT_HASH = "contentHash";
+
   /** The first step: its failure means the file was refused and nothing posted. */
   static final String VALIDATE = "validate";
 
@@ -56,8 +58,9 @@ class ClearingFileImportJob {
   }
 
   // The header and trailer are present and parse, and so does every record between them, so the
-  // import step never meets a malformed line; the file is recorded, IMPORTING. Anything wrong fails
-  // the step, and the job, before a single Clearing is posted.
+  // import step never meets a malformed line, and the trailer's record count and amount total are
+  // the records'; the file is recorded, IMPORTING. Anything wrong fails the step, and the job,
+  // before a single Clearing is posted.
   @Bean
   Step validateClearingFile(
       JobRepository jobRepository,
@@ -67,16 +70,15 @@ class ClearingFileImportJob {
         .tasklet(
             (contribution, chunkContext) -> {
               var parameters = contribution.getStepExecution().getJobParameters();
-              var clearings = new AtomicLong();
               ClearingFileLayout.Envelope envelope;
               try (var lines = ClearingFileLayout.open(Path.of(parameter(parameters, FILE)))) {
-                envelope = ClearingFileLayout.read(lines, clearing -> clearings.incrementAndGet());
+                envelope = ClearingFileLayout.read(lines, clearing -> {});
               }
               if (!envelope.header().fileId().equals(parameter(parameters, FILE_ID))) {
                 throw new MalformedClearingFileException(
                     1, "the file ID isn't the one its import started with");
               }
-              files.receive(envelope.header(), clearings.get());
+              files.receive(envelope, parameter(parameters, CONTENT_HASH));
               return RepeatStatus.FINISHED;
             },
             transactionManager)
