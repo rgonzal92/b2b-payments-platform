@@ -125,6 +125,20 @@ class SingleUseCards implements Cards {
         == 1;
   }
 
+  // Only an AUTHORIZED card moves, so a card cancelled since its Charge stays cancelled.
+  @Override
+  public void reverse(String cardToken) {
+    jdbc.sql(
+            """
+            update cards.card set status = :active
+             where card_token = :cardToken and status = :authorized
+            """)
+        .param("active", SingleUseCard.Status.ACTIVE.name())
+        .param("cardToken", cardToken)
+        .param("authorized", SingleUseCard.Status.AUTHORIZED.name())
+        .update();
+  }
+
   /**
    * Marks up to {@code batchSize} {@code ACTIVE} cards whose expiry is at or before {@code now}
    * {@code EXPIRED} and returns them, skipping cards other transactions have locked. Joins the

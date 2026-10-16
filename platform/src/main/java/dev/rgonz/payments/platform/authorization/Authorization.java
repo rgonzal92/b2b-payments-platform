@@ -20,6 +20,11 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
 
   enum ResponseCode {
     APPROVED("00"),
+    /**
+     * Do not honour: the Network reversed the request ID before the platform answered it, so it
+     * already declined the Charge.
+     */
+    DO_NOT_HONOUR("05"),
     /** The amount isn't positive. */
     INVALID_AMOUNT("13"),
     /** No card the Issuer issued has the PAN. */
@@ -62,6 +67,11 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
 
   enum Status {
     APPROVED,
-    DECLINED
+    DECLINED,
+    /**
+     * The Network cancelled it with a Reversal. An approved Authorization keeps the {@code 00} it
+     * was given; a request ID reversed before its Authorization arrived has {@code 05} and no card.
+     */
+    REVERSED
   }
 }
