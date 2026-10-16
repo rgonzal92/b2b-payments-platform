@@ -152,7 +152,8 @@ class ClearingFileImports {
       throw new IllegalStateException("Couldn't start the import of Clearing File " + fileId, e);
     }
     if (execution.getStatus() == BatchStatus.COMPLETED) {
-      Files.delete(file);
+      // Already gone when an import of the same name started meanwhile found it repeated.
+      Files.deleteIfExists(file);
       var imported = files.find(fileId).orElseThrow();
       log.info(
           "Clearing File {} (sequence {}, Business Date {}) imported: {} Clearings",

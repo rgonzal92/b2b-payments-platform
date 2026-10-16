@@ -189,7 +189,7 @@ class ClearingFileImportTests {
         .isEqualTo(
             """
             {"id": "%s", "sequenceNumber": 7, "businessDate": "2026-10-15", "status": "IMPORTED",
-             "recordCount": 1}
+             "recordCount": 1, "skippedCount": 0}
             """
                 .formatted(fileId));
     var entryId = journalEntryFor(networkRecordId);
@@ -419,6 +419,34 @@ class ClearingFileImportTests {
     assertThat(files.find(newFileId)).isEmpty();
     assertThat(DROP_FOLDER.resolve("failed").resolve(again)).exists();
     assertThat(DROP_FOLDER.resolve("processing").resolve(again)).doesNotExist();
+  }
+
+  @Test
+  void aRecordWhoseNetworkRecordIdWasAlreadyImportedIsSkippedAndCountedNotPostedAgain()
+      throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var repeated = clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000);
+    var other = clearingOf(chargedCard(buyerId), newId("R", 20), 1_000_000);
+
+    // Repeated within the first file, and again in the second.
+    var first =
+        importFile(
+            TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 17, List.of(repeated, repeated)),
+            "ROLE_issuer-admin");
+    var second =
+        importFile(
+            TestClearingFiles.drop(DROP_FOLDER, newId("F", 16), 18, List.of(repeated, other)),
+            "ROLE_issuer-admin");
+
+    assertThat(first).hasStatus(201);
+    assertThat(first).bodyJson().extractingPath("$.recordCount").isEqualTo(2);
+    assertThat(first).bodyJson().extractingPath("$.skippedCount").isEqualTo(1);
+    assertThat(second).hasStatus(201);
+    assertThat(second).bodyJson().extractingPath("$.skippedCount").isEqualTo(1);
+    assertThat(postedCount(List.of(repeated))).isEqualTo(1);
+    assertThat(postedCount(List.of(other))).isEqualTo(1);
+    // The Buyer Receivable holds each card's cleared amount once, and neither Hold counts.
+    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000 - 2 * 1_000_000);
   }
 
   @Test

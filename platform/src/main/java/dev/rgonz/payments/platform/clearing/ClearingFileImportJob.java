@@ -130,8 +130,10 @@ class ClearingFileImportJob {
   @Bean
   @StepScope
   ClearingRecordWriter clearingRecordWriter(
-      @Value("#{jobParameters['" + FILE_ID + "']}") String fileId, Clearings clearings) {
-    return new ClearingRecordWriter(fileId, clearings);
+      @Value("#{jobParameters['" + FILE_ID + "']}") String fileId,
+      Clearings clearings,
+      ClearingFiles files) {
+    return new ClearingRecordWriter(fileId, clearings, files);
   }
 
   // What a step saved, such as how many Clearings the reader read, kept as JSON in the job

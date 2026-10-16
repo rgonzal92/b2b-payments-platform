@@ -17,3 +17,9 @@ alter table clearing_file
     add column amount_total_minor bigint,
     add column net_settlement_amount_minor bigint,
     add column totals_currency char(3);
+
+-- How many of the file's records were skipped because their Network record ID was already recorded (#50), counted in
+-- each import chunk's transaction. Before #50 such a record stopped the import instead, so files imported then
+-- skipped none.
+alter table clearing_file
+    add column skipped_count bigint not null default 0;

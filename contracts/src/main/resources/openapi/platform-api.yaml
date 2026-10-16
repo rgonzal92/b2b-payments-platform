@@ -593,7 +593,7 @@ components:
     ClearingFile:
       type: object
       description: A Clearing File the platform imported, as its header and its Clearings describe it.
-      required: [id, sequenceNumber, businessDate, status, recordCount]
+      required: [id, sequenceNumber, businessDate, status, recordCount, skippedCount]
       properties:
         id:
           type: string
@@ -616,6 +616,12 @@ components:
           type: integer
           format: int64
           description: The number of Clearings in the file.
+        skippedCount:
+          type: integer
+          format: int64
+          description: >-
+            How many of them were skipped, and not posted, because their Network record ID was already imported,
+            earlier in the file or in another file.
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.

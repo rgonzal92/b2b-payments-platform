@@ -63,7 +63,8 @@ class ClearingFilesController implements ClearingFilesApi {
         .sequenceNumber(file.sequenceNumber())
         .businessDate(file.businessDate())
         .status(ClearingFileDto.StatusEnum.fromValue(file.status().name()))
-        .recordCount(file.recordCount());
+        .recordCount(file.recordCount())
+        .skippedCount(file.skippedCount());
   }
 
   private static ErrorResponseException problem(HttpStatus status, String detail) {

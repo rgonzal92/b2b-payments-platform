@@ -6,6 +6,7 @@ import java.time.LocalDate;
  * A Clearing File the platform received, as its header and its Clearings describe it.
  *
  * @param recordCount the number of Clearings in the file; null when it was refused
+ * @param skippedCount how many of them were skipped, their Network record ID already recorded
  * @param refusalReason which check refused the file, by line and field; null unless {@code REFUSED}
  */
 record ClearingFileSummary(
@@ -14,6 +15,7 @@ record ClearingFileSummary(
     LocalDate businessDate,
     Status status,
     Long recordCount,
+    long skippedCount,
     String refusalReason) {
 
   enum Status {

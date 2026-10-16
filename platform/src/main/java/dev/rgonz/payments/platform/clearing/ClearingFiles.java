@@ -5,7 +5,10 @@ import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
-/** The Clearing Files the platform received: each one's header figures and import status. */
+/**
+ * The Clearing Files the platform received: each one's header and trailer figures, content hash and
+ * import status, or why it was refused.
+ */
 @Repository
 class ClearingFiles {
 
@@ -58,6 +61,21 @@ class ClearingFiles {
   }
 
   /**
+   * Counts records of the file skipped because their Network record ID was already recorded. Joins
+   * the chunk's transaction.
+   */
+  void countSkipped(String fileId, long skipped) {
+    jdbc.sql(
+            """
+            update clearing.clearing_file set skipped_count = skipped_count + :skipped
+             where id = :id
+            """)
+        .param("skipped", skipped)
+        .param("id", fileId)
+        .update();
+  }
+
+  /**
    * Records a file that failed a check of the validate step, as {@code REFUSED}, with the check it
    * failed.
    */
@@ -100,7 +118,8 @@ class ClearingFiles {
   Optional<ClearingFileSummary> find(String fileId) {
     return jdbc.sql(
             """
-            select id, sequence_number, business_date, status, record_count, refusal_reason
+            select id, sequence_number, business_date, status, record_count, skipped_count,
+                   refusal_reason
               from clearing.clearing_file
              where id = :id
             """)
@@ -113,6 +132,7 @@ class ClearingFiles {
                     row.getObject("business_date", LocalDate.class),
                     ClearingFileSummary.Status.valueOf(row.getString("status")),
                     row.getObject("record_count", Long.class),
+                    row.getLong("skipped_count"),
                     row.getString("refusal_reason")))
         .optional();
   }
