@@ -7,15 +7,15 @@ import org.springframework.stereotype.Component;
 
 /**
  * Checks the drop folder for new Clearing Files every 30 seconds. Tests that import files by hand
- * turn this off with {@code clearing.poller.enabled=false}.
+ * turn this off with {@code clearing.drop-folder-check.enabled=false}.
  */
 @Component
-@ConditionalOnBooleanProperty(name = "clearing.poller.enabled", matchIfMissing = true)
-class ClearingFilePoller {
+@ConditionalOnBooleanProperty(name = "clearing.drop-folder-check.enabled", matchIfMissing = true)
+class DropFolderCheckSchedule {
 
   private final ClearingFileImports imports;
 
-  ClearingFilePoller(ClearingFileImports imports) {
+  DropFolderCheckSchedule(ClearingFileImports imports) {
     this.imports = imports;
   }
 

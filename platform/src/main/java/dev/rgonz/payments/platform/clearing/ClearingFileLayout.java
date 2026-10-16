@@ -3,6 +3,9 @@ package dev.rgonz.payments.platform.clearing;
 import dev.rgonz.payments.platform.shared.Money;
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -24,6 +27,11 @@ final class ClearingFileLayout {
       DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
 
   private ClearingFileLayout() {}
+
+  /** Opens the file for reading, in the layout's character set (US-ASCII). */
+  static BufferedReader open(Path file) throws IOException {
+    return Files.newBufferedReader(file, StandardCharsets.US_ASCII);
+  }
 
   /**
    * Reads a whole file in one pass, handing each Clearing to {@code eachClearing} in file order,

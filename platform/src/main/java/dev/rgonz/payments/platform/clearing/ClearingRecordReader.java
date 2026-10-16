@@ -2,8 +2,6 @@ package dev.rgonz.payments.platform.clearing;
 
 import java.io.BufferedReader;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import org.springframework.batch.infrastructure.item.support.AbstractItemCountingItemStreamItemReader;
 
@@ -26,7 +24,7 @@ class ClearingRecordReader extends AbstractItemCountingItemStreamItemReader<Clea
 
   @Override
   protected void doOpen() throws IOException {
-    lines = Files.newBufferedReader(file, StandardCharsets.US_ASCII);
+    lines = ClearingFileLayout.open(file);
     ClearingFileLayout.readHeader(lines);
     lineNumber = 1;
   }

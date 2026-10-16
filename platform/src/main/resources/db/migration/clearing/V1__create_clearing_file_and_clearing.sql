@@ -23,14 +23,17 @@ create table clearing (
     -- DE 37 of the card's approved Authorization for the record's authorization code; null when there is none.
     authorization_request_id text,
     cleared_amount_minor     bigint not null,
-    -- Null when there is no Authorization.
+    cleared_currency         char(3) not null,
+    -- The Authorization's amount, in its own currency; both null when there is no Authorization.
     authorized_amount_minor  bigint,
-    currency                 char(3) not null,
+    authorized_currency      char(3),
     outcome                  text not null check (outcome in ('MATCHED', 'UNMATCHED')),
     -- The Journal Entry that posted it; null when it wasn't posted.
     journal_entry_id         uuid,
     recorded_at              timestamptz not null default now(),
-    constraint clearing_posted_check check ((outcome = 'MATCHED') = (journal_entry_id is not null))
+    constraint clearing_posted_check check ((outcome = 'MATCHED') = (journal_entry_id is not null)),
+    constraint clearing_authorized_check
+        check ((authorized_amount_minor is null) = (authorized_currency is null))
 );
 
 create index clearing_file_id_idx on clearing (file_id);

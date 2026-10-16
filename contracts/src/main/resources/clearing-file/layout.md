@@ -33,7 +33,7 @@ One per Clearing. The ISO 8583 data element (DE) is named where the field has on
 | 42–53 | 12 | n | Amount | 4 | The Charge's final amount, in minor units. |
 | 54–56 | 3 | an | Currency | 49 | ISO 4217 alphabetic code, such as `USD` (real ISO 8583 carries the numeric code, as in the proto). |
 | 57–68 | 12 | an | Retrieval reference number | 37 | The request ID of the Charge's Authorization. |
-| 69–74 | 6 | an | Authorization code | 38 | The code the Issuer gave the Charge's approval. |
+| 69–74 | 6 | an | Authorization code | 38 | The code the Issuer gave when it approved the Charge's Authorization. |
 | 75–89 | 15 | an | Acceptor ID | 42 | The Supplier's Acceptor ID, as on the Authorization request. |
 | 90–97 | 8 | n | Charge date | | The day of the Charge. |
 | 98–120 | 23 | | Filler | | Spaces |

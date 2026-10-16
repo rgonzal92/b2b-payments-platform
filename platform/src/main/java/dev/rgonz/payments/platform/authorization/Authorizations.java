@@ -112,7 +112,7 @@ class Authorizations implements ApprovedAuthorizations {
     log.info("Reversal {} acknowledged", requestId);
   }
 
-  // Only an approval has an authorization code, and a reversed one keeps it.
+  // Only an approved Authorization has an authorization code, and keeps it once reversed.
   @Override
   public Optional<ApprovedAuthorization> find(String cardToken, String authorizationCode) {
     return jdbc.sql(

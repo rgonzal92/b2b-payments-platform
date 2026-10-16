@@ -1,7 +1,5 @@
 package dev.rgonz.payments.platform.clearing;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
@@ -25,7 +23,8 @@ import org.springframework.transaction.PlatformTransactionManager;
  * Batch refuses to run a file whose import completed again, and restarts one that stopped from the
  * last chunk it committed. Steps run in order: {@code validate}, {@code import}, {@code complete}.
  * Every step's transaction is the platform's own DataSource transaction, which the job repository
- * shares, so a chunk's postings and the record of how far the step got commit together.
+ * shares, so a chunk's Journal Entries, Holds, cards and Clearings, and the record of how far the
+ * step got, commit together.
  */
 @Configuration(proxyBeanMethods = false)
 class ClearingFileImportJob {
@@ -37,6 +36,9 @@ class ClearingFileImportJob {
 
   /** Where the file waits during its import: not identifying, so it names no new run. */
   static final String FILE = "file";
+
+  /** The first step: its failure means the file was refused and nothing posted. */
+  static final String VALIDATE = "validate";
 
   private static final int CHUNK_SIZE = 100;
 
@@ -61,15 +63,13 @@ class ClearingFileImportJob {
       JobRepository jobRepository,
       PlatformTransactionManager transactionManager,
       ClearingFiles files) {
-    return new StepBuilder("validate", jobRepository)
+    return new StepBuilder(VALIDATE, jobRepository)
         .tasklet(
             (contribution, chunkContext) -> {
               var parameters = contribution.getStepExecution().getJobParameters();
               var clearings = new AtomicLong();
               ClearingFileLayout.Envelope envelope;
-              try (var lines =
-                  Files.newBufferedReader(
-                      Path.of(parameter(parameters, FILE)), StandardCharsets.US_ASCII)) {
+              try (var lines = ClearingFileLayout.open(Path.of(parameter(parameters, FILE)))) {
                 envelope = ClearingFileLayout.read(lines, clearing -> clearings.incrementAndGet());
               }
               if (!envelope.header().fileId().equals(parameter(parameters, FILE_ID))) {
@@ -120,14 +120,15 @@ class ClearingFileImportJob {
   // so two files importing at once never share one.
   @Bean
   @StepScope
-  ClearingRecordReader clearingRecordReader(@Value("#{jobParameters['file']}") String file) {
+  ClearingRecordReader clearingRecordReader(
+      @Value("#{jobParameters['" + FILE + "']}") String file) {
     return new ClearingRecordReader(Path.of(file));
   }
 
   @Bean
   @StepScope
   ClearingRecordWriter clearingRecordWriter(
-      @Value("#{jobParameters['fileId']}") String fileId, Clearings clearings) {
+      @Value("#{jobParameters['" + FILE_ID + "']}") String fileId, Clearings clearings) {
     return new ClearingRecordWriter(fileId, clearings);
   }
 

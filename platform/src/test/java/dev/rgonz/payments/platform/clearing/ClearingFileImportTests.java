@@ -204,8 +204,9 @@ class ClearingFileImportTests {
         .containsEntry("card_token", charged.card().cardToken())
         .containsEntry("authorization_request_id", charged.requestId())
         .containsEntry("cleared_amount_minor", 1_000_000L)
+        .containsEntry("cleared_currency", "USD")
         .containsEntry("authorized_amount_minor", CARD_AMOUNT)
-        .containsEntry("currency", "USD")
+        .containsEntry("authorized_currency", "USD")
         .containsEntry("outcome", "MATCHED")
         .containsEntry("journal_entry_id", entryId);
     assertThat(DROP_FOLDER.resolve(fileName)).doesNotExist();
@@ -231,6 +232,8 @@ class ClearingFileImportTests {
     assertThat(clearingRecorded(networkRecordId))
         .containsEntry("card_token", charged.card().cardToken())
         .containsEntry("authorization_request_id", null)
+        .containsEntry("authorized_amount_minor", null)
+        .containsEntry("authorized_currency", null)
         .containsEntry("outcome", "UNMATCHED")
         .containsEntry("journal_entry_id", null);
     assertThat(holdStatus(charged.card())).isEqualTo("PLACED");
@@ -289,10 +292,13 @@ class ClearingFileImportTests {
   }
 
   @Test
-  void aFileNameNotInTheDropFolderIsNotFound() {
-    var response = importFile("no-such-file.txt", "ROLE_issuer-admin");
+  void aFileNameNotInTheDropFolderIsNotFound() throws Exception {
+    // The processing/ folder is a name in the drop folder too, but not a file.
+    Files.createDirectories(DROP_FOLDER.resolve("processing"));
 
-    assertProblem(response, 404);
+    for (var fileName : List.of("no-such-file.txt", "processing")) {
+      assertProblem(importFile(fileName, "ROLE_issuer-admin"), 404);
+    }
   }
 
   @Test
@@ -437,7 +443,8 @@ class ClearingFileImportTests {
     return jdbc.sql(
             """
             select file_id, card_token, authorization_request_id, cleared_amount_minor,
-                   authorized_amount_minor, currency, outcome, journal_entry_id
+                   cleared_currency, authorized_amount_minor, authorized_currency, outcome,
+                   journal_entry_id
               from clearing.clearing
              where network_record_id = :networkRecordId
             """)

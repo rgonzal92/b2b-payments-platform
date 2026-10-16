@@ -2,7 +2,6 @@ package dev.rgonz.payments.platform.clearing;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
@@ -60,8 +59,9 @@ class ClearingFileImports {
    */
   ImportResult importFile(String fileName) {
     try {
+      // A file's name only: no path out of the drop folder, and not a folder in it (processing/).
       var source = dropFolder.resolve(fileName).normalize();
-      if (!dropFolder.equals(source.getParent())) {
+      if (!dropFolder.equals(source.getParent()) || Files.isDirectory(source)) {
         return new ImportResult.NotFound();
       }
       var file = processingFolder.resolve(fileName);
@@ -69,7 +69,7 @@ class ClearingFileImports {
         return new ImportResult.NotFound();
       }
       FileHeader header;
-      try (var lines = Files.newBufferedReader(file, StandardCharsets.US_ASCII)) {
+      try (var lines = ClearingFileLayout.open(file)) {
         header = ClearingFileLayout.readHeader(lines);
       } catch (MalformedClearingFileException malformed) {
         log.warn("Refused Clearing File {}: {}", fileName, malformed.getMessage());
@@ -159,7 +159,8 @@ class ClearingFileImports {
   // import partway, keeping the chunks it committed.
   private static ImportResult stopped(String fileId, JobExecution execution) {
     for (var step : execution.getStepExecutions()) {
-      if (step.getStatus() == BatchStatus.FAILED && "validate".equals(step.getStepName())) {
+      if (step.getStatus() == BatchStatus.FAILED
+          && ClearingFileImportJob.VALIDATE.equals(step.getStepName())) {
         var reason =
             step.getFailureExceptions().stream()
                 .filter(MalformedClearingFileException.class::isInstance)

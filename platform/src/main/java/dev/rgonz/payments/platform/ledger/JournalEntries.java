@@ -36,13 +36,10 @@ class JournalEntries implements Journal {
                 new Line(Account.networkSettlementPayable(), Side.CREDIT, amount))));
   }
 
-  /**
-   * Posts the entry and returns its ID; an entry of the same kind and idempotency key posted before
-   * returns that entry's ID instead, and nothing is posted. Joins the caller's transaction, so the
-   * entry and its lines commit together.
-   */
-  @Transactional
-  UUID post(JournalEntry entry) {
+  // Posts the entry and returns its ID; an entry of the same kind and idempotency key posted before
+  // returns that entry's ID instead, and nothing is posted. Runs in the caller's transaction, so
+  // the entry and its lines commit together.
+  private UUID post(JournalEntry entry) {
     var id = UUID.randomUUID();
     // The unique key decides, not a read first: a second post of one key waits for the first to
     // commit, then inserts nothing and finds the first entry.

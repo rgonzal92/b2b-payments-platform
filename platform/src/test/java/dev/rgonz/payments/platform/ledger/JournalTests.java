@@ -2,13 +2,10 @@ package dev.rgonz.payments.platform.ledger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
-import dev.rgonz.payments.platform.ledger.JournalEntry.Line;
-import dev.rgonz.payments.platform.ledger.JournalEntry.Side;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.io.UnsupportedEncodingException;
@@ -28,9 +25,9 @@ import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequ
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 
 /**
- * The double-entry journal (ADR-0015) on PostgreSQL: every Journal Entry balances, is posted once
- * per idempotency key, and is never changed or deleted. Issuer staff see a Buyer Receivable's
- * balance in Available Credit.
+ * The double-entry journal (ADR-0015) on PostgreSQL: a Journal Entry is posted once per idempotency
+ * key, and never changed or deleted. Issuer staff see a Buyer Receivable's balance in Available
+ * Credit. That every entry balances is {@link JournalEntryTests}.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -40,29 +37,8 @@ class JournalTests {
   private static final Currency USD = Currency.getInstance("USD");
 
   @Autowired MockMvcTester mvc;
-  @Autowired JournalEntries journal;
+  @Autowired Journal journal;
   @Autowired JdbcClient jdbc;
-
-  @Test
-  void anEntryWhoseDebitsAndCreditsDontBalanceIsRefusedAndPostsNothing() throws Exception {
-    var buyerId = buyerWithCreditLine(10_000_000);
-
-    assertThatIllegalArgumentException()
-        .isThrownBy(
-            () ->
-                journal.post(
-                    new JournalEntry(
-                        JournalEntry.Kind.CLEARING,
-                        UUID.randomUUID().toString(),
-                        List.of(
-                            new Line(Account.buyerReceivable(buyerId), Side.DEBIT, usd(1_240_000)),
-                            new Line(
-                                Account.networkSettlementPayable(),
-                                Side.CREDIT,
-                                usd(1_239_999))))));
-
-    assertThat(availableCredit(buyerId)).isEqualTo(10_000_000);
-  }
 
   @Test
   void postingTheSameIdempotencyKeyTwicePostsOnceAndReturnsTheFirstEntry() throws Exception {
