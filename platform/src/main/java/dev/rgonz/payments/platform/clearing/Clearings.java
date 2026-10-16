@@ -1,18 +1,16 @@
 package dev.rgonz.payments.platform.clearing;
 
-import dev.rgonz.payments.platform.authorization.ApprovedAuthorization;
 import dev.rgonz.payments.platform.authorization.ApprovedAuthorizations;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.ledger.Journal;
 import dev.rgonz.payments.platform.vault.Vault;
-import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 /**
- * Each Clearing a file brought: matched to its card's approved Authorization, posted to the journal
- * when it matches, and recorded with its outcome. Never stores the PAN: it goes to the vault, which
+ * Each Clearing a file brought: posted to the journal, and recorded with how it matched its card's
+ * Authorization ({@link ClearingOutcome}). Never stores the PAN: it goes to the vault, which
  * answers with the Card Token (ADR-0004).
  */
 @Repository
@@ -41,12 +39,14 @@ class Clearings {
   }
 
   /**
-   * Imports one Clearing of the file. When it matches its card's approved Authorization, it posts
-   * the Clearing to the journal (debiting the card's Buyer Receivable, keyed by the Network record
-   * ID), marks the card's Hold {@code CLEARED} and moves the card to {@code CLEARED}. Either way it
-   * records the Clearing with its outcome. Joins the caller's transaction, the import step's chunk,
-   * so all of it commits or rolls back with the chunk. A Network record ID already recorded fails
-   * the chunk rather than posting twice.
+   * Imports one Clearing of the file. A card the vault knows moves to {@code CLEARED} whatever its
+   * status, and so does its Hold if it is still open; the Payment is left alone. The Clearing's
+   * outcome follows from what the import found ({@link ClearingOutcome.Facts}), and it is posted
+   * either way, keyed by its Network record ID: to the card's Buyer Receivable, or to Clearing
+   * Suspense when no Buyer can be charged for it. Then it is recorded with its outcome and Journal
+   * Entry. Joins the caller's transaction, the import step's chunk, so all of it commits or rolls
+   * back with the chunk. A Network record ID already recorded fails the chunk rather than posting
+   * twice.
    */
   void importClearing(String fileId, ClearingRecord record) {
     var cardToken = vault.cardFor(record.pan()).orElse(null);
@@ -55,17 +55,30 @@ class Clearings {
         card == null
             ? null
             : authorizations.find(cardToken, record.authorizationCode()).orElse(null);
-    UUID journalEntryId = null;
-    // The conditional move to CLEARED decides between two Clearings for one card: only the first
-    // finds it AUTHORIZED.
-    if (card != null && matches(record, authorization) && cards.clear(cardToken)) {
-      journalEntryId =
-          journal.postClearing(record.networkRecordId(), card.buyerId(), record.amount());
+    var holdReleased = false;
+    if (card != null) {
+      // The card first, then its Hold, in the order every module locks them, both locked until the
+      // chunk commits. A Clearing of this card in another import waits, then finds this one
+      // recorded; a CardExpired handled meanwhile waits, then finds the Hold cleared and leaves it.
+      // A released Hold stays released.
+      cards.clear(cardToken);
       // The Payment saga places each card's Hold under its Payment's ID.
+      holdReleased = holds.isReleased(card.paymentId());
       holds.clear(card.paymentId());
     }
-    // shortcut: every Clearing off the matched path is recorded UNMATCHED and not posted; #51
-    // replaces this with the M3 design's outcome table.
+    var outcome =
+        new ClearingOutcome.Facts(
+                record.amount(),
+                card == null ? null : card.amount().currency(),
+                authorization,
+                authorization != null && alreadyCleared(authorization.requestId()),
+                holdReleased)
+            .outcome();
+    // To Clearing Suspense when no Buyer can be charged for it, as for every unknown card.
+    var journalEntryId =
+        card == null || outcome.postsToSuspense()
+            ? journal.postClearingToSuspense(record.networkRecordId(), record.amount())
+            : journal.postClearing(record.networkRecordId(), card.buyerId(), record.amount());
     jdbc.sql(
             """
             insert into clearing.clearing
@@ -87,17 +100,22 @@ class Clearings {
         .param(
             "authorizedCurrency",
             authorization == null ? null : authorization.amount().currency().getCurrencyCode())
-        .param("outcome", journalEntryId == null ? "UNMATCHED" : "MATCHED")
+        .param("outcome", outcome.name())
         .param("journalEntryId", journalEntryId)
         .update();
   }
 
-  // An approved Authorization, not reversed since, in the Clearing's currency and for at least its
-  // amount: a Clearing below it frees the rest of the Hold.
-  private static boolean matches(ClearingRecord record, ApprovedAuthorization authorization) {
-    return authorization != null
-        && !authorization.reversed()
-        && authorization.amount().currency().equals(record.amount().currency())
-        && !record.amount().isMoreThan(authorization.amount());
+  // Whether a Clearing of this Authorization is recorded already, in this chunk or before it. The
+  // literal matches clearing_authorization_first_idx's predicate, as a bound parameter wouldn't.
+  private boolean alreadyCleared(String authorizationRequestId) {
+    return jdbc.sql(
+            """
+            select exists (select 1 from clearing.clearing
+                            where authorization_request_id = :authorizationRequestId
+                              and outcome <> 'AUTHORIZATION_ALREADY_CLEARED')
+            """)
+        .param("authorizationRequestId", authorizationRequestId)
+        .query(Boolean.class)
+        .single();
   }
 }

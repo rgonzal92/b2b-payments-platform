@@ -5,6 +5,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.Currency;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -54,6 +56,8 @@ class ClearingFiles {
 
   /** The file with its Settlement, once it has one. */
   Optional<ClearingFileSummary> find(String fileId) {
+    // Counted first, not from inside the row mapper, which would hold a second connection.
+    var outcomes = outcomes(fileId);
     return jdbc.sql(
             """
             select f.id, f.sequence_number, f.business_date, f.status, f.record_count,
@@ -71,8 +75,32 @@ class ClearingFiles {
                     row.getObject("business_date", LocalDate.class),
                     ClearingFileSummary.Status.valueOf(row.getString("status")),
                     row.getLong("record_count"),
+                    outcomes,
                     settlement(row)))
         .optional();
+  }
+
+  // How many of the file's Clearings ended with each outcome; zero for an outcome none had.
+  private Map<ClearingOutcome, Long> outcomes(String fileId) {
+    var outcomes = new EnumMap<ClearingOutcome, Long>(ClearingOutcome.class);
+    for (var outcome : ClearingOutcome.values()) {
+      outcomes.put(outcome, 0L);
+    }
+    jdbc.sql(
+            """
+            select outcome, count(*) as clearings
+              from clearing.clearing
+             where file_id = :fileId
+             group by outcome
+            """)
+        .param("fileId", fileId)
+        // A block: an expression lambda would also fit query's ResultSetExtractor overload.
+        .query(
+            row -> {
+              outcomes.put(
+                  ClearingOutcome.valueOf(row.getString("outcome")), row.getLong("clearings"));
+            });
+    return outcomes;
   }
 
   private static ClearingFileSummary.Settlement settlement(ResultSet row) throws SQLException {
