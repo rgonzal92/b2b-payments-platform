@@ -29,11 +29,11 @@ class CreditController implements CreditApi {
   @Override
   @PreAuthorize("hasRole('issuer-admin')")
   public ResponseEntity<MoneyDto> putCreditLine(UUID buyerId, MoneyDto creditLine) {
-    var buyer = new BuyerId(buyerId);
-    if (!buyers.exists(buyer)) {
+    var id = new BuyerId(buyerId);
+    if (!buyers.exists(id)) {
       throw notFound("No Buyer has this ID.");
     }
-    var created = creditLines.set(buyer, toMoney(creditLine));
+    var created = creditLines.set(id, toMoney(creditLine));
     return ResponseEntity.status(created ? HttpStatus.CREATED : HttpStatus.OK).body(creditLine);
   }
 

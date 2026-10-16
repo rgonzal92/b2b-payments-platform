@@ -17,7 +17,7 @@ class CreditLines {
   }
 
   /** Sets the Buyer's Credit Line, replacing any it has; true when the Buyer had none before. */
-  boolean set(BuyerId buyer, Money creditLine) {
+  boolean set(BuyerId buyerId, Money creditLine) {
     // PostgreSQL 18's RETURNING old: old's columns are null when the row was inserted, not updated.
     return jdbc.sql(
             """
@@ -29,7 +29,7 @@ class CreditLines {
                    updated_at   = now()
             returning old.buyer_id is null as created
             """)
-        .param("buyerId", buyer.value())
+        .param("buyerId", buyerId.value())
         .param("amount", creditLine.minorUnits())
         .param("currency", creditLine.currency().getCurrencyCode())
         .query(Boolean.class)
@@ -37,14 +37,14 @@ class CreditLines {
   }
 
   /** The Buyer's Credit Line and open Holds; empty when the Buyer has no Credit Line. */
-  Optional<Credit> findCredit(BuyerId buyer) {
+  Optional<Credit> findCredit(BuyerId buyerId) {
     return jdbc.sql(
             """
             select amount_minor, currency
               from ledger.credit_line
              where buyer_id = :buyerId
             """)
-        .param("buyerId", buyer.value())
+        .param("buyerId", buyerId.value())
         .query(
             (row, rowNumber) -> {
               var currency = Currency.getInstance(row.getString("currency"));

@@ -115,6 +115,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Credit'
+        '400':
+          $ref: '#/components/responses/Problem'
         '401':
           $ref: '#/components/responses/Problem'
         '403':

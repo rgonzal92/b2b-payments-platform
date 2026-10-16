@@ -53,9 +53,9 @@ class Buyers implements BuyerDirectory {
   }
 
   @Override
-  public boolean exists(BuyerId buyer) {
+  public boolean exists(BuyerId id) {
     return jdbc.sql("select exists (select 1 from buyers.buyer where id = :id)")
-        .param("id", buyer.value())
+        .param("id", id.value())
         .query(Boolean.class)
         .single();
   }

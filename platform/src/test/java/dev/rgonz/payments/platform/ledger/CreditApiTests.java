@@ -73,8 +73,7 @@ class CreditApiTests {
   void anUnknownBuyerGetsNoCreditLine() {
     var response = putCreditLine(UUID.randomUUID(), ISSUER_ADMIN, usd(10_000_000));
 
-    assertThat(response).hasStatus(404);
-    assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
+    assertProblem(response, 404);
   }
 
   @Test
@@ -83,8 +82,7 @@ class CreditApiTests {
     var unknownBuyer = getCredit(UUID.randomUUID(), ISSUER_ADMIN);
 
     for (var response : List.of(neverSet, unknownBuyer)) {
-      assertThat(response).hasStatus(404);
-      assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
+      assertProblem(response, 404);
     }
   }
 
@@ -109,8 +107,7 @@ class CreditApiTests {
         """);
 
     for (var response : List.of(negative, otherCurrency, noCurrency)) {
-      assertThat(response).hasStatus(400);
-      assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
+      assertProblem(response, 400);
     }
   }
 
@@ -123,12 +120,17 @@ class CreditApiTests {
     var read = getCredit(buyerId, "ROLE_approver");
 
     for (var response : List.of(set, read)) {
-      assertThat(response).hasStatus(403);
-      assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
+      assertProblem(response, 403);
     }
   }
 
   private static final String ISSUER_ADMIN = "ROLE_issuer-admin";
+
+  private static void assertProblem(MvcTestResult response, int status) {
+    assertThat(response).hasStatus(status);
+    assertThat(response).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
+    assertThat(response).bodyJson().extractingPath("$.status").isEqualTo(status);
+  }
 
   private UUID existingBuyer() {
     var buyerId = UUID.randomUUID();
