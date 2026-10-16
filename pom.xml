@@ -36,6 +36,9 @@
 
 	<properties>
 		<java.version>25</java.version>
+		<sonar.organization>rgonzal92</sonar.organization>
+		<sonar.projectKey>rgonzal92_b2b-payments-platform</sonar.projectKey>
+		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
 	</properties>
 
 	<dependencyManagement>
@@ -50,6 +53,15 @@
 	</dependencyManagement>
 
 	<build>
+		<pluginManagement>
+			<plugins>
+				<plugin>
+					<groupId>org.sonarsource.scanner.maven</groupId>
+					<artifactId>sonar-maven-plugin</artifactId>
+					<version>5.8.0.7211</version>
+				</plugin>
+			</plugins>
+		</pluginManagement>
 		<plugins>
 			<plugin>
 				<groupId>com.diffplug.spotless</groupId>
