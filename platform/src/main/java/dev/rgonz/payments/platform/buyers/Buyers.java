@@ -7,8 +7,9 @@ import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
+/** Buyers. Other modules use only {@link #exists(UUID)}. */
 @Repository
-class Buyers {
+public class Buyers {
 
   private final JdbcClient jdbc;
 
@@ -30,6 +31,13 @@ class Buyers {
             .param("currency", buyer.approvalThreshold().currency().getCurrencyCode())
             .update()
         == 1;
+  }
+
+  public boolean exists(UUID id) {
+    return jdbc.sql("select exists (select 1 from buyers.buyer where id = :id)")
+        .param("id", id)
+        .query(Boolean.class)
+        .single();
   }
 
   Optional<Buyer> find(UUID id) {
