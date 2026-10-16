@@ -178,7 +178,7 @@ class RemittanceLinksTests {
     var card = issuedCard();
     var link = deliveredLink(card, Instant.now());
 
-    cards.authorize(card.cardToken());
+    cards.authorize(card.cardToken(), Instant.now());
 
     assertThat(mvc.get().uri(link).exchange()).hasStatusOk();
   }

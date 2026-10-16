@@ -54,9 +54,9 @@ record Payment(
   }
 
   /**
-   * Its Single-Use Card expired uncharged: the Payment ends {@code EXPIRED} with no step left, a
-   * delivery still being retried included. In any other state there is no live card to expire, so
-   * the Payment stays as it is.
+   * Its Single-Use Card expired, uncharged or uncleared: the Payment ends {@code EXPIRED} with no
+   * step left, a delivery still being retried included. In any other state there is no live card to
+   * expire, so the Payment stays as it is.
    */
   Payment cardExpired() {
     return switch (state) {

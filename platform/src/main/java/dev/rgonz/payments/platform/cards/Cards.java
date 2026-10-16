@@ -32,16 +32,17 @@ public interface Cards {
   void cancel(String cardToken);
 
   /**
-   * Moves the card from {@code ACTIVE} to {@code AUTHORIZED} when a Charge on it is approved, in
-   * one conditional update, and says whether it did: false when the card isn't {@code ACTIVE}, or
-   * doesn't exist. Joins the caller's transaction.
+   * Moves the card from {@code ACTIVE} to {@code AUTHORIZED} when a Charge on it is approved at
+   * {@code now}, in one conditional update, and says whether it did: false when the card isn't
+   * {@code ACTIVE}, or doesn't exist. The card expires if no Clearing comes within 7 days of {@code
+   * now}. Joins the caller's transaction.
    */
-  boolean authorize(String cardToken);
+  boolean authorize(String cardToken, Instant now);
 
   /**
    * Moves the card from {@code AUTHORIZED} back to {@code ACTIVE} when its approved Authorization
-   * is reversed, in one conditional update, so it can be charged again; a card in any other status
-   * is left as it is. Joins the caller's transaction.
+   * is reversed, in one conditional update, so it can be charged again and its 7 days to clear no
+   * longer count; a card in any other status is left as it is. Joins the caller's transaction.
    */
   void reverse(String cardToken);
 }

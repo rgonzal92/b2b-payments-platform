@@ -115,6 +115,16 @@ update payables.payment
    and failure_reason not like 'Delivering the Remittance Advice%';
 ```
 
-## A card past its expiry is still `ACTIVE`
+## A card stays `ACTIVE` past its expiry, or `AUTHORIZED` past its 7 days
 
-The expiry job in `cards` is switched off (`cards.expiry-job.enabled=false`) or failing (an error from the scheduled task `cardExpirySchedule.expireDue` in the logs, usually the database), so the card's Hold stays placed and the Buyer's Available Credit stays short by its amount; `select card_token, payment_id, expires_at from cards.card where status = 'ACTIVE' and expires_at <= now();` lists the cards waiting, and once the job runs again it expires them all. A card that is `EXPIRED` while its Payment isn't is waiting for its `CardExpired` listener: query the registry as above with `event_type like '%CardExpired'`, fix the cause in the logs (`PaymentSaga.expire`), and restart.
+The expiry job in `cards` expires an `ACTIVE` card at its expiry, and an `AUTHORIZED` card 7 days after its Authorization when no Clearing has come. When it is switched off (`cards.expiry-job.enabled=false`) or failing (an error from the scheduled task `cardExpirySchedule.expireDue` in the logs, usually the database), the card's Hold stays placed and the Buyer's Available Credit stays short by its amount. These list the cards waiting; once the job runs again it expires them all:
+
+```sql
+select card_token, payment_id, expires_at from cards.card where status = 'ACTIVE' and expires_at <= now();
+select card_token, payment_id, authorized_at from cards.card
+ where status = 'AUTHORIZED' and authorized_at <= now() - interval '7 days';
+```
+
+An `AUTHORIZED` card that was already authorized when the platform first ran with the 7-day rule (the `cards` migration V3) counts its 7 days from that migration, not from its Charge.
+
+A card that is `EXPIRED` while its Payment isn't is waiting for its `CardExpired` listener: query the registry as above with `event_type like '%CardExpired'`, fix the cause in the logs (`PaymentSaga.expire`), and restart.
