@@ -49,7 +49,8 @@ class CorePathEndToEndTests {
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
-          .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET);
+          .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET)
+          .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
   private static ConfigurableApplicationContext platform;
   private static ConfigurableApplicationContext simulator;
@@ -58,6 +59,8 @@ class CorePathEndToEndTests {
   @BeforeAll
   static void startBothApps() {
     var platformPort = TestSocketUtils.findAvailableTcpPort();
+    // The Network link's gRPC server, off the fixed 9090 another build may be using.
+    var platformGrpcPort = TestSocketUtils.findAvailableTcpPort();
     simulatorPort = TestSocketUtils.findAvailableTcpPort();
     var issuerUri = keycloak.getAuthServerUrl() + "/realms/payments";
 
@@ -65,6 +68,7 @@ class CorePathEndToEndTests {
         start(
             PlatformApplication.class,
             "server.port=" + platformPort,
+            "spring.grpc.server.port=" + platformGrpcPort,
             "platform.public-url=http://localhost:" + platformPort,
             "spring.datasource.url=" + postgres.getJdbcUrl(),
             "spring.datasource.username=" + postgres.getUsername(),
