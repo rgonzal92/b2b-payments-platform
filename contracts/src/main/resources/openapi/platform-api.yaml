@@ -123,6 +123,76 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+  /v1/invoices:
+    post:
+      tags: [Invoices]
+      operationId: submitInvoice
+      summary: Submit an Invoice
+      description: >-
+        A Buyer's ERP only (role `erp`); the Buyer is the one in the token's `buyer_id` claim. The amount must
+        be more than zero. The first Invoice naming an unknown tax ID creates the Supplier, and the Buyer's first
+        Invoice to a Supplier creates its Supplier Relationship; later Invoices reuse both and don't change them.
+        Repeating a request with the same `Idempotency-Key` returns the original response; reusing a key with a
+        different request is `422`. The same Supplier and Invoice number under a new key is `409`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: A new random value per Invoice, such as a UUID; resend the same value when retrying.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvoiceRequest'
+      responses:
+        '201':
+          description: The Invoice was received, or this is the replay of an earlier response to the same key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /v1/invoices/{invoiceId}:
+    get:
+      tags: [Invoices]
+      operationId: getInvoice
+      summary: Get an Invoice
+      description: >-
+        Buyer-side roles (`erp`, `approver`). An Invoice of any other Buyer answers `404`, as if it didn't exist.
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The Invoice.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
 components:
   securitySchemes:
     bearerAuth:
@@ -181,6 +251,68 @@ components:
           $ref: '#/components/schemas/Money'
         availableCredit:
           $ref: '#/components/schemas/Money'
+    InvoiceSupplier:
+      type: object
+      description: The Supplier as an Invoice names it.
+      required: [name, taxId, buyerReference, remittanceAddress]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+          pattern: '.*\S.*'
+        taxId:
+          type: string
+          description: Identifies the Supplier across all Buyers; compared exactly.
+          maxLength: 50
+          pattern: '^\S+$'
+        buyerReference:
+          type: string
+          description: The Buyer's own ID for the Supplier.
+          maxLength: 100
+          pattern: '.*\S.*'
+        remittanceAddress:
+          type: string
+          description: The http(s) URL where the Supplier receives Remittance Advice.
+          maxLength: 2000
+          pattern: '^https?://\S+$'
+    InvoiceRequest:
+      type: object
+      required: [supplier, invoiceNumber, amount, dueDate]
+      properties:
+        supplier:
+          $ref: '#/components/schemas/InvoiceSupplier'
+        invoiceNumber:
+          type: string
+          description: The Supplier's number for the Invoice.
+          maxLength: 100
+          pattern: '.*\S.*'
+        amount:
+          $ref: '#/components/schemas/Money'
+        dueDate:
+          type: string
+          format: date
+    Invoice:
+      type: object
+      required: [id, status, supplierId, supplier, invoiceNumber, amount, dueDate]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [RECEIVED]
+        supplierId:
+          type: string
+          format: uuid
+        supplier:
+          $ref: '#/components/schemas/InvoiceSupplier'
+        invoiceNumber:
+          type: string
+        amount:
+          $ref: '#/components/schemas/Money'
+        dueDate:
+          type: string
+          format: date
     Problem:
       type: object
       properties:

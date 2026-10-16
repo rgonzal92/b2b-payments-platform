@@ -2,6 +2,7 @@ package dev.rgonz.payments.simulator;
 
 import dev.rgonz.payments.contracts.client.BuyersApi;
 import dev.rgonz.payments.contracts.client.CreditApi;
+import dev.rgonz.payments.contracts.client.InvoicesApi;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -22,7 +23,7 @@ class PlatformClients {
       RestClient.Builder builder,
       OAuth2AuthorizedClientManager clients,
       @Value("${simulator.platform-url}") String platformUrl) {
-    return asIssuerAdmin(builder, clients, platformUrl).createClient(BuyersApi.class);
+    return signedInAs("issuer-admin", builder, clients, platformUrl).createClient(BuyersApi.class);
   }
 
   @Bean
@@ -30,14 +31,26 @@ class PlatformClients {
       RestClient.Builder builder,
       OAuth2AuthorizedClientManager clients,
       @Value("${simulator.platform-url}") String platformUrl) {
-    return asIssuerAdmin(builder, clients, platformUrl).createClient(CreditApi.class);
+    return signedInAs("issuer-admin", builder, clients, platformUrl).createClient(CreditApi.class);
   }
 
-  private static HttpServiceProxyFactory asIssuerAdmin(
-      RestClient.Builder builder, OAuth2AuthorizedClientManager clients, String platformUrl) {
-    var issuerAdmin = new OAuth2ClientHttpRequestInterceptor(clients);
-    issuerAdmin.setClientRegistrationIdResolver(request -> "issuer-admin");
-    var restClient = builder.baseUrl(platformUrl).requestInterceptor(issuerAdmin).build();
+  @Bean
+  InvoicesApi invoicesApi(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl) {
+    return signedInAs("acme-erp", builder, clients, platformUrl).createClient(InvoicesApi.class);
+  }
+
+  // The registration ID names one of the spring.security.oauth2.client.registration entries.
+  private static HttpServiceProxyFactory signedInAs(
+      String registrationId,
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      String platformUrl) {
+    var signIn = new OAuth2ClientHttpRequestInterceptor(clients);
+    signIn.setClientRegistrationIdResolver(request -> registrationId);
+    var restClient = builder.baseUrl(platformUrl).requestInterceptor(signIn).build();
     return HttpServiceProxyFactory.builderFor(RestClientAdapter.create(restClient)).build();
   }
 }
