@@ -2,6 +2,7 @@ package dev.rgonz.payments.platform.clearing;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Currency;
 import java.util.Objects;
 import java.util.function.Consumer;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -43,6 +44,10 @@ class ClearingFileImportJob {
 
   private static final int CHUNK_SIZE = 100;
 
+  // The one currency the platform's API carries (Money in the OpenAPI document); more currencies
+  // are deferred (M3 design). A file in another can't be settled, so validate refuses it.
+  private static final Currency SETTLED_CURRENCY = Currency.getInstance("USD");
+
   @Bean
   Job clearingFileImport(
       JobRepository jobRepository,
@@ -75,6 +80,14 @@ class ClearingFileImportJob {
               if (!envelope.header().fileId().equals(parameter(parameters, FILE_ID))) {
                 throw new MalformedClearingFileException(
                     1, "the file ID isn't the one its import started with");
+              }
+              var trailer = envelope.trailer();
+              if (!trailer.amountTotal().currency().equals(SETTLED_CURRENCY)) {
+                // The trailer follows the header and the detail records.
+                throw new MalformedClearingFileException(
+                    Math.toIntExact(trailer.recordCount() + 2),
+                    "the currency (positions 41–43) isn't USD, the only currency the platform"
+                        + " settles");
               }
               files.receive(
                   envelope, ClearingFileLayout.contentHash(Path.of(parameter(parameters, FILE))));

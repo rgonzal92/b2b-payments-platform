@@ -600,6 +600,15 @@ class ClearingFileImportTests {
             "Line 3: the amount total (positions 11–25) isn't the sum of the detail records'"
                 + " amounts."),
         arguments(
+            "a trailer in a currency the platform doesn't settle",
+            records(
+                clearing ->
+                    List.of(
+                        TestClearingFiles.detail(clearing).replace("USD", "EUR"),
+                        TestClearingFiles.trailer(List.of(clearing)).replace("USD", "EUR"))),
+            "Line 3: the currency (positions 41–43) isn't USD, the only currency the platform"
+                + " settles."),
+        arguments(
             "a malformed detail record",
             records(
                 clearing -> {
