@@ -45,10 +45,10 @@ class Clearings {
    * either way, keyed by its Network record ID: to the card's Buyer Receivable, or to Clearing
    * Suspense when no Buyer can be charged for it. Then it is recorded with its outcome and Journal
    * Entry. Joins the caller's transaction, the import step's chunk, so all of it commits or rolls
-   * back with the chunk. A Network record ID already recorded fails the chunk rather than posting
-   * twice.
+   * back with the chunk. Returns false, and posts and records nothing, when its Network record ID
+   * was already recorded, earlier in this file or in another: the record is skipped.
    */
-  void importClearing(String fileId, ClearingRecord record) {
+  boolean importClearing(String fileId, ClearingRecord record) {
     var cardToken = vault.cardFor(record.pan()).orElse(null);
     var card = cardToken == null ? null : cards.find(cardToken).orElse(null);
     var authorization =
@@ -79,30 +79,38 @@ class Clearings {
         card == null || outcome.postsToSuspense()
             ? journal.postClearingToSuspense(record.networkRecordId(), record.amount())
             : journal.postClearing(record.networkRecordId(), card.buyerId(), record.amount());
-    jdbc.sql(
-            """
-            insert into clearing.clearing
-                   (network_record_id, file_id, card_token, authorization_request_id,
-                    cleared_amount_minor, cleared_currency, authorized_amount_minor,
-                    authorized_currency, outcome, journal_entry_id)
-            values (:networkRecordId, :fileId, :cardToken, :authorizationRequestId,
-                    :clearedAmount, :clearedCurrency, :authorizedAmount, :authorizedCurrency,
-                    :outcome, :journalEntryId)
-            """)
-        .param("networkRecordId", record.networkRecordId())
-        .param("fileId", fileId)
-        .param("cardToken", cardToken)
-        .param("authorizationRequestId", authorization == null ? null : authorization.requestId())
-        .param("clearedAmount", record.amount().minorUnits())
-        .param("clearedCurrency", record.amount().currency().getCurrencyCode())
-        .param(
-            "authorizedAmount", authorization == null ? null : authorization.amount().minorUnits())
-        .param(
-            "authorizedCurrency",
-            authorization == null ? null : authorization.amount().currency().getCurrencyCode())
-        .param("outcome", outcome.name())
-        .param("journalEntryId", journalEntryId)
-        .update();
+    // A record already recorded is skipped without a check before it, so two imports meeting one
+    // record at once can't both record it: clearing the card and its Hold again changes nothing,
+    // its posting returns the first one's entry (keyed by the Network record ID, posted once), and
+    // its row goes nowhere (the primary key). Imports of one card take turns on the card's row.
+    return jdbc.sql(
+                """
+                insert into clearing.clearing
+                       (network_record_id, file_id, card_token, authorization_request_id,
+                        cleared_amount_minor, cleared_currency, authorized_amount_minor,
+                        authorized_currency, outcome, journal_entry_id)
+                values (:networkRecordId, :fileId, :cardToken, :authorizationRequestId,
+                        :clearedAmount, :clearedCurrency, :authorizedAmount, :authorizedCurrency,
+                        :outcome, :journalEntryId)
+                on conflict (network_record_id) do nothing
+                """)
+            .param("networkRecordId", record.networkRecordId())
+            .param("fileId", fileId)
+            .param("cardToken", cardToken)
+            .param(
+                "authorizationRequestId", authorization == null ? null : authorization.requestId())
+            .param("clearedAmount", record.amount().minorUnits())
+            .param("clearedCurrency", record.amount().currency().getCurrencyCode())
+            .param(
+                "authorizedAmount",
+                authorization == null ? null : authorization.amount().minorUnits())
+            .param(
+                "authorizedCurrency",
+                authorization == null ? null : authorization.amount().currency().getCurrencyCode())
+            .param("outcome", outcome.name())
+            .param("journalEntryId", journalEntryId)
+            .update()
+        == 1;
   }
 
   // Whether a Clearing of this Authorization is recorded already, in this chunk or before it. The

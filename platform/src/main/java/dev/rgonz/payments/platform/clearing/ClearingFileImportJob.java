@@ -2,8 +2,8 @@ package dev.rgonz.payments.platform.clearing;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Currency;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.Job;
@@ -44,6 +44,10 @@ class ClearingFileImportJob {
 
   private static final int CHUNK_SIZE = 100;
 
+  // The one currency the platform's API carries (Money in the OpenAPI document); more currencies
+  // are deferred (M3 design). A file in another can't be settled, so validate refuses it.
+  private static final Currency SETTLED_CURRENCY = Currency.getInstance("USD");
+
   @Bean
   Job clearingFileImport(
       JobRepository jobRepository,
@@ -60,8 +64,9 @@ class ClearingFileImportJob {
   }
 
   // The header and trailer are present and parse, and so does every record between them, so the
-  // import step never meets a malformed line; the file is recorded, IMPORTING. Anything wrong fails
-  // the step, and the job, before a single Clearing is posted.
+  // import step never meets a malformed line, and the trailer's record count and amount total are
+  // the records'; the file is recorded, IMPORTING. Anything wrong fails the step, and the job,
+  // before a single Clearing is posted.
   @Bean
   Step validateClearingFile(
       JobRepository jobRepository,
@@ -71,13 +76,21 @@ class ClearingFileImportJob {
         .tasklet(
             (contribution, chunkContext) -> {
               var parameters = contribution.getStepExecution().getJobParameters();
-              var clearings = new AtomicLong();
-              var envelope = readFile(parameters, clearing -> clearings.incrementAndGet());
+              var envelope = readFile(parameters, clearing -> {});
               if (!envelope.header().fileId().equals(parameter(parameters, FILE_ID))) {
                 throw new MalformedClearingFileException(
                     1, "the file ID isn't the one its import started with");
               }
-              files.receive(envelope.header(), clearings.get());
+              var trailer = envelope.trailer();
+              if (!trailer.amountTotal().currency().equals(SETTLED_CURRENCY)) {
+                // The trailer follows the header and the detail records.
+                throw new MalformedClearingFileException(
+                    Math.toIntExact(trailer.recordCount() + 2),
+                    "the currency (positions 41–43) isn't USD, the only currency the platform"
+                        + " settles");
+              }
+              files.receive(
+                  envelope, ClearingFileLayout.contentHash(Path.of(parameter(parameters, FILE))));
               return RepeatStatus.FINISHED;
             },
             transactionManager)
@@ -147,8 +160,10 @@ class ClearingFileImportJob {
   @Bean
   @StepScope
   ClearingRecordWriter clearingRecordWriter(
-      @Value("#{jobParameters['" + FILE_ID + "']}") String fileId, Clearings clearings) {
-    return new ClearingRecordWriter(fileId, clearings);
+      @Value("#{jobParameters['" + FILE_ID + "']}") String fileId,
+      Clearings clearings,
+      ClearingFiles files) {
+    return new ClearingRecordWriter(fileId, clearings, files);
   }
 
   // What a step saved, such as how many Clearings the reader read, kept as JSON in the job

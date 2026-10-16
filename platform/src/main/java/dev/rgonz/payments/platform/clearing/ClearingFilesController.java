@@ -38,10 +38,13 @@ class ClearingFilesController implements ClearingFilesApi {
           throw problem(
               HttpStatus.UNPROCESSABLE_CONTENT,
               "This isn't a Clearing File the platform can import: " + refused.reason());
-      case ImportResult.AlreadyImported alreadyImported ->
+      case ImportResult.Repeated repeated ->
           throw problem(
               HttpStatus.CONFLICT,
-              "Clearing File " + alreadyImported.fileId() + " was already imported.");
+              "This file repeats Clearing File "
+                  + repeated.earlierFileId()
+                  + ", imported or importing, so nothing in it was posted: see"
+                  + " docs/runbooks/clearing-file-arrived-twice.md.");
       case ImportResult.Running running ->
           throw problem(
               HttpStatus.CONFLICT,
@@ -66,6 +69,7 @@ class ClearingFilesController implements ClearingFilesApi {
         .businessDate(file.businessDate())
         .status(ClearingFileDto.StatusEnum.fromValue(file.status().name()))
         .recordCount(file.recordCount())
+        .skippedCount(file.skippedCount())
         .outcomes(toDto(file.outcomes()))
         .settlement(file.settlement() == null ? null : toDto(file.settlement()));
   }

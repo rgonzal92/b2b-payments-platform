@@ -6,11 +6,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Currency;
+import java.util.HexFormat;
 import java.util.function.Consumer;
 
 /**
@@ -23,10 +26,52 @@ final class ClearingFileLayout {
 
   static final int RECORD_LENGTH = 120;
 
+  // The header's file ID ends at position 22, and a detail record's PAN takes positions 23–41, as
+  // in parse below and in layout.md.
+  private static final int FILE_ID_END = 22;
+  private static final int PAN_FROM = 23;
+  private static final int PAN_TO = 41;
+
   private static final DateTimeFormatter DATE =
       DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
 
   private ClearingFileLayout() {}
+
+  /**
+   * The SHA-256 of the file's content, in hex: each line followed by a line feed, leaving out the
+   * header's record type and file ID (its first 22 characters), so the same file sent again under
+   * another file ID has the same hash, and each detail record's PAN (positions 23–41), so the hash,
+   * kept outside the vault, can't be worked back to a PAN (ADR-0004). Reads a malformed file
+   * without throwing; the validate step refuses it.
+   */
+  static String contentHash(Path file) throws IOException {
+    MessageDigest sha256;
+    try {
+      sha256 = MessageDigest.getInstance("SHA-256");
+    } catch (NoSuchAlgorithmException everyJavaHasIt) {
+      throw new IllegalStateException(everyJavaHasIt);
+    }
+    try (var lines = open(file)) {
+      var line = lines.readLine();
+      if (line != null) {
+        hash(sha256, line.substring(Math.min(FILE_ID_END, line.length())));
+      }
+      while ((line = lines.readLine()) != null) {
+        hash(sha256, line.startsWith("05") ? withoutPan(line) : line);
+      }
+    }
+    return HexFormat.of().formatHex(sha256.digest());
+  }
+
+  private static void hash(MessageDigest sha256, String content) {
+    sha256.update((content + "\n").getBytes(StandardCharsets.US_ASCII));
+  }
+
+  // A detail record without its positions 23–41, as far as it reaches them.
+  private static String withoutPan(String detail) {
+    return detail.substring(0, Math.min(PAN_FROM - 1, detail.length()))
+        + (detail.length() > PAN_TO ? detail.substring(PAN_TO) : "");
+  }
 
   /** Opens the file for reading, in the layout's character set (US-ASCII). */
   static BufferedReader open(Path file) throws IOException {
@@ -36,12 +81,18 @@ final class ClearingFileLayout {
   /**
    * Reads a whole file in one pass, handing each Clearing to {@code eachClearing} in file order,
    * and returns its header and trailer. Throws {@link MalformedClearingFileException} when a record
-   * doesn't follow the layout or the records aren't one header, the Clearings, then one trailer.
+   * doesn't follow the layout, the records aren't one header, the Clearings, then one trailer, or
+   * the trailer's control totals aren't its Clearings'.
    */
   static Envelope read(BufferedReader lines, Consumer<ClearingRecord> eachClearing)
       throws IOException {
     var header = readHeader(lines);
     FileTrailer trailer = null;
+    var clearings = 0L;
+    // A control total, as the layout defines it: the detail records' amounts summed, whatever
+    // their currency, so it shows the file arrived whole; a Clearing in another currency than its
+    // card's has an outcome of its own (ClearingOutcome).
+    var amountTotal = 0L;
     var lineNumber = 1;
     String line;
     while ((line = lines.readLine()) != null) {
@@ -50,7 +101,11 @@ final class ClearingFileLayout {
         throw new MalformedClearingFileException(lineNumber, "a record follows the trailer");
       }
       switch (parse(line, lineNumber)) {
-        case ClearingRecord clearing -> eachClearing.accept(clearing);
+        case ClearingRecord clearing -> {
+          clearings++;
+          amountTotal += clearing.amount().minorUnits();
+          eachClearing.accept(clearing);
+        }
         case FileTrailer fileTrailer -> trailer = fileTrailer;
         case FileHeader _ ->
             throw new MalformedClearingFileException(lineNumber, "a second header");
@@ -58,6 +113,15 @@ final class ClearingFileLayout {
     }
     if (trailer == null) {
       throw new MalformedClearingFileException(lineNumber, "the file ends without a trailer (92)");
+    }
+    if (trailer.recordCount() != clearings) {
+      throw new MalformedClearingFileException(
+          lineNumber, "the record count (positions 3–10) isn't the number of detail records");
+    }
+    if (trailer.amountTotal().minorUnits() != amountTotal) {
+      throw new MalformedClearingFileException(
+          lineNumber,
+          "the amount total (positions 11–25) isn't the sum of the detail records' amounts");
     }
     return new Envelope(header, trailer);
   }

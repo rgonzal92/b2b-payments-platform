@@ -7,18 +7,22 @@ import java.util.Map;
 /**
  * A Clearing File the platform received, as its header and its Clearings describe it.
  *
- * @param recordCount the number of Clearings in the file
+ * @param recordCount the number of Clearings in the file; null when it was refused
+ * @param skippedCount how many of them were skipped, their Network record ID already recorded
  * @param outcomes how many of its recorded Clearings ended with each outcome, zero included
  * @param settlement the file's Settlement; null until the file is settled
+ * @param refusalReason which check refused the file, by line and field; null unless {@code REFUSED}
  */
 record ClearingFileSummary(
     String id,
     long sequenceNumber,
     LocalDate businessDate,
     Status status,
-    long recordCount,
+    Long recordCount,
+    long skippedCount,
     Map<ClearingOutcome, Long> outcomes,
-    Settlement settlement) {
+    Settlement settlement,
+    String refusalReason) {
 
   ClearingFileSummary {
     outcomes = Map.copyOf(outcomes);
@@ -28,7 +32,9 @@ record ClearingFileSummary(
     /** Its Clearings are being posted, or an import of it stopped partway. */
     IMPORTING,
     /** Every Clearing in it is recorded. */
-    IMPORTED
+    IMPORTED,
+    /** It failed a check of the validate step: nothing in it was posted. */
+    REFUSED
   }
 
   /**
