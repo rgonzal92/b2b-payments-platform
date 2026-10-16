@@ -116,6 +116,13 @@ class AuthorizationRulesTests {
         .isEqualTo(ResponseCode.NOT_PERMITTED);
   }
 
+  // A cleared card's one Charge is already posted spend: like an AUTHORIZED card, it's been used.
+  @Test
+  void aChargeOnACardWhoseChargeClearedIsDeclinedAsNotPermitted() {
+    assertThat(decide(charge(), card(SingleUseCard.Status.CLEARED), true, NOW))
+        .isEqualTo(ResponseCode.NOT_PERMITTED);
+  }
+
   @Test
   void theFirstRuleAChargeFailsNamesTheDecline() {
     var wrongCode = false;

@@ -45,4 +45,11 @@ public interface Cards {
    * longer count; a card in any other status is left as it is. Joins the caller's transaction.
    */
   void reverse(String cardToken);
+
+  /**
+   * Moves the card from {@code AUTHORIZED} to {@code CLEARED} when the Network's Clearing File
+   * gives its Charge's final amount, in one conditional update, and says whether it did: false when
+   * the card isn't {@code AUTHORIZED}, or doesn't exist. Joins the caller's transaction.
+   */
+  boolean clear(String cardToken);
 }

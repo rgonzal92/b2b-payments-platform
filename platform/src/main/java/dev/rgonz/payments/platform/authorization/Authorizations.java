@@ -2,10 +2,13 @@ package dev.rgonz.payments.platform.authorization;
 
 import dev.rgonz.payments.platform.authorization.Authorization.ResponseCode;
 import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.Currency;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -18,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
  * at issuance, so an Authorization checks the card, never Available Credit (ADR-0011).
  */
 @Repository
-class Authorizations {
+class Authorizations implements ApprovedAuthorizations {
 
   private static final Logger log = LoggerFactory.getLogger(Authorizations.class);
   private static final String AUTHORIZATION_CODE_CHARACTERS =
@@ -107,6 +110,29 @@ class Authorizations {
             .optional();
     cardToken.ifPresent(cards::reverse);
     log.info("Reversal {} acknowledged", requestId);
+  }
+
+  // Only an approved Authorization has an authorization code, and keeps it once reversed.
+  @Override
+  public Optional<ApprovedAuthorization> find(String cardToken, String authorizationCode) {
+    return jdbc.sql(
+            """
+            select request_id, amount_minor, currency, status
+              from "authorization".authorizations
+             where card_token = :cardToken
+               and authorization_code = :authorizationCode
+            """)
+        .param("cardToken", cardToken)
+        .param("authorizationCode", authorizationCode)
+        .query(
+            (row, rowNumber) ->
+                new ApprovedAuthorization(
+                    row.getString("request_id"),
+                    new Money(
+                        row.getLong("amount_minor"),
+                        Currency.getInstance(row.getString("currency"))),
+                    Authorization.Status.REVERSED.name().equals(row.getString("status"))))
+        .optional();
   }
 
   // Claims the request ID for a Reversal the way an Authorization claims it: whichever insert

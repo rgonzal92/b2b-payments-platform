@@ -148,6 +148,21 @@ class SingleUseCards implements Cards {
         .update();
   }
 
+  // Only an AUTHORIZED card moves, so of two Clearings for one card exactly one clears it.
+  @Override
+  public boolean clear(String cardToken) {
+    return jdbc.sql(
+                """
+                update cards.card set status = :cleared
+                 where card_token = :cardToken and status = :authorized
+                """)
+            .param("cleared", SingleUseCard.Status.CLEARED.name())
+            .param("cardToken", cardToken)
+            .param("authorized", SingleUseCard.Status.AUTHORIZED.name())
+            .update()
+        == 1;
+  }
+
   /**
    * Marks up to {@code batchSize} {@code ACTIVE} cards whose expiry is at or before {@code now}
    * {@code EXPIRED} and returns them, skipping cards other transactions have locked. Joins the

@@ -32,6 +32,8 @@ public record SingleUseCard(
      * Its expiry came before anyone charged it, or its approved Charge didn't clear within 7 days;
      * its Hold is released.
      */
-    EXPIRED
+    EXPIRED,
+    /** The Network's Clearing File gave its Charge's final amount, now posted spend. */
+    CLEARED
   }
 }

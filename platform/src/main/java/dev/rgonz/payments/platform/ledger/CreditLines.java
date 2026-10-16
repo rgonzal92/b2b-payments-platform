@@ -40,14 +40,17 @@ class CreditLines implements Holds {
         .single();
   }
 
-  /** The Buyer's Credit Line and open Holds; empty when the Buyer has no Credit Line. */
+  /**
+   * The Buyer's Credit Line, open Holds and Buyer Receivable; empty when the Buyer has no Credit
+   * Line.
+   */
   Optional<Credit> findCredit(BuyerId buyerId) {
     return jdbc.sql(
             "select amount_minor, currency from ledger.credit_line where buyer_id = :buyerId")
         .param("buyerId", buyerId.value())
         .query(CreditLines::toMoney)
         .optional()
-        .map(creditLine -> new Credit(creditLine, openHolds(buyerId, creditLine.currency())));
+        .map(creditLine -> credit(buyerId, creditLine));
   }
 
   @Override
@@ -78,7 +81,7 @@ class CreditLines implements Holds {
     if (alreadyPlaced) {
       return Outcome.PLACED;
     }
-    var credit = new Credit(creditLine.get(), openHolds(buyerId, creditLine.get().currency()));
+    var credit = credit(buyerId, creditLine.get());
     if (amount.isMoreThan(credit.availableCredit())) {
       return Outcome.INSUFFICIENT_CREDIT;
     }
@@ -116,21 +119,48 @@ class CreditLines implements Holds {
         .update();
   }
 
+  // The row stays, marked cleared; only a placed Hold clears, so a released one stays released.
+  @Override
+  public void clear(UUID holdId) {
+    jdbc.sql(
+            """
+            update ledger.hold
+               set status = 'CLEARED', cleared_at = now()
+             where id = :id
+               and status = 'PLACED'
+            """)
+        .param("id", holdId)
+        .update();
+  }
+
   // A statement of its own: after place's lock, it sees what other transactions committed while
-  // that one waited (READ COMMITTED); a subquery inside the locking statement would not.
-  private Money openHolds(BuyerId buyerId, Currency currency) {
-    var held =
-        jdbc.sql(
-                """
-                select coalesce(sum(amount_minor), 0)
-                  from ledger.hold
-                 where buyer_id = :buyerId
-                   and status = 'PLACED'
-                """)
-            .param("buyerId", buyerId.value())
-            .query(Long.class)
-            .single();
-    return new Money(held, currency);
+  // that one waited (READ COMMITTED); a subquery inside the locking statement would not. One
+  // statement for both sums: a Clearing that commits between two statements would clear its Hold
+  // in one read and miss its Buyer Receivable debit in the other.
+  private Credit credit(BuyerId buyerId, Money creditLine) {
+    return jdbc.sql(
+            """
+            select (select coalesce(sum(amount_minor), 0)
+                      from ledger.hold
+                     where buyer_id = :buyerId
+                       and status = 'PLACED') as open_holds,
+                   (select coalesce(sum(case l.side when 'DEBIT' then l.amount_minor
+                                                    else -l.amount_minor end), 0)
+                      from ledger.journal_line l
+                      join ledger.account a on a.id = l.account_id
+                     where a.kind = 'BUYER_RECEIVABLE'
+                       and a.buyer_id = :buyerId
+                       and a.currency = :currency) as buyer_receivable
+            """)
+        .param("buyerId", buyerId.value())
+        .param("currency", creditLine.currency().getCurrencyCode())
+        .query(
+            (row, rowNumber) ->
+                new Credit(
+                    creditLine,
+                    new Money(row.getLong("open_holds"), creditLine.currency()),
+                    new Money(row.getLong("buyer_receivable"), creditLine.currency())))
+        .single();
   }
 
   private static Money toMoney(ResultSet row, int rowNumber) throws SQLException {
