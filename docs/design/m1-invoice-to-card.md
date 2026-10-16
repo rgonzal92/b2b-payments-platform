@@ -57,7 +57,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
   - Keys are kept per Buyer, so one Buyer reusing another's key gets its own Invoice, never the other's response.
   - A refused request (`409`, a validation `400`) stores nothing under its key; resending it is refused the same way.
   - A token whose `buyer_id` is missing or names no known Buyer is `403`, checked through `buyers`.
-  - A Supplier's name and remittance address come from the first Invoice naming its tax ID, and a Supplier Relationship's reference from that Buyer's first Invoice to it. Later Invoices don't change them, so one Buyer's ERP can't redirect another Buyer's Remittance Advice.
+  - A Supplier's name and remittance address come from the first Invoice naming its tax ID, and a Supplier Relationship's reference from that Buyer's first Invoice to it. Later Invoices don't change them, and a different name or address on a later Invoice is ignored without an error. This stops any Buyer's ERP redirecting Remittance Advice for a Supplier others already use, but the first ERP to name a tax ID sets the address every later Buyer's Remittance Advice goes to. Neither "first wins" nor "last wins" is safe on its own: Issuer staff verifying Supplier details closes that gap, and isn't built yet. (Open for the owner's sign-off.)
 
 ### Approvals
 

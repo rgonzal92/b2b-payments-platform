@@ -2,13 +2,13 @@
 
 ## The problem it solves here
 
-A Buyer's ERP sends an Invoice and the connection drops before the answer arrives. It can't tell whether the platform received it, so it sends it again. Without protection that's two Invoices and, later, two Payments for one bill. An `Idempotency-Key` header lets the platform recognise the resend: the ERP picks a new random key for each new Invoice and reuses it on every retry of that Invoice.
+A Buyer's ERP sends an Invoice and the connection drops before the answer arrives. It can't tell whether the platform received it, so it sends it again. Without protection that's two Invoices and, later, two Payments where there should be one. An `Idempotency-Key` header lets the platform recognise the resend: the ERP picks a new random key for each new Invoice and reuses it on every retry of that Invoice.
 
 ## Mental model
 
 - **The key names one attempt to do one thing.** Same key, same request: the platform returns the response it gave the first time (same status, same body) and does nothing else.
 - **Same key, different request is a client bug,** answered `422`. Replaying the old response would hide it; acting on the new request would make the key mean two things.
-- **A key is not a duplicate check.** A new key with the same Supplier and Invoice number is a business duplicate, answered `409` by a unique constraint on the Invoice. The two rules catch different mistakes: a retry, and an ERP that sends the same bill twice as two attempts.
+- **A key is not a duplicate check.** A new key with the same Supplier and Invoice number is a business duplicate, answered `409` by a unique constraint on the Invoice. The two rules catch different mistakes: a retry, and an ERP that sends the same Invoice twice as two attempts.
 - **Keys are kept per Buyer** (`payables.idempotent_request`, primary key Buyer plus key). A global key space would let one Buyer receive another Buyer's stored response by reusing its key.
 - **The request is compared by hash.** The row stores a SHA-256 of the request body as the platform parsed it, so a resend with different spacing still matches.
 

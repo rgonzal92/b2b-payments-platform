@@ -11,6 +11,7 @@ import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /** Acme's ERP: submits Invoices to the platform, signed in as the acme-erp client. */
@@ -20,9 +21,15 @@ class AcmeErp {
   private static final Logger log = LoggerFactory.getLogger(AcmeErp.class);
 
   private final InvoicesApi invoices;
+  private final String globexRemittanceAddress;
 
-  AcmeErp(InvoicesApi invoices) {
+  // Where the simulator's Supplier role will receive Globex's Remittance Advice.
+  AcmeErp(
+      InvoicesApi invoices,
+      @Value("http://localhost:${server.port}/globex/remittance-advice")
+          String globexRemittanceAddress) {
     this.invoices = invoices;
+    this.globexRemittanceAddress = globexRemittanceAddress;
   }
 
   /** Submits a new Invoice from Globex for $12,400, due in 30 days. */
@@ -35,8 +42,7 @@ class AcmeErp {
                     .name("Globex")
                     .taxId("12-3456789")
                     .buyerReference("GLOBEX-01")
-                    // Where the simulator's Supplier role will receive Remittance Advice.
-                    .remittanceAddress("http://localhost:8081/globex/remittance-advice"))
+                    .remittanceAddress(globexRemittanceAddress))
             .invoiceNumber(number)
             .amount(new Money().minorUnits(1_240_000L).currency(Money.CurrencyEnum.USD))
             .dueDate(LocalDate.now().plusDays(30));

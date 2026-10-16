@@ -111,6 +111,20 @@ class InvoicesApiTests {
   }
 
   @Test
+  void aRefusedDuplicateKeepsNothingUnderItsKey() {
+    var acme = newBuyer();
+    var taxId = newTaxId();
+    submit(acme, newKey(), invoiceJson(taxId, "INV-1", 1_240_000));
+    var key = newKey();
+    submit(acme, key, invoiceJson(taxId, "INV-1", 1_240_000));
+
+    var resent = submit(acme, key, invoiceJson(taxId, "INV-1", 1_240_000));
+
+    assertThat(resent).hasStatus(409);
+    assertThat(resent).hasContentType(MediaType.APPLICATION_PROBLEM_JSON);
+  }
+
+  @Test
   void aSecondBuyerReusesTheSupplierThroughItsOwnSupplierRelationship() throws Exception {
     var acme = newBuyer();
     var initech = newBuyer();
