@@ -7,3 +7,7 @@ fffe9e8706a8bfb35d7f6709fa6cb26b98ecd16b:simulator/src/test/java/dev/rgonz/payme
 # A made-up, unsigned JWT in a platform test that checks a forged token is refused (its claims are {"sub":"network"} and
 # its signature the word "signature"), not a credential. A later commit builds the forged token at runtime instead.
 5fb82fe0a485177f8136ef66a013d73a154102ef:platform/src/test/java/dev/rgonz/payments/platform/NetworkAuthenticationTests.java:jwt:75
+
+# A runbook's curl command that reads the network client's secret from .env at run time (`-u "network:$(grep …)"`),
+# not a credential. A later commit sends it as a form field instead.
+8c27149994ffca18e56542e6237e30193b7a5cb3:docs/runbooks/network-cant-reach-platform.md:curl-auth-user:62

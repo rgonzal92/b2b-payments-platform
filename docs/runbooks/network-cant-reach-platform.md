@@ -59,8 +59,9 @@ select request_id, status, response_code, card_token, created_at
 - **`APPROVED`:** the platform approved a Charge Globex was told was declined. The card stays `AUTHORIZED`, so any new Charge on it answers `57`. Send the Reversal again: the platform reverses an Authorization once, however many Reversals arrive. With [grpcurl](https://github.com/fullstorydev/grpcurl), from the repository root:
 
   ```sh
-  token=$(curl -s -u "network:$(grep '^NETWORK_CLIENT_SECRET=' .env | cut -d= -f2-)" \
-    -d grant_type=client_credentials \
+  secret=$(grep '^NETWORK_CLIENT_SECRET=' .env | cut -d= -f2-)
+  token=$(curl -s -d grant_type=client_credentials -d client_id=network \
+    --data-urlencode "client_secret=$secret" \
     http://localhost:8180/realms/payments/protocol/openid-connect/token | jq -r .access_token)
   grpcurl -plaintext -H "authorization: Bearer $token" \
     -import-path contracts/src/main/proto -proto issuer_authorization.proto \
