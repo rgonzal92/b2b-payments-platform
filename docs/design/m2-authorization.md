@@ -27,7 +27,7 @@ M1 ends with Globex holding a Single-Use Card it can't use: nothing can charge a
 | `cards` | Card status after a Charge (`AUTHORIZED`), back to `ACTIVE` on Reversal, `EXPIRED` after 30 days; the expiry job. |
 | `vault` | Find a card by PAN (through the keyed hash) and check a security code, without returning either. |
 | `suppliers` | A Supplier's Acceptor ID. |
-| `payables` | The Payment's `EXPIRED` end state. |
+| `payables` | The Payment's `EXPIRED` end state; releases an expired card's Hold (changed during #34). |
 | `ledger` | Unchanged: an expired card's Hold is released through `Holds.release`. |
 
 ### The Network link: gRPC with ISO 8583 field names (ADR-0006)
@@ -61,7 +61,7 @@ The Network identifies the Supplier on every Charge by the Acceptor ID its Acqui
 
 ### Card expiry
 
-A scheduled job in `cards` finds `ACTIVE` Single-Use Cards past their expiry, marks them `EXPIRED`, releases their Hold and tells `payables`, whose Payment ends `EXPIRED`. Re-paying the Invoice is out of scope. The 7-day "authorized but never cleared" rule (Q40) waits for Clearing in M3.
+A scheduled job in `cards` finds `ACTIVE` Single-Use Cards past their expiry, marks them `EXPIRED`, releases their Hold and tells `payables`, whose Payment ends `EXPIRED`. Re-paying the Invoice is out of scope. (Changed during #34: `cards` publishes `CardExpired` and `payables` releases the Hold through `Holds.release`, in the same transaction that ends the Payment. `payables` already owns the Hold's lifecycle, placing and releasing it in the saga, and `cards` then needs no dependency on `ledger`.) The 7-day "authorized but never cleared" rule (Q40) waits for Clearing in M3.
 
 ### Simulator: Acquirer and Network
 
