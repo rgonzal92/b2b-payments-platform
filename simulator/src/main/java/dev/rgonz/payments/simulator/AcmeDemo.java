@@ -46,7 +46,8 @@ class AcmeDemo {
    */
   @PostMapping(DEMO_PATH)
   Summary run(@RequestParam(defaultValue = "1240000") long minorUnits) throws InterruptedException {
-    var submitted = erp.submitInvoice(minorUnits);
+    var submitted =
+        erp.submitInvoice(new Money().minorUnits(minorUnits).currency(Money.CurrencyEnum.USD));
     // The platform applies Acme's Approval Threshold: an Invoice still RECEIVED needs a second
     // Approver.
     if (approvers.approve(submitted.getId(), 1).getStatus() == Invoice.StatusEnum.RECEIVED) {
@@ -55,7 +56,7 @@ class AcmeDemo {
     var invoice = awaitPayment(submitted.getId());
     var summary = Summary.of(invoice, globex.cardFor(invoice.getId()).orElse(null));
     log.info(
-        "The demo Invoice {} ended with its Payment {}", invoice.getId(), summary.paymentState);
+        "The demo Invoice {} ended with its Payment {}", invoice.getId(), summary.paymentState());
     return summary;
   }
 
@@ -86,7 +87,7 @@ class AcmeDemo {
       String invoiceNumber,
       Money amount,
       List<String> approvedBy,
-      String paymentState,
+      Payment.StateEnum paymentState,
       String failureReason,
       ReceivedCard globexReceived) {
 
@@ -100,7 +101,7 @@ class AcmeDemo {
               .filter(decision -> decision.getDecision() == Decision.DecisionEnum.APPROVED)
               .map(Decision::getApproverName)
               .toList(),
-          payment == null ? null : payment.getState().getValue(),
+          payment == null ? null : payment.getState(),
           payment == null ? null : payment.getFailureReason(),
           globexReceived);
     }

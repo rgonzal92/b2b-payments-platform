@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform;
 
+import static dev.rgonz.payments.platform.TestKeycloak.ACME_ID;
 import static dev.rgonz.payments.platform.TestKeycloak.clientCredentialsToken;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,8 +25,6 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 @SpringBootTest
 @AutoConfigureMockMvc
 class KeycloakTokenTests {
-
-  private static final String ACME_ID = "dc9a9857-e40f-4d50-9ee3-879f0c7472c5";
 
   @DynamicPropertySource
   static void issuer(DynamicPropertyRegistry registry) {

@@ -12,6 +12,9 @@ import org.springframework.web.client.RestClient;
  */
 final class TestKeycloak {
 
+  /** Acme's Buyer ID, which the realm file writes into the tokens of Acme's clients. */
+  static final String ACME_ID = "dc9a9857-e40f-4d50-9ee3-879f0c7472c5";
+
   private static final String CLIENT_SECRET = "test-only-secret";
 
   private static final KeycloakContainer keycloak =

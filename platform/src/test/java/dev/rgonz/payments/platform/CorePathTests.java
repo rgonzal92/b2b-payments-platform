@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform;
 
+import static dev.rgonz.payments.platform.TestKeycloak.ACME_ID;
 import static dev.rgonz.payments.platform.TestKeycloak.clientCredentialsToken;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -47,8 +48,6 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 @AutoConfigureMockRestServiceServer
 class CorePathTests {
 
-  // Acme's clients in the realm file carry this Buyer ID in their tokens.
-  private static final String ACME_ID = "dc9a9857-e40f-4d50-9ee3-879f0c7472c5";
   private static final long APPROVAL_THRESHOLD = 1_000_000;
   // Above the Approval Threshold, so the Invoice takes two different Approvers.
   private static final long AMOUNT = 1_240_000;
@@ -69,21 +68,21 @@ class CorePathTests {
     setUpAcme();
     var creditBefore = availableCredit();
     var deliveries = supplierAccepts();
-    var erp = clientCredentialsToken("acme-erp");
+    var erpToken = clientCredentialsToken("acme-erp");
 
-    var invoiceId = submitInvoice(erp);
+    var invoiceId = submitInvoice(erpToken);
     var firstApproval = approve(invoiceId, "acme-approver-1");
     var secondApproval = approve(invoiceId, "acme-approver-2");
     await()
         .atMost(Duration.ofSeconds(30))
-        .until(() -> "COMPLETED".equals(paymentState(erp, invoiceId)));
+        .until(() -> "COMPLETED".equals(paymentState(erpToken, invoiceId)));
 
     assertThat(firstApproval).bodyJson().extractingPath("$.status").isEqualTo("RECEIVED");
     assertThat(secondApproval).bodyJson().extractingPath("$.status").isEqualTo("APPROVED");
     assertThat(availableCredit()).isEqualTo(creditBefore - AMOUNT);
     assertThat(deliveries).hasSize(1);
     assertThat(JsonPath.<String>read(deliveries.getFirst(), "$.invoiceId")).isEqualTo(invoiceId);
-    var invoice = invoice(erp, invoiceId).getResponse().getContentAsString();
+    var invoice = invoice(erpToken, invoiceId).getResponse().getContentAsString();
     String lastFour = JsonPath.read(invoice, "$.payment.card.lastFour");
 
     String link = JsonPath.read(deliveries.getFirst(), "$.cardLink");
@@ -109,13 +108,13 @@ class CorePathTests {
   void noTableOutsideTheVaultAndNoLogLineHoldsTheIssuedPan(CapturedOutput output) throws Exception {
     setUpAcme();
     var deliveries = supplierAccepts();
-    var erp = clientCredentialsToken("acme-erp");
-    var invoiceId = submitInvoice(erp);
+    var erpToken = clientCredentialsToken("acme-erp");
+    var invoiceId = submitInvoice(erpToken);
     approve(invoiceId, "acme-approver-1");
     approve(invoiceId, "acme-approver-2");
     await()
         .atMost(Duration.ofSeconds(30))
-        .until(() -> "COMPLETED".equals(paymentState(erp, invoiceId)));
+        .until(() -> "COMPLETED".equals(paymentState(erpToken, invoiceId)));
     var opened =
         mvc.get()
             .uri(JsonPath.<String>read(deliveries.getFirst(), "$.cardLink"))
@@ -126,7 +125,8 @@ class CorePathTests {
     String securityCode = JsonPath.read(opened, "$.securityCode");
     String cardToken =
         JsonPath.read(
-            invoice(erp, invoiceId).getResponse().getContentAsString(), "$.payment.card.cardToken");
+            invoice(erpToken, invoiceId).getResponse().getContentAsString(),
+            "$.payment.card.cardToken");
     String paymentId = JsonPath.read(deliveries.getFirst(), "$.id");
 
     assertThat(columnsOutsideTheVaultHolding(pan)).isEmpty();
@@ -137,7 +137,7 @@ class CorePathTests {
     assertThat(output).contains("Payment " + paymentId + " is COMPLETED").doesNotContain(pan);
     // Three digits alone turn up in any log (timestamps, ports), so this looks for the security
     // code where a logged response or DTO would put it: after its name.
-    assertThat(output).doesNotContainPattern("(?i)security.?code\\W{0,3}" + securityCode);
+    assertThat(output).doesNotContainPattern("(?i)security.?code\\W{0,5}" + securityCode);
   }
 
   // Issuer staff create Acme and give it a Credit Line; the second test finds both already there.
@@ -179,13 +179,13 @@ class CorePathTests {
     return deliveries;
   }
 
-  private String submitInvoice(String erp) throws UnsupportedEncodingException {
+  private String submitInvoice(String erpToken) throws UnsupportedEncodingException {
     var invoiceNumber =
         "INV-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     var submitted =
         mvc.post()
             .uri("/v1/invoices")
-            .header("Authorization", "Bearer " + erp)
+            .header("Authorization", "Bearer " + erpToken)
             .header("Idempotency-Key", UUID.randomUUID().toString())
             .contentType(MediaType.APPLICATION_JSON)
             .content(
@@ -218,21 +218,22 @@ class CorePathTests {
     return approved;
   }
 
-  private MvcTestResult invoice(String erp, String invoiceId) {
+  private MvcTestResult invoice(String erpToken, String invoiceId) {
     var response =
         mvc.get()
             .uri("/v1/invoices/{invoiceId}", invoiceId)
-            .header("Authorization", "Bearer " + erp)
+            .header("Authorization", "Bearer " + erpToken)
             .exchange();
     assertThat(response).hasStatus(200);
     return response;
   }
 
   // Null while the Invoice shows no Payment.
-  private String paymentState(String erp, String invoiceId) throws UnsupportedEncodingException {
+  private String paymentState(String erpToken, String invoiceId)
+      throws UnsupportedEncodingException {
     return JsonPath.using(
             Configuration.defaultConfiguration().addOptions(Option.SUPPRESS_EXCEPTIONS))
-        .parse(invoice(erp, invoiceId).getResponse().getContentAsString())
+        .parse(invoice(erpToken, invoiceId).getResponse().getContentAsString())
         .read("$.payment.state");
   }
 

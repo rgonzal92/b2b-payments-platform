@@ -137,10 +137,32 @@ class AcmeDemoTests {
         .hasSize(1);
   }
 
+  @Test
+  void aFailedPaymentEndsTheDemoWithItsReasonAndNoCard() {
+    platform.failPaymentWith("Not enough Available Credit to place the Hold.");
+
+    var demo = mvc.post().uri("/demo/invoices").exchange();
+
+    assertThat(demo).hasStatusOk();
+    assertThat(demo)
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {
+              "paymentState": "FAILED",
+              "failureReason": "Not enough Available Credit to place the Hold.",
+              "globexReceived": null
+            }
+            """);
+    // The demo stops reading the Invoice once its Payment has failed.
+    assertThat(platformRequests).filteredOn(request -> request.method().equals("GET")).hasSize(2);
+  }
+
   /**
    * Plays the platform for one demo Invoice at a time: takes the Invoice, applies Acme's approval
    * rule, and shows its Payment {@code STARTED} on the first read and {@code COMPLETED} on the
-   * next, after delivering the Remittance Advice to the simulator's Globex.
+   * next, after delivering the Remittance Advice to the simulator's Globex; or {@code FAILED},
+   * delivering nothing, when told to fail it.
    */
   static final class StubPlatform {
 
@@ -152,6 +174,7 @@ class AcmeDemoTests {
     volatile UUID invoiceId;
     volatile String invoiceNumber;
     volatile long minorUnits;
+    volatile String failureReason;
     final List<String> approvers = new CopyOnWriteArrayList<>();
     final AtomicInteger reads = new AtomicInteger();
 
@@ -169,9 +192,15 @@ class AcmeDemoTests {
       server.start();
     }
 
+    // The next Invoice's Payment fails for this reason instead of completing.
+    void failPaymentWith(String reason) {
+      failureReason = reason;
+    }
+
     void reset(int simulatorPort) {
       this.simulatorPort = simulatorPort;
       invoiceId = null;
+      failureReason = null;
       approvers.clear();
       reads.set(0);
     }
@@ -205,6 +234,13 @@ class AcmeDemoTests {
         respond(exchange, 200, invoice(status(), null));
       } else if (reads.incrementAndGet() == 1) {
         respond(exchange, 200, invoice(status(), "{\"state\": \"STARTED\"}"));
+      } else if (failureReason != null) {
+        respond(
+            exchange,
+            200,
+            invoice(
+                status(),
+                "{\"state\": \"FAILED\", \"failureReason\": \"%s\"}".formatted(failureReason)));
       } else {
         deliverRemittanceAdvice();
         respond(

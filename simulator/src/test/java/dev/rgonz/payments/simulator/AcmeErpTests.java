@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import dev.rgonz.payments.contracts.client.model.Money;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -45,8 +46,10 @@ class AcmeErpTests {
 
   @Test
   void submitsInvoicesAsAcmesErpEachUnderANewIdempotencyKey() {
-    acmeErp.submitInvoice(1_240_000);
-    acmeErp.submitInvoice(1_240_000);
+    var amount = new Money().minorUnits(1_240_000L).currency(Money.CurrencyEnum.USD);
+
+    acmeErp.submitInvoice(amount);
+    acmeErp.submitInvoice(amount);
 
     assertThat(platformRequests).hasSize(2);
     var first = platformRequests.getFirst();
