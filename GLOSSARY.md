@@ -26,6 +26,10 @@ _Avoid_: Vendor, merchant, payee
 The Supplier's bank, which accepts card payments on the Supplier's behalf and passes them to the Network.
 _Avoid_: Merchant bank, acquiring bank
 
+**Acceptor ID**:
+The identifier a Supplier's Acquirer gives it, which the Network carries on every Charge from that Supplier.
+_Avoid_: Merchant ID, MID, terminal ID
+
 **Supplier Relationship**:
 A Buyer's link to a Supplier, carrying the Buyer's own identifier for that Supplier.
 _Avoid_: Vendor record, supplier account

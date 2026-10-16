@@ -1,0 +1,91 @@
+# M2: Authorization
+
+**Status:** approved 2026-10-16.
+
+## Problem
+
+M1 ends with Globex holding a Single-Use Card it can't use: nothing can charge a card yet. M2 builds the second half of the core path (README, step 5): Globex charges the card through its Acquirer, the Network asks the platform to approve or decline, and the platform answers in real time by the Authorization rules (Q19), cancels an Authorization when the Network sends a Reversal, and expires cards nobody charged. It's the first real-time, latency-bound path in the system and the first non-REST protocol, so the contract and the rules have to be right before M5 extracts Authorization into its own service.
+
+## Done when
+
+1. Globex charges its Single-Use Card through the simulator's Acquirer and Network roles; the Network asks the platform over gRPC and gets an approval. The demo endpoint does all of M1 plus the Charge in one call.
+2. Each Authorization rule declines with its own response code: wrong Supplier, amount above the card's, a second Charge, an expired or cancelled card, a wrong security code. Every decline leaves the card and the Hold unchanged.
+3. The same Authorization request sent twice (same request ID) gets the same answer, and only one Authorization is recorded.
+4. When the platform doesn't answer within 1 second, the Network declines the Charge and sends a Reversal; the Reversal cancels the platform's Authorization, the card can be charged again, and its Hold stays. A Reversal for an unknown or declined Authorization is acknowledged and changes nothing.
+5. A Single-Use Card nobody charged within 30 days expires: its Hold is released and its Payment ends `EXPIRED`.
+6. Only the Network can call the Authorization service: a call without a valid Network token is refused.
+7. The end-to-end test runs the core path through the running simulator: both apps, real Keycloak and PostgreSQL, from Invoice to approved Charge.
+8. `docs/architecture.md`, explainers for gRPC/protobuf and the Authorization message, and runbooks for what M2 makes possible are written.
+
+## Approach
+
+### Modules in M2
+
+| Module | Builds |
+|---|---|
+| `authorization` | The gRPC Authorization service: the rules, Authorization records, Reversals. New. |
+| `cards` | Card status after a Charge (`AUTHORIZED`), back to `ACTIVE` on Reversal, `EXPIRED` after 30 days; the expiry job. |
+| `vault` | Find a card by PAN (through the keyed hash) and check a security code, without returning either. |
+| `suppliers` | A Supplier's Acceptor ID. |
+| `payables` | The Payment's `EXPIRED` end state. |
+| `ledger` | Unchanged: an expired card's Hold is released through `Holds.release`. |
+
+### The Network link: gRPC with ISO 8583 field names (ADR-0006)
+
+- **The contract is a `.proto` file in `contracts`**, beside the OpenAPI document: an `IssuerAuthorization` service with `Authorize` and `Reverse`. Spring Boot 4.1's own gRPC starters (`spring-boot-starter-grpc-server` in the platform, `-client` in the simulator) and Boot's managed `protobuf-maven-plugin` generate the code.
+- **Field names follow ISO 8583 data elements,** so the M5/bonus move to real ISO 8583 is a mapping, not a redesign: PAN (DE 2), amount and currency (DE 4, DE 49), transmission time (DE 7), STAN (DE 11), card expiry (DE 14), category code (DE 18), retrieval reference number (DE 37, the request ID), Acceptor ID and name (DE 42, DE 43), security code; the answer carries a response code (DE 39) and, on approval, an authorization code (DE 38).
+- **The platform serves gRPC on `127.0.0.1:9090`** next to its REST port.
+- **The Network authenticates with a Keycloak token:** a `network` client (client credentials, realm role `network`), sent as a bearer token in gRPC metadata and checked by Spring's gRPC security support, like every REST call. Mutual TLS arrives in M7.
+
+### Authorization rules (Q19, with ADR-0011)
+
+For a Single-Use Card the Hold was placed at issuance, so Authorization checks the card, not Available Credit. Approve only if all are true; otherwise decline with the matching response code:
+
+| Rule | Decline code |
+|---|---|
+| The PAN belongs to a card the Issuer issued | `14` invalid card |
+| The card is `ACTIVE` and the expiry in the message matches and hasn't passed | `54` expired card |
+| The security code matches | `N7` security code mismatch |
+| The Charge's Acceptor ID is the card's Supplier's | `57` not permitted to this Supplier |
+| The amount is no more than the card's amount, in its currency | `61` exceeds amount |
+| The card has no other approved Authorization | `57` (already charged) |
+
+- **An approval** records the Authorization, moves the card to `AUTHORIZED` and answers `00` with an authorization code. The Hold is untouched: Clearing (M3) turns it into posted spend.
+- **The same request ID twice** returns the stored answer (a unique constraint, not check-then-insert), whatever the rules would say now.
+- **A Reversal** names the original request ID. If it approved, the Authorization becomes `REVERSED` and the card goes back to `ACTIVE`; otherwise nothing changes. Reversals are idempotent too.
+- **The PAN stays out of everything but `vault`:** `authorization` hands the PAN and security code straight to `vault` (`cardFor(pan)`, `securityCodeMatches(token, code)`), never stores or logs them, and tracing records the RPC name only. ADR-0004 gains `authorization` beside `suppliers` as a module that handles a PAN in memory.
+
+### A Supplier's Acceptor ID
+
+The Network identifies the Supplier on every Charge by the Acceptor ID its Acquirer gave it (ISO 8583 DE 42). The Invoice's Supplier block gains an `acceptorId`, stored on the Supplier like the remittance address (first Invoice sets it, ADR-0012). A card whose Supplier has no Acceptor ID can't be charged (`57`).
+
+### Card expiry
+
+A scheduled job in `cards` finds `ACTIVE` Single-Use Cards past their expiry, marks them `EXPIRED`, releases their Hold and tells `payables`, whose Payment ends `EXPIRED`. Re-paying the Invoice is out of scope. The 7-day "authorized but never cleared" rule (Q40) waits for Clearing in M3.
+
+### Simulator: Acquirer and Network
+
+- **Globex keeps the card details** it reads through the one-time link (in memory only, never logged) so it can charge them; the demo endpoint charges right after the Payment completes.
+- **The Acquirer role** turns Globex's Charge into an Authorization request with Globex's Acceptor ID and a fresh request ID.
+- **The Network role** calls the platform with a 1-second deadline, signed in as `network`. On a deadline or an unreachable platform it declines the Charge to Globex and sends a Reversal for the request.
+
+### End-to-end test
+
+A new `e2e` Maven module starts both Spring Boot apps in one JVM against Testcontainers' PostgreSQL and Keycloak (the repository's realm file) and runs the core path through the simulator's demo endpoint, from Invoice to approved Charge. No container images to build, and CI runs it like any other test.
+
+## Deferred
+
+The 100 ms latency target is measured in M4 with Gatling; the 7-day no-Clearing rule and Clearing itself are M3; multi-use cards, stand-in processing and real ISO 8583 over TCP are bonus milestones; mutual TLS is M7.
+
+## Rejected options
+
+- **Credit check at Authorization:** for a Single-Use Card the credit was reserved at issuance (ADR-0011); checking again could decline a Charge on an approved, funded Invoice.
+- **Matching the Supplier by name:** names differ between ERP and Acquirer records; an exact Acceptor ID is the only reliable lock.
+- **No authentication on the Network link until M7:** every caller of the platform already proves who it is; gRPC shouldn't be the exception.
+- **End-to-end test against container images:** building images in CI adds minutes and a buildpack setup M6 brings anyway; two apps in one JVM test the same path.
+
+## Risks
+
+- **gRPC and Spring Security together are new here.** The bearer-token check on gRPC is proven first, in the first ticket.
+- **Two Spring Boot apps in one JVM** may clash on shared static state (logging, metrics, OpenTelemetry). If they do, the fallback is the simulator in-process and the platform as a Testcontainers-built image.
+- **The Acceptor ID changes the Invoice contract** that M1 shipped; it's an optional field, so existing callers keep working.
