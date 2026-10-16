@@ -6,6 +6,7 @@ import dev.rgonz.payments.contracts.server.model.InvoiceDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceRequestDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceSupplierDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
+import dev.rgonz.payments.contracts.server.model.PaymentDto;
 import dev.rgonz.payments.platform.buyers.BuyerDirectory;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
@@ -34,6 +35,7 @@ class InvoicesController implements InvoicesApi {
   private final BuyerDirectory buyers;
   private final Approvals approvals;
   private final Decisions decisions;
+  private final Payments payments;
 
   InvoicesController(
       Invoices invoices,
@@ -41,13 +43,15 @@ class InvoicesController implements InvoicesApi {
       IdempotentRequests idempotentRequests,
       BuyerDirectory buyers,
       Approvals approvals,
-      Decisions decisions) {
+      Decisions decisions,
+      Payments payments) {
     this.invoices = invoices;
     this.suppliers = suppliers;
     this.idempotentRequests = idempotentRequests;
     this.buyers = buyers;
     this.approvals = approvals;
     this.decisions = decisions;
+    this.payments = payments;
   }
 
   @Override
@@ -89,7 +93,8 @@ class InvoicesController implements InvoicesApi {
       throw problem(
           HttpStatus.CONFLICT, "This Buyer already has an Invoice with this Supplier and number.");
     }
-    return ResponseEntity.status(HttpStatus.CREATED).body(toDto(invoice, relationship, List.of()));
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .body(toDto(invoice, relationship, List.of(), null));
   }
 
   @Override
@@ -120,7 +125,11 @@ class InvoicesController implements InvoicesApi {
             .find(buyerId, invoiceId)
             .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No such Invoice."));
     var relationship = suppliers.find(buyerId, invoice.supplierId()).orElseThrow();
-    return toDto(invoice, relationship, decisions.of(invoiceId));
+    return toDto(
+        invoice,
+        relationship,
+        decisions.of(invoiceId),
+        payments.findForInvoice(invoiceId).orElse(null));
   }
 
   // The Buyer always comes from the token, never from the request, so one Buyer can't act as
@@ -159,8 +168,12 @@ class InvoicesController implements InvoicesApi {
     return new Money(money.getMinorUnits(), Currency.getInstance(money.getCurrency().getValue()));
   }
 
+  // The payment is null until the Invoice's final approval has started one.
   private static InvoiceDto toDto(
-      Invoice invoice, SupplierRelationship relationship, List<Decision> decisions) {
+      Invoice invoice,
+      SupplierRelationship relationship,
+      List<Decision> decisions,
+      Payment payment) {
     var supplier = relationship.supplier();
     return new InvoiceDto()
         .id(invoice.id())
@@ -179,7 +192,14 @@ class InvoicesController implements InvoicesApi {
                 .currency(
                     MoneyDto.CurrencyEnum.fromValue(invoice.amount().currency().getCurrencyCode())))
         .dueDate(invoice.dueDate())
-        .decisions(decisions.stream().map(InvoicesController::toDto).toList());
+        .decisions(decisions.stream().map(InvoicesController::toDto).toList())
+        .payment(payment == null ? null : toDto(payment));
+  }
+
+  private static PaymentDto toDto(Payment payment) {
+    return new PaymentDto()
+        .state(PaymentDto.StateEnum.fromValue(payment.state().name()))
+        .failureReason(payment.failureReason());
   }
 
   private static DecisionDto toDto(Decision decision) {

@@ -288,6 +288,19 @@ components:
         currency:
           type: string
           enum: [USD]
+    SignedMoney:
+      type: object
+      description: >-
+        Like Money, but the amount may be negative, as Available Credit is when Issuer staff lower a Credit Line
+        below the Buyer's open Holds.
+      required: [minorUnits, currency]
+      properties:
+        minorUnits:
+          type: integer
+          format: int64
+        currency:
+          type: string
+          enum: [USD]
     BuyerRequest:
       type: object
       required: [name, approvalThreshold]
@@ -314,12 +327,14 @@ components:
       type: object
       description: >-
         A Buyer's Credit Line, and its Available Credit: the Credit Line minus open Holds and posted spend.
+        Available Credit is negative when the Credit Line was lowered below the open Holds; no new Hold is placed
+        until it is back above zero.
       required: [creditLine, availableCredit]
       properties:
         creditLine:
           $ref: '#/components/schemas/Money'
         availableCredit:
-          $ref: '#/components/schemas/Money'
+          $ref: '#/components/schemas/SignedMoney'
     InvoiceSupplier:
       type: object
       description: The Supplier as an Invoice names it.
@@ -390,6 +405,23 @@ components:
           description: Every approval and rejection of the Invoice, oldest first.
           items:
             $ref: '#/components/schemas/Decision'
+        payment:
+          $ref: '#/components/schemas/Payment'
+    Payment:
+      type: object
+      description: >-
+        The Payment an approved Invoice starts. Absent until then: it appears moments after the final approval.
+      required: [state]
+      properties:
+        state:
+          type: string
+          description: >-
+            `STARTED` until the Hold for the Invoice amount is placed (`HOLD_PLACED`), or until the Payment fails
+            (`FAILED`), leaving the Invoice approved and unpaid.
+          enum: [STARTED, HOLD_PLACED, FAILED]
+        failureReason:
+          type: string
+          description: Why the Payment failed; present only when `state` is `FAILED`.
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.

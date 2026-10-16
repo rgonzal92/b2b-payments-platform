@@ -3,6 +3,7 @@ package dev.rgonz.payments.platform.ledger;
 import dev.rgonz.payments.contracts.server.CreditApi;
 import dev.rgonz.payments.contracts.server.model.CreditDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
+import dev.rgonz.payments.contracts.server.model.SignedMoneyDto;
 import dev.rgonz.payments.platform.buyers.BuyerDirectory;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
@@ -48,7 +49,7 @@ class CreditController implements CreditApi {
     return ResponseEntity.ok(
         new CreditDto()
             .creditLine(toDto(credit.creditLine()))
-            .availableCredit(toDto(credit.availableCredit())));
+            .availableCredit(toSignedDto(credit.availableCredit())));
   }
 
   private static ErrorResponseException notFound(String detail) {
@@ -64,5 +65,11 @@ class CreditController implements CreditApi {
     return new MoneyDto()
         .minorUnits(money.minorUnits())
         .currency(MoneyDto.CurrencyEnum.fromValue(money.currency().getCurrencyCode()));
+  }
+
+  private static SignedMoneyDto toSignedDto(Money money) {
+    return new SignedMoneyDto()
+        .minorUnits(money.minorUnits())
+        .currency(SignedMoneyDto.CurrencyEnum.fromValue(money.currency().getCurrencyCode()));
   }
 }
