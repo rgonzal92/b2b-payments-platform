@@ -11,21 +11,30 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
+import dev.rgonz.payments.contracts.network.AuthorizationRequest;
+import dev.rgonz.payments.contracts.network.AuthorizationResponse;
+import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
+import io.grpc.netty.NettyChannelBuilder;
 import java.io.UnsupportedEncodingException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.restclient.test.autoconfigure.AutoConfigureMockRestServiceServer;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.grpc.client.interceptor.security.BearerTokenAuthenticationInterceptor;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -61,6 +70,8 @@ class CorePathTests {
   @Autowired MockMvcTester mvc;
   @Autowired MockRestServiceServer supplier;
   @Autowired JdbcClient jdbc;
+
+  @LocalGrpcServerPort int grpcPort;
 
   @Test
   void anInvoiceAboveTheThresholdIsApprovedTwicePaidAndItsCardShownToTheSupplierOnce()
@@ -105,7 +116,8 @@ class CorePathTests {
 
   @Test
   @ExtendWith(OutputCaptureExtension.class)
-  void noTableOutsideTheVaultAndNoLogLineHoldsTheIssuedPan(CapturedOutput output) throws Exception {
+  void noTableOutsideTheVaultAndNoLogLineHoldsThePanOnceTheCardIsCharged(CapturedOutput output)
+      throws Exception {
     setUpAcme();
     var deliveries = supplierAccepts();
     var erpToken = clientCredentialsToken("acme-erp");
@@ -128,16 +140,27 @@ class CorePathTests {
             invoice(erpToken, invoiceId).getResponse().getContentAsString(),
             "$.payment.card.cardToken");
     String paymentId = JsonPath.read(deliveries.getFirst(), "$.id");
+    // The Network charges the card with what the Supplier read: the PAN and security code pass
+    // through authorization on their way to the vault.
+    var requestId = UUID.randomUUID().toString();
+    assertThat(charge(requestId, pan, securityCode).getResponseCode()).isEqualTo("00");
 
     assertThat(columnsOutsideTheVaultHolding(pan)).isEmpty();
+    assertThat(columnsOutsideTheVaultHoldingTheSecurityCode(securityCode)).isEmpty();
     // The same search finds a value that is stored outside the vault, such as the Card Token.
     assertThat(columnsOutsideTheVaultHolding(cardToken))
-        .contains("cards.card.card_token", "suppliers.remittance_advice.card_token");
-    // The worker's log lines, from its own thread, were captured too.
-    assertThat(output).contains("Payment " + paymentId + " is COMPLETED").doesNotContain(pan);
+        .contains(
+            "cards.card.card_token",
+            "suppliers.remittance_advice.card_token",
+            "\"authorization\".authorizations.card_token");
+    // The worker's log lines, and the gRPC call's, from their own threads, were captured too.
+    assertThat(output)
+        .contains("Payment " + paymentId + " is COMPLETED")
+        .contains("Authorization " + requestId + " answered 00")
+        .doesNotContain(pan);
     // Three digits alone turn up in any log (timestamps, ports), so this looks for the security
-    // code where a logged response or DTO would put it: after its name.
-    assertThat(output).doesNotContainPattern("(?i)security.?code\\W{0,5}" + securityCode);
+    // code where a logged request, response or DTO would put it: after its name.
+    assertThat(output).doesNotContainPattern(securityCodeAfterItsName(securityCode));
   }
 
   // Issuer staff create Acme and give it a Credit Line; the second test finds both already there.
@@ -249,12 +272,69 @@ class CorePathTests {
         .longValue();
   }
 
+  // The Network's Authorization request for the whole Invoice, signed in as the Network.
+  private AuthorizationResponse charge(String requestId, String pan, String securityCode) {
+    var channel = NettyChannelBuilder.forAddress("127.0.0.1", grpcPort).usePlaintext().build();
+    try {
+      return IssuerAuthorizationGrpc.newBlockingStub(channel)
+          .withDeadlineAfter(5, TimeUnit.SECONDS)
+          .withInterceptors(
+              new BearerTokenAuthenticationInterceptor(clientCredentialsToken("network")))
+          .authorize(
+              AuthorizationRequest.newBuilder()
+                  .setPrimaryAccountNumber(pan)
+                  .setSecurityCode(securityCode)
+                  .setAmountMinor(AMOUNT)
+                  .setCurrencyCode("USD")
+                  .setRetrievalReferenceNumber(requestId)
+                  .setCardAcceptorId("GLOBEX-ACCEPTOR")
+                  .setCardAcceptorName("Globex, Springfield")
+                  .build());
+    } finally {
+      channel.shutdownNow();
+    }
+  }
+
+  private static String securityCodeAfterItsName(String securityCode) {
+    return "(?i)security.?code\\W{0,5}" + securityCode;
+  }
+
   /**
    * Every column, in every table of every schema but the vault's (and PostgreSQL's own), holding
    * the value in any row: as text, which covers numbers too, and as raw bytes in a {@code bytea}.
    */
   private List<String> columnsOutsideTheVaultHolding(String value) {
-    record Column(String table, String name, String type) {}
+    return columnsOutsideTheVaultWhere(
+        column ->
+            "bytea".equals(column.type())
+                ? "position(convert_to(:value, 'UTF8') in " + column.name() + ") > 0"
+                : "strpos(" + column.name() + "::text, :value) > 0",
+        Map.of("value", value));
+  }
+
+  /**
+   * Every column outside the vault holding the security code: as a text column's whole value, or
+   * after its name anywhere, as a stored request or DTO would hold it. Three digits alone turn up
+   * inside numbers, tokens and timestamps, so a plain substring search would find them everywhere.
+   */
+  private List<String> columnsOutsideTheVaultHoldingTheSecurityCode(String securityCode) {
+    return columnsOutsideTheVaultWhere(
+        column -> {
+          var text =
+              "bytea".equals(column.type())
+                  ? "encode(" + column.name() + ", 'escape')"
+                  : column.name() + "::text";
+          var wholeValue =
+              List.of("text", "character varying", "character").contains(column.type())
+                  ? column.name() + " = :value or "
+                  : "";
+          return wholeValue + text + " ~ :afterItsName";
+        },
+        Map.of("value", securityCode, "afterItsName", securityCodeAfterItsName(securityCode)));
+  }
+
+  private List<String> columnsOutsideTheVaultWhere(
+      Function<Column, String> condition, Map<String, ?> parameters) {
     var columns =
         jdbc.sql(
                 """
@@ -271,18 +351,16 @@ class CorePathTests {
             .list();
     return columns.stream()
         .filter(
-            column -> {
-              var holds =
-                  "bytea".equals(column.type())
-                      ? "position(convert_to(:value, 'UTF8') in " + column.name() + ") > 0"
-                      : "strpos(" + column.name() + "::text, :value) > 0";
-              return jdbc.sql(
-                      "select exists (select 1 from " + column.table() + " where " + holds + ")")
-                  .param("value", value)
-                  .query(Boolean.class)
-                  .single();
-            })
+            column ->
+                jdbc.sql(
+                        "select exists (select 1 from %s where %s)"
+                            .formatted(column.table(), condition.apply(column)))
+                    .params(parameters)
+                    .query(Boolean.class)
+                    .single())
         .map(column -> column.table() + "." + column.name())
         .toList();
   }
+
+  private record Column(String table, String name, String type) {}
 }

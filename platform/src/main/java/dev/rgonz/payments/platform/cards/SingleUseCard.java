@@ -22,6 +22,8 @@ public record SingleUseCard(
 
   public enum Status {
     ACTIVE,
+    /** A Charge on it was approved; Clearing (M3) or a Reversal comes next. */
+    AUTHORIZED,
     CANCELLED
   }
 }

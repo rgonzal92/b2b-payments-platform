@@ -24,7 +24,8 @@ final class TestKeycloak {
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
-          .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET);
+          .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET)
+          .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
   // Started on first use and never stopped: Ryuk, Testcontainers' clean-up container, removes it
   // once the test JVM exits (CI turns Ryuk off and throws the whole runner away instead).

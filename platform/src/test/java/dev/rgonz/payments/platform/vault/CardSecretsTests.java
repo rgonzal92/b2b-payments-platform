@@ -14,13 +14,31 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-/** The vault stores each card's PAN on PostgreSQL, one card per PAN. */
+/**
+ * The vault stores each card's PAN on PostgreSQL, one card per PAN, and finds a card by its PAN.
+ */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
 class CardSecretsTests {
 
   @Autowired JdbcClient jdbc;
   @Autowired VaultCrypto crypto;
+  @Autowired Vault vault;
+
+  @Test
+  void aKnownPanFindsItsCardToken() {
+    var cardToken = "card-" + UUID.randomUUID();
+    vault.generatePan(cardToken);
+    var pan = vault.cardDetails(cardToken).pan();
+
+    assertThat(vault.cardFor(pan)).contains(cardToken);
+  }
+
+  @Test
+  void anUnknownPanFindsNoCard() {
+    // Outside the 990000 range the vault draws from, so no card has it.
+    assertThat(vault.cardFor("4000000000000002")).isEmpty();
+  }
 
   @Test
   void aPanAnotherCardAlreadyHasIsDrawnAgain() {
@@ -32,12 +50,12 @@ class CardSecretsTests {
                 123, 1, 2, 3, 4, 5, 6, 7, 8, 9, // first card
                 456, 1, 2, 3, 4, 5, 6, 7, 8, 9, // second card: the same PAN
                 9, 8, 7, 6, 5, 4, 3, 2, 1)); // and a fresh one
-    var vault = new CardSecrets(jdbc, crypto, random);
+    var scriptedVault = new CardSecrets(jdbc, crypto, random);
     var firstCard = "card-" + UUID.randomUUID();
     var secondCard = "card-" + UUID.randomUUID();
 
-    var firstLastFour = vault.generatePan(firstCard);
-    var secondLastFour = vault.generatePan(secondCard);
+    var firstLastFour = scriptedVault.generatePan(firstCard);
+    var secondLastFour = scriptedVault.generatePan(secondCard);
 
     assertThat(firstLastFour).isEqualTo("7899");
     assertThat(secondLastFour).isEqualTo("3219");

@@ -30,4 +30,11 @@ public interface Cards {
    * transaction.
    */
   void cancel(String cardToken);
+
+  /**
+   * Moves the card from {@code ACTIVE} to {@code AUTHORIZED} when a Charge on it is approved, in
+   * one conditional update, and says whether it did: false when the card isn't {@code ACTIVE}, or
+   * doesn't exist. Joins the caller's transaction.
+   */
+  boolean authorize(String cardToken);
 }

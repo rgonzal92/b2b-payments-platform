@@ -1,6 +1,7 @@
 package dev.rgonz.payments.platform.vault;
 
 import java.security.SecureRandom;
+import java.util.Optional;
 import java.util.random.RandomGenerator;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -61,6 +62,14 @@ class CardSecrets implements Vault {
         .optional()
         .orElseThrow(
             () -> new IllegalStateException("The vault has no card data for card " + cardToken));
+  }
+
+  @Override
+  public Optional<String> cardFor(String pan) {
+    return jdbc.sql("select card_token from vault.card_secret where pan_hash = :panHash")
+        .param("panHash", crypto.hash(pan))
+        .query(String.class)
+        .optional();
   }
 
   // The unique PAN hash rejects a PAN another card already has; `on conflict` reports that as no

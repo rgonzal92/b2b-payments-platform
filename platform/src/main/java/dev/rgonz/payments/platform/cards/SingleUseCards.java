@@ -109,6 +109,21 @@ class SingleUseCards implements Cards {
         .update();
   }
 
+  // Only an ACTIVE card moves, so of two Charges at once exactly one finds it ACTIVE.
+  @Override
+  public boolean authorize(String cardToken) {
+    return jdbc.sql(
+                """
+                update cards.card set status = :authorized
+                 where card_token = :cardToken and status = :active
+                """)
+            .param("authorized", SingleUseCard.Status.AUTHORIZED.name())
+            .param("cardToken", cardToken)
+            .param("active", SingleUseCard.Status.ACTIVE.name())
+            .update()
+        == 1;
+  }
+
   // Random and opaque: nothing about the card, its PAN included, can be worked out from it.
   private String newCardToken() {
     var bytes = new byte[CARD_TOKEN_BYTES];
