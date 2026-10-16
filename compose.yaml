@@ -17,3 +17,16 @@ services:
       - "127.0.0.1:3000:3000" # Grafana
       - "127.0.0.1:4317:4317" # OTLP over gRPC
       - "127.0.0.1:4318:4318" # OTLP over HTTP
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run scripts/init-env.sh first}
+      # The realm file reads client secrets from these placeholders at import.
+      SIMULATOR_ISSUER_ADMIN_SECRET: ${SIMULATOR_ISSUER_ADMIN_SECRET:?run scripts/init-env.sh first}
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "127.0.0.1:8180:8080"

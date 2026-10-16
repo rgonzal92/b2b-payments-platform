@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 foundations are built (both apps, local stack, CI); none of the modules below exist yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 foundations are built, and M1 is under way: `shared` and `buyers` exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -32,7 +32,10 @@ flowchart LR
 
 ## Runtime (M0 to M4)
 
-Docker Compose runs PostgreSQL (one schema per module) and `grafana/otel-lgtm` for metrics, traces and logs; Keycloak joins in M1. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
+Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, and Keycloak, which issues every token. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
+
+- **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp` and `issuer-admin`, and puts them in a flat `roles` claim. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
+- **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it.
 
 ## Modules
 
@@ -40,6 +43,7 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 
 | Module | Owns | Calls |
 |---|---|---|
+| `shared` | `Money`; open to every module | |
 | `buyers` | Buyer profiles, Approval Thresholds | |
 | `suppliers` | Suppliers, Supplier Relationships, Remittance Advice delivery | |
 | `payables` | Invoices, approvals, Payments (runs the Payment saga) | `ledger`, `cards`, `suppliers` |

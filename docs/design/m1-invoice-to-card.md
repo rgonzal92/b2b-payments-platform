@@ -37,6 +37,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 
 - **Keycloak 26.8.1** joins `compose.yaml` on `127.0.0.1:8180` in development mode, importing a `payments` realm from a file in the repository.
 - **Three roles:** `approver` (people at a Buyer), `erp` (a Buyer's ERP, signing in as a machine with client credentials) and `issuer-admin` (Issuer staff).
+- **Issuer staff choose a Buyer's ID when creating it** (`PUT /v1/buyers/{buyerId}`, safe to repeat), so the same ID can be written into that Buyer's clients in Keycloak ahead of time. (Changed during #13: the ticket said `POST /v1/buyers`, which would leave Keycloak no way to know the ID in advance.)
 - **Every Buyer-side token carries a `buyer_id` claim.** The platform is an OAuth2 resource server; every Buyer-side query filters by that claim, and a resource belonging to another Buyer answers `404` so its existence doesn't leak.
 - **Client secrets never enter the repository.** A small script writes random development secrets into the gitignored `.env`; Docker Compose hands them to Keycloak (the realm file references them as placeholders), and both apps import `.env`.
 
@@ -127,6 +128,6 @@ Card expiry processing (M2, with Authorization), postings and the journal (M3), 
 
 ## Risks
 
-- **`openapi-generator`'s Spring output may lag Spring Boot 4.** If the generated interfaces don't compile against Spring Framework 7, generate DTOs only and write the interfaces by hand.
-- **Keycloak placeholders in realm files** must resolve from the environment at import; check this first, before building on it.
+- **`openapi-generator`'s Spring output may lag Spring Boot 4.** If the generated interfaces don't compile against Spring Framework 7, generate DTOs only and write the interfaces by hand. (Resolved in #13: generator 7.26 has `useSpringBoot4` and `useJackson3`; the simulator's client is generated as Spring HTTP interfaces.)
+- **Keycloak placeholders in realm files** must resolve from the environment at import; check this first, before building on it. (Resolved in #13: confirmed, and `KeycloakTokenTests` checks it on every build.)
 - **M1 is the largest milestone (3 weeks).** Ticket order puts identity and contracts first, so the riskiest integration surfaces early.
