@@ -62,40 +62,34 @@ class CreditLines implements Holds {
    * Records the Buyer's Repayment of the amount, as Issuer staff sent it: posts its Journal Entry,
    * which debits Issuer Cash and credits the Buyer Receivable, and returns it. The Idempotency-Key
    * is the entry's: sent again with the same Buyer and amount, it returns the first Repayment and
-   * posts nothing. Answers 404 for a Buyer without a Credit Line, and 422 for an amount of zero or
+   * posts nothing. Empty when the Buyer has no Credit Line; answers 422 for an amount of zero or
    * less, in another currency than the Credit Line's, above the Buyer Receivable, or a key already
    * used for another Buyer or amount.
    */
   @Transactional
-  Repayment repay(BuyerId buyerId, String idempotencyKey, long minorUnits, String currency) {
+  Optional<Repayment> repay(
+      BuyerId buyerId, String idempotencyKey, long minorUnits, String currency) {
     // The same lock as placing a Hold, so two Repayments can't both repay the last of what the
-    // Buyer owes. An unknown Buyer has no Credit Line either: one lookup answers both.
-    var credit =
-        lockCreditLine(buyerId)
-            .map(creditLine -> credit(buyerId, creditLine))
-            .orElseThrow(
-                () ->
-                    new ErrorResponseException(
-                        HttpStatus.NOT_FOUND,
-                        ProblemDetail.forStatusAndDetail(
-                            HttpStatus.NOT_FOUND, "This Buyer has no Credit Line."),
-                        null));
+    // Buyer owes.
+    var creditLine = lockCreditLine(buyerId);
+    if (creditLine.isEmpty()) {
+      return Optional.empty();
+    }
+    var credit = credit(buyerId, creditLine.get());
     // A key already posted gives back its Repayment and posts nothing. Looked up before the checks,
     // so a resend isn't refused for the balance its own first posting lowered.
     var repayment =
         journal
             .findRepayment(idempotencyKey)
-            .orElseGet(() -> post(credit, buyerId, idempotencyKey, minorUnits, currency));
+            .orElseGet(() -> checkAndPost(credit, buyerId, idempotencyKey, minorUnits, currency));
     // Also catches another Buyer's Repayment that posted this key first: postRepayment returns it.
-    if (!repayment.buyerId().equals(buyerId)
-        || repayment.amount().minorUnits() != minorUnits
-        || !repayment.amount().currency().getCurrencyCode().equals(currency)) {
+    if (!repayment.isFor(buyerId, minorUnits, currency)) {
       throw refused("This Idempotency-Key was already used for a different request.");
     }
-    return repayment;
+    return Optional.of(repayment);
   }
 
-  private Repayment post(
+  private Repayment checkAndPost(
       Credit credit, BuyerId buyerId, String idempotencyKey, long minorUnits, String currency) {
     if (minorUnits <= 0) {
       throw refused("A Repayment's amount must be more than zero.");

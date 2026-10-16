@@ -22,6 +22,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 class CreditController implements CreditApi {
 
+  private static final String NO_CREDIT_LINE = "This Buyer has no Credit Line.";
+
   private final BuyerDirectory buyers;
   private final CreditLines creditLines;
 
@@ -46,9 +48,7 @@ class CreditController implements CreditApi {
   public ResponseEntity<CreditDto> getCredit(UUID buyerId) {
     // An unknown Buyer has no Credit Line either, so one lookup answers both.
     var credit =
-        creditLines
-            .findCredit(new BuyerId(buyerId))
-            .orElseThrow(() -> notFound("This Buyer has no Credit Line."));
+        creditLines.findCredit(new BuyerId(buyerId)).orElseThrow(() -> notFound(NO_CREDIT_LINE));
     return ResponseEntity.ok(
         new CreditDto()
             .creditLine(toDto(credit.creditLine()))
@@ -61,9 +61,15 @@ class CreditController implements CreditApi {
   @PreAuthorize("hasRole('issuer-admin')")
   public ResponseEntity<RepaymentDto> recordRepayment(
       UUID buyerId, String idempotencyKey, RepaymentRequestDto request) {
+    // As for reading credit, an unknown Buyer has no Credit Line, so nothing to repay.
     var repayment =
-        creditLines.repay(
-            new BuyerId(buyerId), idempotencyKey, request.getMinorUnits(), request.getCurrency());
+        creditLines
+            .repay(
+                new BuyerId(buyerId),
+                idempotencyKey,
+                request.getMinorUnits(),
+                request.getCurrency())
+            .orElseThrow(() -> notFound(NO_CREDIT_LINE));
     return ResponseEntity.status(HttpStatus.CREATED)
         .body(
             new RepaymentDto()
