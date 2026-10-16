@@ -71,20 +71,21 @@ class IdempotentRequests {
     var earlier =
         jdbc.sql(
                 """
-                select request_hash, response_status, response_body
+                select request_hash = :hash as same_request, response_status, response_body
                   from payables.idempotent_request
                  where buyer_id = :buyerId and idempotency_key = :key
                 """)
+            .param("hash", requestHash)
             .param("buyerId", buyerId.value())
             .param("key", key)
             .query(
                 (row, rowNumber) ->
                     new Earlier(
-                        row.getBytes("request_hash"),
+                        row.getBoolean("same_request"),
                         row.getInt("response_status"),
                         row.getString("response_body")))
             .single();
-    if (!MessageDigest.isEqual(earlier.requestHash(), requestHash)) {
+    if (!earlier.sameRequest()) {
       throw new ErrorResponseException(
           HttpStatus.UNPROCESSABLE_CONTENT,
           ProblemDetail.forStatusAndDetail(
@@ -96,7 +97,7 @@ class IdempotentRequests {
         .body(json.readValue(earlier.responseBody(), responseType));
   }
 
-  private record Earlier(byte[] requestHash, int responseStatus, String responseBody) {}
+  private record Earlier(boolean sameRequest, int responseStatus, String responseBody) {}
 
   private static byte[] sha256(byte[] bytes) {
     try {
