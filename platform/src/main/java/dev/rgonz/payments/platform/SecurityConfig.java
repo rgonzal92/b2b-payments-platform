@@ -31,7 +31,7 @@ class SecurityConfig {
         .sessionManagement(
             session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         // Bearer tokens, no cookies: there is no session for a cross-site request to ride on.
-        .csrf(AbstractHttpConfigurer::disable)
+        .csrf(AbstractHttpConfigurer::disable) // NOSONAR java:S4502, reviewed: see the line above
         .build();
   }
 

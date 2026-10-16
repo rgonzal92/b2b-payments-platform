@@ -10,7 +10,7 @@ The log ends with `QUALITY GATE STATUS: FAILED` and a link to the analysis.
 
 1. Open the link. The gate lists which condition failed on new code: coverage, bugs, vulnerabilities, security hotspots or duplication.
 2. Fix it in the pull request: add the missing tests, fix the issue, or remove the duplication. Push, and the check re-runs.
-3. A finding that is genuinely wrong can be marked "False positive" or "Accept" in SonarQube Cloud, with a comment saying why. Then re-run the job.
+3. A finding that is wrong for this code gets marked as reviewed, with the reason: either `// NOSONAR <rule>` on that one line with the reason beside it (preferred: it's reviewed in the pull request and survives re-analysis), or "False positive"/"Accept" in SonarQube Cloud followed by a re-run of the job.
 
 ## The token was rejected
 
