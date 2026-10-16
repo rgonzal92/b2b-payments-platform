@@ -48,10 +48,29 @@ class ClearingFiles {
         .update();
   }
 
+  /**
+   * Records a file that failed a check of the validate step, as {@code REFUSED}, with the check it
+   * failed.
+   */
+  void refuse(FileHeader header, String reason) {
+    jdbc.sql(
+            """
+            insert into clearing.clearing_file
+                   (id, sequence_number, business_date, status, refusal_reason)
+            values (:id, :sequenceNumber, :businessDate, :status, :reason)
+            """)
+        .param("id", header.fileId())
+        .param("sequenceNumber", header.sequenceNumber())
+        .param("businessDate", header.businessDate())
+        .param("status", ClearingFileSummary.Status.REFUSED.name())
+        .param("reason", reason)
+        .update();
+  }
+
   Optional<ClearingFileSummary> find(String fileId) {
     return jdbc.sql(
             """
-            select id, sequence_number, business_date, status, record_count
+            select id, sequence_number, business_date, status, record_count, refusal_reason
               from clearing.clearing_file
              where id = :id
             """)
@@ -63,7 +82,8 @@ class ClearingFiles {
                     row.getLong("sequence_number"),
                     row.getObject("business_date", LocalDate.class),
                     ClearingFileSummary.Status.valueOf(row.getString("status")),
-                    row.getLong("record_count")))
+                    row.getObject("record_count", Long.class),
+                    row.getString("refusal_reason")))
         .optional();
   }
 }

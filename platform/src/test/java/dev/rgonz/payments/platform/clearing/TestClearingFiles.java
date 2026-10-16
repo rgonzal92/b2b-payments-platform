@@ -77,7 +77,12 @@ public final class TestClearingFiles {
 
   public static String trailer(List<Detail> details) {
     var total = details.stream().mapToLong(Detail::amountMinor).sum();
-    return record("92%08d%015d%015dUSD".formatted(details.size(), total, total));
+    return trailer(details.size(), total, total);
+  }
+
+  /** A trailer with these figures, in USD, whether or not they total the file's records. */
+  public static String trailer(long recordCount, long amountTotal, long netSettlementAmount) {
+    return record("92%08d%015d%015dUSD".formatted(recordCount, amountTotal, netSettlementAmount));
   }
 
   /** A new ID of letters and digits, as the Network gives files, records and requests. */

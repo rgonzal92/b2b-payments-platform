@@ -11,6 +11,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.format.ResolverStyle;
 import java.util.Currency;
+import java.util.HashMap;
 import java.util.function.Consumer;
 
 /**
@@ -36,12 +37,16 @@ final class ClearingFileLayout {
   /**
    * Reads a whole file in one pass, handing each Clearing to {@code eachClearing} in file order,
    * and returns its header and trailer. Throws {@link MalformedClearingFileException} when a record
-   * doesn't follow the layout or the records aren't one header, the Clearings, then one trailer.
+   * doesn't follow the layout, the records aren't one header, the Clearings, then one trailer, or
+   * the trailer's control totals aren't its Clearings'.
    */
   static Envelope read(BufferedReader lines, Consumer<ClearingRecord> eachClearing)
       throws IOException {
     var header = readHeader(lines);
     FileTrailer trailer = null;
+    var clearings = 0L;
+    // Each currency's total: the trailer's amount total is in one currency, which comes last.
+    var amountTotals = new HashMap<Currency, Long>();
     var lineNumber = 1;
     String line;
     while ((line = lines.readLine()) != null) {
@@ -50,7 +55,12 @@ final class ClearingFileLayout {
         throw new MalformedClearingFileException(lineNumber, "a record follows the trailer");
       }
       switch (parse(line, lineNumber)) {
-        case ClearingRecord clearing -> eachClearing.accept(clearing);
+        case ClearingRecord clearing -> {
+          clearings++;
+          amountTotals.merge(
+              clearing.amount().currency(), clearing.amount().minorUnits(), Long::sum);
+          eachClearing.accept(clearing);
+        }
         case FileTrailer fileTrailer -> trailer = fileTrailer;
         case FileHeader _ ->
             throw new MalformedClearingFileException(lineNumber, "a second header");
@@ -58,6 +68,17 @@ final class ClearingFileLayout {
     }
     if (trailer == null) {
       throw new MalformedClearingFileException(lineNumber, "the file ends without a trailer (92)");
+    }
+    if (trailer.recordCount() != clearings) {
+      throw new MalformedClearingFileException(
+          lineNumber, "the record count (positions 3–10) isn't the number of detail records");
+    }
+    var amountTotal = trailer.amountTotal();
+    if (!amountTotals.keySet().stream().allMatch(amountTotal.currency()::equals)
+        || amountTotals.getOrDefault(amountTotal.currency(), 0L) != amountTotal.minorUnits()) {
+      throw new MalformedClearingFileException(
+          lineNumber,
+          "the amount total (positions 11–25) isn't the sum of the detail records' amounts");
     }
     return new Envelope(header, trailer);
   }

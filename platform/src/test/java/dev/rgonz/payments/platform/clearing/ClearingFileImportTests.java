@@ -3,6 +3,7 @@ package dev.rgonz.payments.platform.clearing;
 import static dev.rgonz.payments.platform.clearing.TestClearingFiles.newId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
@@ -37,9 +38,14 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -102,6 +108,7 @@ class ClearingFileImportTests {
   @Autowired Vault vault;
   @Autowired Suppliers suppliers;
   @Autowired ClearingFileImports imports;
+  @Autowired ClearingFiles files;
 
   // The real journal, which the restart test makes fail once.
   @MockitoSpyBean Journal journal;
@@ -242,18 +249,22 @@ class ClearingFileImportTests {
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
   }
 
-  @Test
-  void aFileWithoutATrailerIsRefusedAndPostsNothing() throws Exception {
+  // Each check of the validate step refuses the whole file: nothing is posted, the file waits in
+  // failed/, and its summary and the answer say which check failed, never with the PAN.
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("refusedFiles")
+  void aFileThatFailsAValidateCheckIsRefusedWholeAndPostsNothing(
+      String description, Function<Detail, List<String>> recordsAfterTheHeader, String reason)
+      throws Exception {
     var buyerId = buyerWithCreditLine(10_000_000);
     var charged = chargedCard(buyerId);
     var creditBefore = availableCredit(buyerId);
     var fileId = newId("F", 16);
-    var fileName =
-        TestClearingFiles.write(
-            DROP_FOLDER,
-            List.of(
-                TestClearingFiles.header(fileId, 9),
-                TestClearingFiles.detail(clearingOf(charged, newId("R", 20), CARD_AMOUNT))));
+    var clearing = clearingOf(charged, newId("R", 20), CARD_AMOUNT);
+    var lines = new ArrayList<String>();
+    lines.add(TestClearingFiles.header(fileId, 9));
+    lines.addAll(recordsAfterTheHeader.apply(clearing));
+    var fileName = TestClearingFiles.write(DROP_FOLDER, lines);
 
     var response = importFile(fileName, "ROLE_issuer-admin");
 
@@ -262,11 +273,59 @@ class ClearingFileImportTests {
         .bodyJson()
         .extractingPath("$.detail")
         .asString()
-        .contains("Line 2: the file ends without a trailer (92).")
+        .contains(reason)
         .doesNotContain(charged.pan());
+    assertThat(files.find(fileId))
+        .get()
+        .returns(ClearingFileSummary.Status.REFUSED, ClearingFileSummary::status)
+        .returns(reason, ClearingFileSummary::refusalReason);
+    assertThat(postedCount(List.of(clearing))).isZero();
     assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
         .isEqualTo(SingleUseCard.Status.AUTHORIZED);
     assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(DROP_FOLDER.resolve("failed").resolve(fileName)).exists();
+    assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();
+  }
+
+  static Stream<Arguments> refusedFiles() {
+    return Stream.of(
+        arguments(
+            "a trailer whose record count isn't the file's",
+            records(
+                clearing ->
+                    List.of(
+                        TestClearingFiles.detail(clearing),
+                        TestClearingFiles.trailer(
+                            2, clearing.amountMinor(), clearing.amountMinor()))),
+            "Line 3: the record count (positions 3–10) isn't the number of detail records."),
+        arguments(
+            "a trailer whose amount total isn't the file's",
+            records(
+                clearing ->
+                    List.of(
+                        TestClearingFiles.detail(clearing),
+                        TestClearingFiles.trailer(
+                            1, clearing.amountMinor() + 1, clearing.amountMinor() + 1))),
+            "Line 3: the amount total (positions 11–25) isn't the sum of the detail records'"
+                + " amounts."),
+        arguments(
+            "a malformed detail record",
+            records(
+                clearing -> {
+                  var detail = TestClearingFiles.detail(clearing);
+                  return List.of(
+                      detail.substring(0, 41) + "TWELVE CENTS" + detail.substring(53),
+                      TestClearingFiles.trailer(List.of(clearing)));
+                }),
+            "Line 2: the amount (positions 42–53) isn't a number."),
+        arguments(
+            "no trailer",
+            records(clearing -> List.of(TestClearingFiles.detail(clearing))),
+            "Line 2: the file ends without a trailer (92)."));
+  }
+
+  private static Function<Detail, List<String>> records(Function<Detail, List<String>> records) {
+    return records;
   }
 
   @Test

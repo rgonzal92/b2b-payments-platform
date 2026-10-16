@@ -5,15 +5,23 @@ import java.time.LocalDate;
 /**
  * A Clearing File the platform received, as its header and its Clearings describe it.
  *
- * @param recordCount the number of Clearings in the file
+ * @param recordCount the number of Clearings in the file; null when it was refused
+ * @param refusalReason which check refused the file, by line and field; null unless {@code REFUSED}
  */
 record ClearingFileSummary(
-    String id, long sequenceNumber, LocalDate businessDate, Status status, long recordCount) {
+    String id,
+    long sequenceNumber,
+    LocalDate businessDate,
+    Status status,
+    Long recordCount,
+    String refusalReason) {
 
   enum Status {
     /** Its Clearings are being posted, or an import of it stopped partway. */
     IMPORTING,
     /** Every Clearing in it is recorded. */
-    IMPORTED
+    IMPORTED,
+    /** It failed a check of the validate step: nothing in it was posted. */
+    REFUSED
   }
 }
