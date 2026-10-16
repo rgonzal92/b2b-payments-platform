@@ -23,7 +23,9 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
     /** No card the Issuer issued has the PAN. */
     INVALID_CARD("14"),
     /** The card can't be charged: it isn't ACTIVE (#31 adds the expiry checks). */
-    EXPIRED_CARD("54");
+    EXPIRED_CARD("54"),
+    /** The Charge's Acceptor ID isn't the card's Supplier's, or its Supplier has none. */
+    NOT_PERMITTED("57");
 
     private final String code;
 

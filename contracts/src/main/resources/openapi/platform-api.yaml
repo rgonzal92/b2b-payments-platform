@@ -131,9 +131,10 @@ paths:
       description: >-
         A Buyer's ERP only (role `erp`); the Buyer is the one in the token's `buyer_id` claim. The amount must
         be more than zero. The first Invoice naming an unknown tax ID creates the Supplier, and the Buyer's first
-        Invoice to a Supplier creates its Supplier Relationship; later Invoices reuse both and don't change them.
-        Repeating a request with the same `Idempotency-Key` returns the original response; reusing a key with a
-        different request is `422`. The same Supplier and Invoice number under a new key is `409`.
+        Invoice to a Supplier creates its Supplier Relationship; later Invoices reuse both and don't change them,
+        except that a Supplier without an Acceptor ID takes the first one an Invoice carries. Repeating a request
+        with the same `Idempotency-Key` returns the original response; reusing a key with a different request is
+        `422`. The same Supplier and Invoice number under a new key is `409`.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -392,6 +393,16 @@ components:
           description: The http(s) URL where the Supplier receives Remittance Advice.
           maxLength: 2000
           pattern: '^https?://\S+$'
+        acceptorId:
+          type: string
+          description: >-
+            The Acceptor ID the Supplier's Acquirer gave it (ISO 8583 DE 42), which the Network carries on every
+            Charge from the Supplier; compared exactly. Optional, but a Single-Use Card whose Supplier has no Acceptor
+            ID declines every Charge. The first Invoice that carries one sets it for the Supplier; a different one on
+            a later Invoice is ignored.
+          minLength: 1
+          maxLength: 15
+          pattern: '.*\S.*'
     InvoiceRequest:
       type: object
       required: [supplier, invoiceNumber, amount, dueDate]

@@ -49,11 +49,11 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 |---|---|---|---|
 | `shared` | `Money`, `BuyerId`, `SecretKeys` (reads a 256-bit key from configuration, or stops the platform); open to every module | | M1 |
 | `buyers` | Buyer profiles, Approval Thresholds | | M1 |
-| `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice and their one-time card links | `cards`, `vault` | M1 |
+| `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012) and their Acceptor IDs, Supplier Relationships, Remittance Advice and their one-time card links | `cards`, `vault` | M1 |
 | `payables` | Invoices and their Idempotency-Keys, approvals, Payments (runs the Payment saga) | `buyers`, `ledger`, `cards`, `suppliers` | M1 |
 | `cards` | Virtual Card lifecycle, Card Tokens; Single-Use Cards so far (issue, cancel, authorize, expire after 30 days uncharged) | `vault` | M1 |
 | `vault` | PANs and security codes, encrypted, with each PAN's keyed hash (ADR-0004); only `cards`, `suppliers` and `authorization` may call it | | M1 |
-| `authorization` | The Network link over gRPC; Authorization rules and a record of every answer | `vault`, `cards` | M2 |
+| `authorization` | The Network link over gRPC; Authorization rules and a record of every answer | `vault`, `cards`, `suppliers` | M2 |
 | `ledger` | Credit Lines, Holds and Available Credit; postings and the journal from M3 (ADR-0005) | `buyers` | M1 |
 | `clearing` | Clearing File processing, Settlement | `ledger` | M3 |
 | `reconciliation` | Matching Charges to Authorizations and Invoices; Breaks | | M4 |
@@ -61,7 +61,7 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card, or `ledger` asking `buyers` whether a Buyer exists before setting its Credit Line. The callee answers through a public type in its module's top-level package (`buyers.BuyerDirectory`); the rest of the module stays package-private.
-- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places and releases Holds through `ledger.Holds` and issues cards through `cards.Cards`, inside the worker's transaction, so each step and the Payment's new state commit together. `cards` asks `vault.Vault` for a new PAN by Card Token, in that same transaction, and gets back only its last four digits. The saga delivers the Remittance Advice through `suppliers.RemittanceAdvices`, and when delivery fails for good it cancels the card through `cards.Cards`. When a Supplier opens its link, `suppliers` asks `cards.Cards` for the card (status, expiry) and `vault.Vault` for its PAN and security code. When the Network asks for an Authorization, `authorization` asks `vault.Vault` for the Card Token of the request's PAN and `cards.Cards` to move the card to `AUTHORIZED`, in one transaction with the recorded answer. `ModularityTests` fails if any module other than `cards`, `suppliers` and `authorization` uses `vault`.
+- **Also direct:** `payables` asks `buyers.BuyerDirectory` whether the token's Buyer exists and, when an Approver approves, for the Buyer's Approval Threshold. It asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction. The Payment saga places and releases Holds through `ledger.Holds` and issues cards through `cards.Cards`, inside the worker's transaction, so each step and the Payment's new state commit together. `cards` asks `vault.Vault` for a new PAN by Card Token, in that same transaction, and gets back only its last four digits. The saga delivers the Remittance Advice through `suppliers.RemittanceAdvices`, and when delivery fails for good it cancels the card through `cards.Cards`. When a Supplier opens its link, `suppliers` asks `cards.Cards` for the card (status, expiry) and `vault.Vault` for its PAN and security code. When the Network asks for an Authorization, `authorization` asks `vault.Vault` for the Card Token of the request's PAN, `cards.Cards` for the card, `suppliers.Suppliers` for its Supplier's Acceptor ID, and `cards.Cards` to move the card to `AUTHORIZED`, in one transaction with the recorded answer. `ModularityTests` fails if any module other than `cards`, `suppliers` and `authorization` uses `vault`.
 - **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008). The first is `payables.InvoiceApproved` (Invoice, Buyer, Supplier, amount), published by the approval that completes an Invoice; the Payment saga's listener starts a Payment from it. The second is `cards.CardExpired` (Card Token, Payment, Buyer, amount), published by the expiry job for each card nobody charged; `payables` ends the Payment and releases its Hold (see [Card expiry](#card-expiry)). Publications whose listener didn't complete are delivered again when the platform starts, so a listener must cope with the same event twice.
 - **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`. Spring Modulith's event publication registry keeps its one table, `event_publication`, in a `modulith` schema it creates at startup.
 
@@ -238,12 +238,17 @@ sequenceDiagram
   participant AUT as authorization
   participant VLT as vault
   participant CRD as cards
+  participant SUP as suppliers
 
   NET->>SEC: Authorize(PAN, amount, request ID, Acceptor ID, …)<br/>metadata authorization: Bearer <network token>
   SEC->>SEC: the token checked like REST's; ROLE_network required
   SEC->>AUT: the request
   AUT->>VLT: cardFor(PAN)
   VLT-->>AUT: Card Token, found through the PAN's keyed hash (or none)
+  AUT->>CRD: find(Card Token)
+  CRD-->>AUT: status, Supplier
+  AUT->>SUP: acceptorId(Supplier)
+  SUP-->>AUT: the Supplier's Acceptor ID (or none)
   AUT->>CRD: authorize(Card Token): ACTIVE to AUTHORIZED, one conditional update
   AUT->>AUT: record the answer in "authorization".authorizations
   AUT-->>NET: 00 and an authorization code, or a decline code
@@ -251,10 +256,11 @@ sequenceDiagram
 
 - **Serving:** a Netty gRPC server on `127.0.0.1:9090` (`spring.grpc.server.address` and `.port`), beside the REST port, plaintext until mutual TLS in M7. Tests give each context's server a free port.
 - **Signing in:** the Network's token travels in the `authorization` metadata header. Spring gRPC's `GrpcSecurity` (`SecurityConfig`) checks it with the same JWT decoder, issuer and `roles` claim as REST, and every call needs `ROLE_network`, the reflection and health services the starter adds included. No token or a bad one answers `UNAUTHENTICATED`; another client's token, `PERMISSION_DENIED`.
-- **Answering**, in one transaction: `authorization` asks `vault.Vault.cardFor(pan)` for the card's Card Token; the vault looks up the PAN's HMAC, decrypts nothing and never returns the PAN. No card has it: `14` (invalid card). Otherwise `cards.Cards.authorize` moves the card from `ACTIVE` to `AUTHORIZED` in one conditional update: if it moved, `00` with a random six-character authorization code (`SecureRandom`); if the card wasn't `ACTIVE`, `54`. There is no credit check, and the Hold placed at issuance stays as it is (ADR-0011). The remaining rules and resent requests come with #31; `Reverse` answers `UNIMPLEMENTED` until #33.
+- **Answering**, in one transaction, rule by rule in the design's order: `authorization` asks `vault.Vault.cardFor(pan)` for the card's Card Token; the vault looks up the PAN's HMAC, decrypts nothing and never returns the PAN. No card has it: `14` (invalid card). The card isn't `ACTIVE`: `54`. The request's Acceptor ID (DE 42) isn't exactly the one `suppliers.Suppliers.acceptorId` holds for the card's Supplier, or that Supplier has none: `57` (not permitted). Otherwise `cards.Cards.authorize` moves the card from `ACTIVE` to `AUTHORIZED` in one conditional update: if it moved, `00` with a random six-character authorization code (`SecureRandom`); if another Charge moved it first, `54`. A decline changes neither the card nor its Hold. There is no credit check, and the Hold placed at issuance stays as it is (ADR-0011). The remaining rules and resent requests come with #31; `Reverse` answers `UNIMPLEMENTED` until #33.
+- **The Supplier's Acceptor ID** comes from the Buyer's ERP: the Invoice's Supplier block may carry an `acceptorId`, and the first Invoice that carries one sets it on the Supplier (`suppliers.supplier.acceptor_id`). Like the remittance address, a different one on a later Invoice is ignored, so no Buyer's ERP can redirect a Supplier's Charges once it has one.
 - **The record:** every answer is a row in `"authorization".authorizations`: the request ID (DE 37, primary key), the Card Token (null for an unknown PAN), amount and currency, Acceptor ID, response code, authorization code (approvals only), status (`APPROVED` or `DECLINED`) and time. Never a PAN or security code. The schema's name is a reserved word in PostgreSQL, so SQL quotes it.
 - **The PAN stays in the vault (ADR-0004):** `authorization` holds the PAN and security code in memory only, on their way to the vault. Nothing logs a request (a protobuf message's `toString` prints every field) or puts a request field in an exception message; the one log line per answer names its request ID and response code. Traces record the RPC's full method name, its status and the caller's address and port (Micrometer's gRPC observation), never message fields or metadata.
-- **How it works and why:** [`learning/grpc.md`](learning/grpc.md). When the Network's calls are refused: [`runbooks/keycloak-unavailable.md`](runbooks/keycloak-unavailable.md); when every Charge answers `14`: [`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md).
+- **How it works and why:** [`learning/grpc.md`](learning/grpc.md). When the Network's calls are refused: [`runbooks/keycloak-unavailable.md`](runbooks/keycloak-unavailable.md); when every Charge answers `14`: [`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md); when a Supplier's Charges answer `57`: [`runbooks/supplier-charges-declined.md`](runbooks/supplier-charges-declined.md).
 
 ## The simulator in M1
 
@@ -263,7 +269,7 @@ The `simulator` plays every party on M1's core path other than the platform; eac
 | Role | Class | What it does |
 |---|---|---|
 | Issuer staff | `AcmeSeeder` | At startup, creates the Buyer Acme (fixed ID, Approval Threshold $10,000) and gives it a $100,000 Credit Line (`simulator-issuer-admin`) |
-| Acme's ERP | `AcmeErp` | Submits Invoices from Globex under a new `Idempotency-Key` each, and reads them back (`acme-erp`) |
+| Acme's ERP | `AcmeErp` | Submits Invoices from Globex, with Globex's Acceptor ID (`simulator.globex.acceptor-id`), under a new `Idempotency-Key` each, and reads them back (`acme-erp`) |
 | Acme's Approvers | `AcmeApprovers` | Approve on request, as `acme-approver-1` or `acme-approver-2` |
 | Supplier Globex | `GlobexSupplier` | Receives Remittance Advice at `/globex/remittance-advice`, drops repeats by `Idempotency-Key`, opens each card link once with an untraced client, and keeps only the last four digits, expiry and amount |
 | Demo | `AcmeDemo` | `POST /demo/invoices[?minorUnits=…]`: runs the whole path in one call (below) |
@@ -302,7 +308,8 @@ sequenceDiagram
 ## How the Network link is proven
 
 - **Only the Network signs in** (`NetworkAuthenticationTests`): real Keycloak tokens from the repository's realm file, over a real gRPC connection. No token or a forged one: `UNAUTHENTICATED`; `acme-erp`'s token: `PERMISSION_DENIED`; the `network` client's: answered.
-- **Authorize** (`AuthorizeTests`): over gRPC on PostgreSQL, with a mocked Network token. An issued `ACTIVE` card's PAN: `00` with a six-character authorization code, the card `AUTHORIZED`, Available Credit unchanged; an unknown PAN: `14`; a `CANCELLED` card: `54`. Each answer recorded.
+- **Authorize** (`AuthorizeTests`): over gRPC on PostgreSQL, with a mocked Network token. An issued `ACTIVE` card's PAN from its Supplier's Acceptor ID: `00` with a six-character authorization code, the card `AUTHORIZED`, Available Credit unchanged; an unknown PAN: `14`; a `CANCELLED` card: `54`; another Acceptor ID, or a card whose Supplier has none: `57`, the card still `ACTIVE` and Available Credit unchanged. Each answer recorded.
+- **The Supplier's Acceptor ID** (`InvoicesApiTests`): an Invoice carrying one stores it on the Supplier, later Invoices show it, a different one later doesn't change it, and Invoices without one are still accepted.
 - **The vault finds a card by its PAN** (`CardSecretsTests`): a known PAN gives its Card Token, an unknown one nothing.
 
 ## Quality targets

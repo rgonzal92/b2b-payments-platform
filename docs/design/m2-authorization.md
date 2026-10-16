@@ -57,7 +57,12 @@ For a Single-Use Card the Hold was placed at issuance, so Authorization checks t
 
 ### A Supplier's Acceptor ID
 
-The Network identifies the Supplier on every Charge by the Acceptor ID its Acquirer gave it (ISO 8583 DE 42). The Invoice's Supplier block gains an `acceptorId`, stored on the Supplier like the remittance address (first Invoice sets it, ADR-0012). A card whose Supplier has no Acceptor ID can't be charged (`57`).
+The Network identifies the Supplier on every Charge by the Acceptor ID its Acquirer gave it (ISO 8583 DE 42). The Invoice's Supplier block gains an `acceptorId`, stored on the Supplier like the remittance address (first Invoice sets it, ADR-0012). A card whose Supplier has no Acceptor ID can't be charged (`57`). (Changed during #32: the first Invoice that *carries* an Acceptor ID sets it. The field is optional, so a Supplier first named without one takes the first one a later Invoice brings; once set, a different one on a later Invoice is ignored without an error, like the remittance address. A Supplier created before this change, such as Globex in a local database, picks it up from the next Invoice that names it.)
+
+- Decided during #32:
+  - The contract's `acceptorId` is 1 to 15 characters (DE 42's length), not blank, and compared exactly. Invoices without it are still accepted.
+  - `authorization` reads it through `suppliers.Suppliers.acceptorId(supplierId)`, a new direct call from `authorization` to `suppliers`. The rule runs where the rule table puts it; until #31 adds the security-code check, that is right after the card-status check, so `authorization` reads the card (`cards.Cards.find`) before the conditional update that moves it to `AUTHORIZED`.
+  - Globex's Acceptor ID is the simulator setting `simulator.globex.acceptor-id` (a made-up 15-character value). Acme's ERP sends it on its Invoices, and the Acquirer role (#36) will put the same setting on Globex's Charges.
 
 ### Card expiry
 

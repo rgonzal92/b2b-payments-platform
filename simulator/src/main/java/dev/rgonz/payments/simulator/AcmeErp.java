@@ -25,14 +25,18 @@ class AcmeErp {
 
   private final InvoicesApi invoices;
   private final String globexRemittanceAddress;
+  private final String globexAcceptorId;
 
-  // Where the simulator's Supplier role will receive Globex's Remittance Advice.
+  // Where the simulator's Supplier role will receive Globex's Remittance Advice, and the Acceptor
+  // ID the Network will carry on Globex's Charges.
   AcmeErp(
       InvoicesApi invoices,
       @Value("http://localhost:${server.port}/globex/remittance-advice")
-          String globexRemittanceAddress) {
+          String globexRemittanceAddress,
+      @Value("${simulator.globex.acceptor-id}") String globexAcceptorId) {
     this.invoices = invoices;
     this.globexRemittanceAddress = globexRemittanceAddress;
+    this.globexAcceptorId = globexAcceptorId;
   }
 
   /** Submits a new Invoice from Globex for the amount, due in 30 days. */
@@ -45,7 +49,8 @@ class AcmeErp {
                     .name("Globex")
                     .taxId("12-3456789")
                     .buyerReference("GLOBEX-01")
-                    .remittanceAddress(globexRemittanceAddress))
+                    .remittanceAddress(globexRemittanceAddress)
+                    .acceptorId(globexAcceptorId))
             .invoiceNumber(number)
             .amount(amount)
             .dueDate(LocalDate.now().plusDays(30));
