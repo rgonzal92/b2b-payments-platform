@@ -209,32 +209,42 @@ class CorePathEndToEndTests {
             }
             """);
 
-    var imported =
+    var cleared =
         RestClient.create()
             .post()
             .uri("http://localhost:{port}/demo/clearing-file", simulatorPort)
             .retrieve()
             .body(String.class);
 
-    // The Charge's Clearing matched its Authorization, which moves the card to CLEARED, and the
-    // Network's trailer settles exactly what was posted.
-    assertThat(new JsonContent(imported))
+    // One import, the platform's 201 and its summary: the Charge's Clearing matched its
+    // Authorization, which moves the card to CLEARED, and the file is settled at the Network's
+    // figure, exactly what was posted. A Settlement of more than zero always has its Journal Entry
+    // (clearing.settlement's settlement_posted_check), so it is posted.
+    var clearedJson = new JsonContent(cleared);
+    assertThat(clearedJson).extractingPath("$.imports").asArray().hasSize(1);
+    assertThat(clearedJson)
         .isLenientlyEqualTo(
             """
-            {
-              "status": "IMPORTED",
-              "recordCount": 1,
-              "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
-                           "unknownCard": 0, "otherCurrency": 0,
-                           "againstReversedAuthorization": 0, "afterHoldExpired": 0,
-                           "authorizationAlreadyCleared": 0},
-              "settlement": {
-                "amount": {"minorUnits": 1240000, "currency": "USD"},
-                "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
-                "matched": true
+            {"imports": [{
+              "status": 201,
+              "summary": {
+                "status": "IMPORTED",
+                "recordCount": 1,
+                "skippedCount": 0,
+                "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
+                             "unknownCard": 0, "otherCurrency": 0,
+                             "againstReversedAuthorization": 0, "afterHoldExpired": 0,
+                             "authorizationAlreadyCleared": 0},
+                "settlement": {
+                  "amount": {"minorUnits": 1240000, "currency": "USD"},
+                  "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
+                  "matched": true
+                }
               }
-            }
+            }]}
             """);
+    String fileId = JsonPath.read(cleared, "$.imports[0].summary.id");
+    assertThat(clearedJson).extractingPath("$.fileName").isEqualTo(fileId + ".txt");
     // The Hold became posted spend: Acme owes the cleared amount, and its Available Credit counts
     // that instead of the Hold.
     assertThat(acmesCredit())

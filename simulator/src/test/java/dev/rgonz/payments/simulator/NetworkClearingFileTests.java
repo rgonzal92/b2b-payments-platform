@@ -7,6 +7,8 @@ import com.sun.net.httpserver.HttpServer;
 import dev.rgonz.payments.contracts.client.model.Money;
 import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.simulator.GlobexSupplier.ReceivedCard;
+import dev.rgonz.payments.simulator.NetworkClearingFiles.EdgeCase;
+import dev.rgonz.payments.simulator.NetworkClearingFiles.WrittenFile;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
@@ -23,10 +25,13 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -232,6 +237,158 @@ class NetworkClearingFileTests {
     }
   }
 
+  // The demo's edge cases (POST /demo/clearing-file's switches): each changes this one file, and
+  // the trailer stays true to its records unless the switch is the wrong trailer total.
+
+  @Test
+  void aDuplicateRecordRepeatsTheFirstDetailRecordUnderItsNetworkRecordIdAndIsCounted()
+      throws IOException {
+    issuer.answerWith("00", "AB12CD");
+    acquirer.charge(card(1_240_000));
+    var charge = issuer.received.getFirst().request();
+
+    var file = clearingFiles.write(AFTER_EVERY_CHARGE, EnumSet.of(EdgeCase.DUPLICATE_RECORD));
+
+    var lines = linesOf(file);
+    assertThat(lines).hasSize(4);
+    assertThat(Layout.read(lines.get(1))).containsAllEntriesOf(clearingOf(charge, "AB12CD"));
+    assertThat(lines.get(2)).isEqualTo(lines.get(1));
+    assertThat(Layout.read(lines.getLast()))
+        .containsEntry("recordCount", "00000002")
+        .containsEntry("amountTotal", "000000002480000")
+        .containsEntry("netSettlementAmount", "000000002480000");
+  }
+
+  @Test
+  void anAmountAboveTheAuthorizedOneRaisesTheFirstClearingAloneAndTheTrailerTotalsIt()
+      throws IOException {
+    issuer.answerWith("00", "AB12CD");
+    acquirer.charge(card(1_240_000));
+    acquirer.charge(card(500_000));
+    var first = issuer.received.getFirst().request();
+    var second = issuer.received.getLast().request();
+
+    var file =
+        clearingFiles.write(AFTER_EVERY_CHARGE, EnumSet.of(EdgeCase.ABOVE_AUTHORIZED_AMOUNT));
+
+    var lines = linesOf(file);
+    assertThat(lines).hasSize(4);
+    // $100.00 above the $12,400.00 the Issuer authorized.
+    var raised = new HashMap<>(clearingOf(first, "AB12CD"));
+    raised.put("amount", "000001250000");
+    assertThat(Layout.read(lines.get(1))).containsAllEntriesOf(raised);
+    assertThat(Layout.read(lines.get(2))).containsAllEntriesOf(clearingOf(second, "AB12CD"));
+    assertThat(Layout.read(lines.getLast()))
+        .containsEntry("recordCount", "00000002")
+        .containsEntry("amountTotal", "000000001750000")
+        .containsEntry("netSettlementAmount", "000000001750000");
+  }
+
+  @Test
+  void aClearingWithNoAuthorizationIsAnExtraOneOnTheFirstClearingsCardUnderACodeNoApprovalHas()
+      throws IOException {
+    issuer.answerWith("00", "AB12CD");
+    acquirer.charge(card(1_240_000));
+    var charge = issuer.received.getFirst().request();
+
+    var file = clearingFiles.write(AFTER_EVERY_CHARGE, EnumSet.of(EdgeCase.NO_AUTHORIZATION));
+
+    var lines = linesOf(file);
+    assertThat(lines).hasSize(4);
+    var cleared = Layout.read(lines.get(1));
+    assertThat(cleared).containsAllEntriesOf(clearingOf(charge, "AB12CD"));
+    // The same card (one the Issuer issued), amount, Supplier and day, with its own Network record
+    // ID and retrieval reference number, and an authorization code of four characters, where an
+    // approval's has six (the .proto's DE 38).
+    var extra = Layout.read(lines.get(2));
+    var expected = new HashMap<>(clearingOf(charge, "NONE"));
+    expected.remove("retrievalReferenceNumber");
+    assertThat(extra).containsAllEntriesOf(expected);
+    assertThat(extra.get("networkRecordId")).isNotEqualTo(cleared.get("networkRecordId"));
+    assertThat(extra.get("retrievalReferenceNumber"))
+        .hasSize(12)
+        .isNotEqualTo(charge.getRetrievalReferenceNumber());
+    assertThat(Layout.read(lines.getLast()))
+        .containsEntry("recordCount", "00000002")
+        .containsEntry("amountTotal", "000000002480000")
+        .containsEntry("netSettlementAmount", "000000002480000");
+    // Sent like any other Clearing: the next file doesn't carry it again.
+    assertThat(clearingFiles.write(AFTER_EVERY_CHARGE)).isEmpty();
+  }
+
+  @Test
+  void anUnknownPanIsAnExtraClearingOnALuhnValidPanTheIssuerNeverIssued() throws IOException {
+    issuer.answerWith("00", "AB12CD");
+    acquirer.charge(card(1_240_000));
+    var charge = issuer.received.getFirst().request();
+
+    var file = clearingFiles.write(AFTER_EVERY_CHARGE, EnumSet.of(EdgeCase.UNKNOWN_PAN));
+
+    var lines = linesOf(file);
+    assertThat(lines).hasSize(4);
+    var cleared = Layout.read(lines.get(1));
+    assertThat(cleared).containsAllEntriesOf(clearingOf(charge, "AB12CD"));
+    // Like the first Clearing, with its own Network record ID and retrieval reference number, on a
+    // PAN from the Issuer's made-up range, Luhn-valid, and of 19 digits where every PAN the Issuer
+    // issues has 16 (the vault's Pans), so no card has it.
+    var extra = Layout.read(lines.get(2));
+    var expected = new HashMap<>(clearingOf(charge, "AB12CD"));
+    expected.remove("pan");
+    expected.remove("retrievalReferenceNumber");
+    assertThat(extra).containsAllEntriesOf(expected);
+    assertThat(extra.get("pan")).startsWith("990000").matches("\\d{19}");
+    assertThat(luhnValid(extra.get("pan"))).isTrue();
+    assertThat(extra.get("networkRecordId")).isNotEqualTo(cleared.get("networkRecordId"));
+    assertThat(extra.get("retrievalReferenceNumber"))
+        .isNotEqualTo(charge.getRetrievalReferenceNumber());
+    assertThat(Layout.read(lines.getLast()))
+        .containsEntry("recordCount", "00000002")
+        .containsEntry("amountTotal", "000000002480000")
+        .containsEntry("netSettlementAmount", "000000002480000");
+  }
+
+  @Test
+  void aWrongTrailerTotalIsOneCentOffItsRecordsWhileTheirCountAndTheSettlementAmountStayTrue()
+      throws IOException {
+    issuer.answerWith("00", "AB12CD");
+    acquirer.charge(card(1_240_000));
+    var charge = issuer.received.getFirst().request();
+
+    var file = clearingFiles.write(AFTER_EVERY_CHARGE, EnumSet.of(EdgeCase.WRONG_TRAILER_TOTAL));
+
+    var lines = linesOf(file);
+    assertThat(lines).hasSize(3);
+    assertThat(Layout.read(lines.get(1))).containsAllEntriesOf(clearingOf(charge, "AB12CD"));
+    assertThat(Layout.read(lines.getLast()))
+        .containsEntry("recordCount", "00000001")
+        .containsEntry("amountTotal", "000000001240001")
+        .containsEntry("netSettlementAmount", "000000001240000");
+  }
+
+  @Test
+  void aFileSentAgainArrivesUnderItsOwnNameAsItWasWrittenAndUsesNoSequenceNumber()
+      throws IOException {
+    acquirer.charge(card(1_240_000));
+    var file = clearingFiles.write(AFTER_EVERY_CHARGE, EnumSet.noneOf(EdgeCase.class));
+    var path = dropFolder.resolve(file.orElseThrow().name());
+    var written = Files.readAllBytes(path);
+    var sequenceNumber = sequenceNumberOf(linesOf(file));
+    // The platform deletes a file once it has imported it.
+    Files.delete(path);
+
+    clearingFiles.sendAgain(file.orElseThrow());
+
+    assertThat(onlyFile()).isEqualTo(path).hasBinaryContent(written);
+    Files.delete(path);
+    acquirer.charge(card(500_000));
+    var next = clearingFiles.write(AFTER_EVERY_CHARGE, EnumSet.noneOf(EdgeCase.class));
+    assertThat(sequenceNumberOf(linesOf(next))).isEqualTo(sequenceNumber + 1);
+  }
+
+  private static long sequenceNumberOf(List<String> lines) {
+    return Long.parseLong(Layout.read(lines.getFirst()).get("sequenceNumber"));
+  }
+
   @Test
   void theseTestsReadTheLayoutTheWayTheContractsSampleIsWritten() throws IOException {
     List<String> sample;
@@ -261,6 +418,38 @@ class NetworkClearingFileTests {
         .containsEntry("amountTotal", "000000001752345")
         .containsEntry("netSettlementAmount", "000000001752345")
         .containsEntry("currency", "USD");
+  }
+
+  // The Luhn check: from the right, every second digit doubled, a doubled digit above 9 counting as
+  // the sum of its digits; the digits of a valid number sum to a multiple of 10.
+  private static boolean luhnValid(String digits) {
+    var sum = 0;
+    for (var i = 0; i < digits.length(); i++) {
+      var digit = digits.charAt(digits.length() - 1 - i) - '0';
+      sum += i % 2 == 0 ? digit : digit * 2 / 10 + digit * 2 % 10;
+    }
+    return sum % 10 == 0;
+  }
+
+  // The lines of a file the Network wrote, read back from the drop folder.
+  private static List<String> linesOf(Optional<WrittenFile> file) throws IOException {
+    return Files.readAllLines(
+        dropFolder.resolve(file.orElseThrow().name()), StandardCharsets.US_ASCII);
+  }
+
+  // The fields of the detail record the Network writes for an approved Charge, as the layout reads
+  // them, but its Network record ID.
+  private static Map<String, String> clearingOf(
+      AuthorizationRequest charge, String authorizationCode) {
+    return Map.of(
+        "recordType", "05",
+        "pan", charge.getPrimaryAccountNumber(),
+        "amount", "%012d".formatted(charge.getAmountMinor()),
+        "currency", charge.getCurrencyCode(),
+        "retrievalReferenceNumber", charge.getRetrievalReferenceNumber(),
+        "authorizationCode", authorizationCode,
+        "acceptorId", charge.getCardAcceptorId(),
+        "chargeDate", chargeDate(charge).format(LAYOUT_DATE));
   }
 
   // The one file in the drop folder.
