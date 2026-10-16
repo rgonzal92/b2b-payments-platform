@@ -38,7 +38,8 @@ record JournalEntry(Kind kind, String idempotencyKey, List<Line> lines) {
 
   enum Kind {
     CLEARING,
-    SETTLEMENT
+    SETTLEMENT,
+    REPAYMENT
   }
 
   enum Side {

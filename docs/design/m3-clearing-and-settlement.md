@@ -91,7 +91,7 @@ The settle step totals the file's posted Clearings (Clearing Suspense included) 
 
 ### Repayment (Q14, Q23)
 
-`POST /v1/buyers/{id}/repayments`, Issuer staff only, with an `Idempotency-Key` (it moves money). It posts the Repayment and raises Available Credit. An amount above the Buyer Receivable balance, or of zero or less, answers `422`. Statements and billing stay a bonus milestone.
+`POST /v1/buyers/{id}/repayments`, Issuer staff only, with an `Idempotency-Key` (it moves money). It posts the Repayment and raises Available Credit. An amount above the Buyer Receivable balance, or of zero or less, answers `422`. Statements and billing stay a bonus milestone. (Changed during #53: an amount in another currency than the Credit Line's is `422` too, and the request takes any whole number and any three-letter code so that zero, a negative amount and another currency reach these `422` rules rather than the schema's `400`; a Buyer without a Credit Line answers `404`, like an unknown Buyer, as the credit endpoint does. The answer is `201` with the Repayment: its Journal Entry's ID, the amount and when it was posted. The `Idempotency-Key` is the Journal Entry's idempotency key (kind `REPAYMENT`), not a table of keys like `payables`', whose table that module owns: a resend with the same Buyer and amount gets the first answer, rebuilt from the entry, and posts nothing; the same key with another Buyer or amount is `422`, so keys are one space for all Issuer staff. Two Repayments for one Buyer take turns on its credit line row lock, the one placing a Hold takes, so they can't together repay more than it owes.)
 
 ### The 7-day rule (Q10)
 
@@ -104,7 +104,7 @@ The settle step totals the file's posted Clearings (Clearing Suspense included) 
 
 ### What people read (Q16)
 
-Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with sequence gaps shown) and `GET /v1/clearing-files/{id}` (status, Business Date, counts per outcome, the Settlement and whether it matched). The credit endpoint adds the Buyer Receivable balance next to open Holds and Available Credit. Browsing the journal waits for the M9 UI.
+Issuer staff get `GET /v1/clearing-files` (newest first, cursor paging, with sequence gaps shown) and `GET /v1/clearing-files/{id}` (status, Business Date, counts per outcome, the Settlement and whether it matched). The credit endpoint adds the Buyer Receivable balance next to open Holds and Available Credit. Browsing the journal waits for the M9 UI. (Changed during #53: the credit endpoint didn't show open Holds yet, so it now shows both, `openHolds` and `buyerReceivable`.)
 
 ### Simulator and end-to-end test (Q3, Q17)
 

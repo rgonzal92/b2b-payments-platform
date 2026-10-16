@@ -22,6 +22,14 @@ A Buyer's ERP sends an Invoice and the connection drops before the answer arrive
 
 A resend that arrives while the first request is still running waits on step 1: PostgreSQL holds the second insert until the first transaction ends. If the first commits, the resend replays its response; if it rolls back, the resend runs as if it were first. No check-then-insert race, no lock written by hand.
 
+## Repayments: the journal's key instead
+
+`POST /v1/buyers/{id}/repayments` (`ledger`) needs the same guarantee, but `IdempotentRequests` is `payables`' own, in its own schema, and modules don't share tables (ADR-0009). A Repayment already has a key that posts once: its Journal Entry's idempotency key, unique per kind of entry. So the `Idempotency-Key` is that key, and there is no second table.
+
+- **The answer is rebuilt, not stored.** A replay reads the entry under the key: its ID, amount and posting time are the first answer. Rebuilding is safe here because a Journal Entry never changes, unlike an Invoice, whose status moves on.
+- **One key space for all Issuer staff.** The key names the request, the Buyer included: a key already used for another Buyer, or another amount, is `422`. A replay never returns another Buyer's Repayment, because the entry's Buyer is compared before it is returned.
+- **Resends take turns on a row lock.** A Repayment locks the Buyer's credit line row before it looks for the key, so a resend while the first is running waits for it, then finds its entry.
+
 ## Gotchas we hit
 
 - **Refusals aren't stored.** A `400` is refused before the key is claimed, and a `409` throws inside the transaction, so the claimed key rolls back with it. Resending gets the same refusal again, worked out afresh.
