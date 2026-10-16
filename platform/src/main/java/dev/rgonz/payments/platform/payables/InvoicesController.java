@@ -83,7 +83,8 @@ class InvoicesController implements InvoicesApi {
                 supplier.getTaxId(),
                 supplier.getName(),
                 supplier.getRemittanceAddress(),
-                supplier.getBuyerReference()));
+                supplier.getBuyerReference(),
+                supplier.getAcceptorId()));
     var invoice =
         new Invoice(
             UUID.randomUUID(),
@@ -191,7 +192,8 @@ class InvoicesController implements InvoicesApi {
                 .name(supplier.name())
                 .taxId(supplier.taxId())
                 .buyerReference(relationship.buyerReference())
-                .remittanceAddress(supplier.remittanceAddress()))
+                .remittanceAddress(supplier.remittanceAddress())
+                .acceptorId(supplier.acceptorId()))
         .invoiceNumber(invoice.invoiceNumber())
         .amount(
             new MoneyDto()

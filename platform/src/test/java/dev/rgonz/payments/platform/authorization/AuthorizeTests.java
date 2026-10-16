@@ -14,6 +14,8 @@ import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import dev.rgonz.payments.platform.suppliers.SupplierOnInvoice;
+import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
 import io.grpc.ManagedChannel;
 import io.grpc.Status;
@@ -64,7 +66,7 @@ class AuthorizeTests {
 
   private static final Currency USD = Currency.getInstance("USD");
   private static final long AMOUNT = 1_240_000;
-  private static final String ACCEPTOR_ID = "GLOBEX-ACCEPTOR";
+  private static final String ACCEPTOR_ID = "GLOBEX000000001";
   // DE 14, as printed on the card.
   private static final DateTimeFormatter EXPIRATION_DATE =
       DateTimeFormatter.ofPattern("yyMM").withZone(ZoneOffset.UTC);
@@ -89,6 +91,7 @@ class AuthorizeTests {
   @Autowired Cards cards;
   @Autowired Holds holds;
   @Autowired Vault vault;
+  @Autowired Suppliers suppliers;
 
   @LocalGrpcServerPort int port;
 
@@ -154,6 +157,37 @@ class AuthorizeTests {
         .containsEntry("currency", "USD")
         .containsEntry("acceptor_id", ACCEPTOR_ID)
         .containsEntry("response_code", "14")
+        .containsEntry("authorization_code", null)
+        .containsEntry("status", "DECLINED");
+  }
+
+  // A card whose Supplier has no Acceptor ID can't be charged by anyone.
+  @ParameterizedTest(name = "the Supplier has {0}, the Charge carries {1}")
+  @CsvSource(
+      delimiter = '|',
+      textBlock =
+          """
+          # The Supplier's Acceptor ID (none when empty) | the Charge's
+          GLOBEX000000001 | OTHER0000000002
+                          | GLOBEX000000001
+          """)
+  void aChargeNotFromTheCardsSuppliersAcceptorIdIsDeclinedAndChangesNeitherTheCardNorItsHold(
+      String suppliersAcceptorId, String chargesAcceptorId) throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var card = issuedCard(buyerId, suppliersAcceptorId);
+    var creditBefore = availableCredit(buyerId);
+    var request = chargeOn(card).setCardAcceptorId(chargesAcceptorId);
+
+    var response = authorize(request);
+
+    assertThat(response.getResponseCode()).isEqualTo("57");
+    assertThat(response.getAuthorizationCode()).isEmpty();
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
+    assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    assertThat(recorded(request.getRetrievalReferenceNumber()))
+        .containsEntry("card_token", card.cardToken())
+        .containsEntry("acceptor_id", chargesAcceptorId)
+        .containsEntry("response_code", "57")
         .containsEntry("authorization_code", null)
         .containsEntry("status", "DECLINED");
   }
@@ -388,12 +422,28 @@ class AuthorizeTests {
         .authorize(request);
   }
 
-  // Issued as the Payment saga issues it: the Hold first, then the card, for the same Payment.
   private SingleUseCard issuedCard(BuyerId buyerId) {
+    return issuedCard(buyerId, ACCEPTOR_ID);
+  }
+
+  // Issued as the Payment saga issues it: the Hold first, then the card, for the same Payment, to a
+  // Supplier an Invoice named with this Acceptor ID (none when null).
+  private SingleUseCard issuedCard(BuyerId buyerId, String acceptorId) {
+    var supplier =
+        suppliers
+            .relate(
+                buyerId,
+                new SupplierOnInvoice(
+                    "TAX-" + UUID.randomUUID(),
+                    "Globex",
+                    "https://globex.example/remittance-advice",
+                    "GLOBEX-01",
+                    acceptorId))
+            .supplier();
     var paymentId = UUID.randomUUID();
     var amount = new Money(AMOUNT, USD);
     assertThat(holds.place(paymentId, buyerId, amount)).isEqualTo(Holds.Outcome.PLACED);
-    return cards.issueSingleUse(paymentId, buyerId, UUID.randomUUID(), amount, Instant.now());
+    return cards.issueSingleUse(paymentId, buyerId, supplier.id(), amount, Instant.now());
   }
 
   private SingleUseCard.Status statusOf(SingleUseCard card) {

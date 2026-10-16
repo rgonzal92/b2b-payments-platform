@@ -193,7 +193,8 @@ class RemittanceLinksTests {
         suppliers
             .relate(
                 buyerId,
-                new SupplierOnInvoice("TAX-" + UUID.randomUUID(), "Globex", GLOBEX, "GLOBEX-01"))
+                new SupplierOnInvoice(
+                    "TAX-" + UUID.randomUUID(), "Globex", GLOBEX, "GLOBEX-01", null))
             .supplier();
     return cards.issueSingleUse(UUID.randomUUID(), buyerId, supplier.id(), AMOUNT, Instant.now());
   }

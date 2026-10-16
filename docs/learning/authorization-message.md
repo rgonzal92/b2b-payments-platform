@@ -29,10 +29,10 @@ When Globex charges its Single-Use Card, its Acquirer passes the Charge to the N
   | `14` | Invalid card | No card the Issuer issued has this PAN: a typo, or someone guessing PANs. |
   | `54` | Expired card | The card is cancelled or expired, or the expiry in the message isn't the card's or has passed. |
   | `N7` | Security code mismatch | The code isn't the card's: whoever charges may have the number but not the card. |
-  | `57` | Not permitted | The card can't be used for this Charge: a Single-Use Card already has an approved Charge. |
+  | `57` | Not permitted | The card can't be used for this Charge: it's from another Supplier's Acceptor ID (or the card's Supplier has none), or a Single-Use Card already has an approved Charge. |
   | `61` | Exceeds amount | More than the card's amount, or another currency: a Single-Use Card pays one Invoice, no more. |
 
-- **The first rule that fails names the decline.** The rules run in the M2 design's order: the amount's form, the card, its state and expiry, the security code, the Supplier (#32), the amount, an earlier approval. An expired card with a wrong security code answers `54`; an `AUTHORIZED` card isn't expired, so a second Charge on it reaches the last rule and answers `57`. `AuthorizationRules` is that decision alone: facts in, response code out, no I/O, so each rule has plain unit tests.
+- **The first rule that fails names the decline.** The rules run in the M2 design's order: the amount's form, the card, its state and expiry, the security code, the Supplier's Acceptor ID, the amount, an earlier approval. An expired card with a wrong security code answers `54`; an `AUTHORIZED` card isn't expired, so a second Charge on it reaches the last rule and answers `57`. `AuthorizationRules` is that decision alone: facts in, response code out, no I/O, so each rule has plain unit tests.
 - **A decline is an answer; a malformed request isn't.** A decline is a successful gRPC call with a code, recorded like an approval. A request without a retrieval reference number is refused with `INVALID_ARGUMENT` and recorded nowhere: there is no request ID to record it under or to answer a resend with.
 - **The same request ID gets the same answer.** The Network resends when an answer doesn't arrive in time. The resend must get the first answer, whatever the rules would say now: the first approval made the card `AUTHORIZED`, so working the answer out again would say `57`, and the Network would decline a Charge the Issuer approved.
 
@@ -42,7 +42,8 @@ When Globex charges its Single-Use Card, its Acquirer passes the Charge to the N
 IssuerAuthorizationService.authorize         no retrieval reference number: INVALID_ARGUMENT
   └─ Authorizations.authorize                one transaction
        ├─ vault.cardFor(PAN)                  the Card Token, through the PAN's keyed hash
-       ├─ cards.find(Card Token)              status, expiry, amount and currency
+       ├─ cards.find(Card Token)              status, expiry, amount and currency, Supplier
+       ├─ suppliers.acceptorId(Supplier)      the Acceptor ID a Charge must carry
        ├─ vault.securityCodeMatches(…)        decrypts the stored code, compares in constant time
        ├─ AuthorizationRules.decide           the response code
        ├─ insert … on conflict (request_id) do nothing

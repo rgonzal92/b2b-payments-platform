@@ -24,10 +24,15 @@ final class AuthorizationRules {
    * The response code for the Charge: {@code 00} when it passes every rule.
    *
    * @param card the card whose PAN the Charge carries; null when no card has it
+   * @param suppliersAcceptorId the Acceptor ID of the card's Supplier; null when it has none
    * @param securityCodeMatches the vault's verdict on the Charge's security code
    */
   static ResponseCode decide(
-      Charge charge, SingleUseCard card, boolean securityCodeMatches, Instant now) {
+      Charge charge,
+      SingleUseCard card,
+      String suppliersAcceptorId,
+      boolean securityCodeMatches,
+      Instant now) {
     // A malformed amount says nothing about the card, so it's checked first.
     if (charge.amountMinor() <= 0) {
       return ResponseCode.INVALID_AMOUNT;
@@ -40,6 +45,11 @@ final class AuthorizationRules {
     }
     if (!securityCodeMatches) {
       return ResponseCode.SECURITY_CODE_MISMATCH;
+    }
+    // An exact match: the Network names the Supplier by the Acceptor ID its Acquirer gave it, and a
+    // card whose Supplier has none can't be charged by anyone.
+    if (suppliersAcceptorId == null || !suppliersAcceptorId.equals(charge.acceptorId())) {
+      return ResponseCode.NOT_PERMITTED;
     }
     if (!withinAmount(card, charge)) {
       return ResponseCode.EXCEEDS_AMOUNT;

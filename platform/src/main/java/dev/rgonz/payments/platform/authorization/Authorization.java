@@ -29,7 +29,10 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
      * card's or has passed.
      */
     EXPIRED_CARD("54"),
-    /** The card already has an approved Authorization. */
+    /**
+     * Not permitted: the Charge's Acceptor ID isn't the card's Supplier's (or its Supplier has
+     * none), or the card already has an approved Authorization.
+     */
     NOT_PERMITTED("57"),
     /** The amount is above the card's, or in another currency. */
     EXCEEDS_AMOUNT("61"),

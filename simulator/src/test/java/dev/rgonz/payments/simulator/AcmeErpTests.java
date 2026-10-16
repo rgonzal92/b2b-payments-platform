@@ -61,6 +61,7 @@ class AcmeErpTests {
     assertThat(first.body())
         .contains("\"taxId\":\"12-3456789\"")
         .contains("\"remittanceAddress\":\"http://localhost:8081/globex/remittance-advice\"")
+        .contains("\"acceptorId\":\"GLOBEX000000001\"")
         .contains("\"minorUnits\":1240000")
         .contains("\"currency\":\"USD\"")
         .contains("\"invoiceNumber\":\"INV-");

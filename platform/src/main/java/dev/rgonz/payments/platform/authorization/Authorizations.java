@@ -2,6 +2,7 @@ package dev.rgonz.payments.platform.authorization;
 
 import dev.rgonz.payments.platform.authorization.Authorization.ResponseCode;
 import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
 import java.security.SecureRandom;
 import java.time.Instant;
@@ -27,12 +28,14 @@ class Authorizations {
   private final JdbcClient jdbc;
   private final Vault vault;
   private final Cards cards;
+  private final Suppliers suppliers;
   private final SecureRandom random = new SecureRandom();
 
-  Authorizations(JdbcClient jdbc, Vault vault, Cards cards) {
+  Authorizations(JdbcClient jdbc, Vault vault, Cards cards, Suppliers suppliers) {
     this.jdbc = jdbc;
     this.vault = vault;
     this.cards = cards;
+    this.suppliers = suppliers;
   }
 
   /**
@@ -45,9 +48,12 @@ class Authorizations {
   Authorization authorize(Charge charge, Instant now) {
     var cardToken = vault.cardFor(charge.pan()).orElse(null);
     var card = cardToken == null ? null : cards.find(cardToken).orElse(null);
+    var suppliersAcceptorId =
+        card == null ? null : suppliers.acceptorId(card.supplierId()).orElse(null);
     var securityCodeMatches =
         card != null && vault.securityCodeMatches(cardToken, charge.securityCode());
-    var responseCode = AuthorizationRules.decide(charge, card, securityCodeMatches, now);
+    var responseCode =
+        AuthorizationRules.decide(charge, card, suppliersAcceptorId, securityCodeMatches, now);
     var authorization =
         responseCode == ResponseCode.APPROVED
             ? Authorization.approved(newAuthorizationCode())
