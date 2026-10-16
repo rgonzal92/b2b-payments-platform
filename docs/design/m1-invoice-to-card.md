@@ -23,7 +23,7 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 
 | Module | Builds |
 |---|---|
-| `shared` | `Money` (minor units plus currency), `BuyerId`, the idempotency helper. An open module every other module may use. |
+| `shared` | `Money` (minor units plus currency), `BuyerId`, the idempotency helper. An open module every other module may use. (Changed during #15: the idempotency helper lives in `payables`, beside the table it uses, while Invoice intake is its only user; it moves here when a second module needs it.) |
 | `buyers` | Buyers and their Approval Thresholds; Issuer staff create them. |
 | `suppliers` | Suppliers and Supplier Relationships from Invoice data (ADR-0012); Remittance Advice and its one-time link. |
 | `payables` | Invoice intake, the duplicate check, approvals, and the Payment saga. |
@@ -53,6 +53,11 @@ M0 left two empty apps. M1 builds the first half of the core path (README, steps
 - **Idempotency:** the key, a hash of the request and the stored response live in `payables`' schema. Same key and same body replays the response; same key with a different body is `422`.
 - **Duplicates:** the same Supplier and Invoice number under a new key is `409`.
 - The first Invoice carrying an unknown tax ID creates the Supplier; the first Invoice from a Buyer to that Supplier creates the Supplier Relationship.
+- Decided during #15:
+  - Keys are kept per Buyer, so one Buyer reusing another's key gets its own Invoice, never the other's response.
+  - A refused request (`409`, a validation `400`) stores nothing under its key; resending it is refused the same way.
+  - A token whose `buyer_id` is missing or names no known Buyer is `403`, checked through `buyers`.
+  - A Supplier's name and remittance address come from the first Invoice naming its tax ID, and a Supplier Relationship's reference from that Buyer's first Invoice to it. Later Invoices don't change them, so one Buyer's ERP can't redirect another Buyer's Remittance Advice.
 
 ### Approvals
 

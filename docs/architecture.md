@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 foundations are built, and M1 is under way: `shared` and `buyers` exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 foundations are built, and M1 is under way: `shared`, `buyers`, `suppliers` and `payables` (Invoice intake only) exist; the other modules below don't yet. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -36,7 +36,7 @@ flowchart LR
 
 Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, and Keycloak, which issues every token. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
 
-- **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp` and `issuer-admin`, and puts them in a flat `roles` claim. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
+- **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp` and `issuer-admin`, and puts them in a flat `roles` claim. Every Buyer-side client also carries its Buyer in a `buyer_id` claim (`acme-erp` carries Acme's), and the platform takes the Buyer only from that claim. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
 - **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it.
 
 ## Modules
@@ -47,8 +47,8 @@ The `platform` is a modular monolith (ADR-0003). Spring Modulith tests enforce t
 |---|---|---|
 | `shared` | `Money`; open to every module | |
 | `buyers` | Buyer profiles, Approval Thresholds | |
-| `suppliers` | Suppliers, Supplier Relationships, Remittance Advice delivery | |
-| `payables` | Invoices, approvals, Payments (runs the Payment saga) | `ledger`, `cards`, `suppliers` |
+| `suppliers` | Suppliers (one per tax ID, shared by Buyers, ADR-0012), Supplier Relationships, Remittance Advice delivery | |
+| `payables` | Invoices and their Idempotency-Keys, approvals, Payments (runs the Payment saga) | `buyers`, `ledger`, `cards`, `suppliers` |
 | `cards` | Virtual Card lifecycle, Card Tokens | `vault` |
 | `vault` | PANs, encrypted (ADR-0004) | |
 | `authorization` | Authorization rules; answers the Network | `cards`, `ledger` |
@@ -60,6 +60,7 @@ How modules interact:
 
 - **Direct call** when the caller needs an answer now, such as `authorization` checking a card.
 - **Event** when others react to something that happened. Events are stored with the change that raised them and redelivered until handled (ADR-0008).
+- **As built:** `payables` asks `buyers` whether the token's Buyer exists, and asks `suppliers` to find or create the Supplier and the Buyer's Supplier Relationship for each new Invoice, in the same transaction.
 - **Data**: each module owns its own schema; no joins or foreign keys cross modules (ADR-0009). Each module's Flyway migrations run in that schema with their own history table, declared through `ModuleMigrations` in `shared`.
 
 ## Core payment path
