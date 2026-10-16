@@ -12,6 +12,7 @@ class TestcontainersConfiguration {
   @Bean
   @ServiceConnection
   PostgreSQLContainer postgresContainer() {
+    // Same tag as compose.yaml: change both together.
     return new PostgreSQLContainer(DockerImageName.parse("postgres:18.6"));
   }
 }
