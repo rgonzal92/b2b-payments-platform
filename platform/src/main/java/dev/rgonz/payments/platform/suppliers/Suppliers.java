@@ -19,7 +19,8 @@ public class Suppliers {
 
   /**
    * The Buyer's Supplier Relationship to the Supplier the Invoice names, creating the Supplier (by
-   * tax ID) and the Relationship if they don't exist yet. Existing ones are reused unchanged.
+   * tax ID) and the Relationship if they don't exist yet. Existing ones are reused unchanged,
+   * except that a Supplier without an Acceptor ID takes the first one an Invoice carries.
    */
   @Transactional
   public SupplierRelationship relate(BuyerId buyerId, SupplierOnInvoice named) {
@@ -41,6 +42,18 @@ public class Suppliers {
             .param("taxId", named.taxId())
             .query(UUID.class)
             .single();
+    if (named.acceptorId() != null) {
+      // Only a Supplier without one takes it, so no later Invoice redirects its Charges. Of two
+      // Invoices at once, the second waits for the first's row lock and then finds it set.
+      jdbc.sql(
+              """
+              update suppliers.supplier set acceptor_id = :acceptorId
+               where id = :id and acceptor_id is null
+              """)
+          .param("acceptorId", named.acceptorId())
+          .param("id", supplierId)
+          .update();
+    }
     jdbc.sql(
             """
             insert into suppliers.supplier_relationship (buyer_id, supplier_id, buyer_reference)
@@ -66,7 +79,7 @@ public class Suppliers {
   public Optional<SupplierRelationship> find(BuyerId buyerId, UUID supplierId) {
     return jdbc.sql(
             """
-            select s.id, s.tax_id, s.name, s.remittance_address, r.buyer_reference
+            select s.id, s.tax_id, s.name, s.remittance_address, s.acceptor_id, r.buyer_reference
               from suppliers.supplier_relationship r
               join suppliers.supplier s on s.id = r.supplier_id
              where r.buyer_id = :buyerId
@@ -81,7 +94,8 @@ public class Suppliers {
                         row.getObject("id", UUID.class),
                         row.getString("tax_id"),
                         row.getString("name"),
-                        row.getString("remittance_address")),
+                        row.getString("remittance_address"),
+                        row.getString("acceptor_id")),
                     row.getString("buyer_reference")))
         .optional();
   }

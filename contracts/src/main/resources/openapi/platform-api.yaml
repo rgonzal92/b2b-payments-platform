@@ -392,6 +392,16 @@ components:
           description: The http(s) URL where the Supplier receives Remittance Advice.
           maxLength: 2000
           pattern: '^https?://\S+$'
+        acceptorId:
+          type: string
+          description: >-
+            The Acceptor ID the Supplier's Acquirer gave it (ISO 8583 DE 42), which the Network carries on every
+            Charge from the Supplier; compared exactly. Optional, but a Single-Use Card whose Supplier has no Acceptor
+            ID declines every Charge. The first Invoice that carries one sets it for the Supplier; a different one on
+            a later Invoice is ignored.
+          minLength: 1
+          maxLength: 15
+          pattern: '.*\S.*'
     InvoiceRequest:
       type: object
       required: [supplier, invoiceNumber, amount, dueDate]

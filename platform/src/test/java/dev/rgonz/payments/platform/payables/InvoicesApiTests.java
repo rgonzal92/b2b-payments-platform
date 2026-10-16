@@ -143,6 +143,52 @@ class InvoicesApiTests {
   }
 
   @Test
+  void anInvoiceCarryingTheSuppliersAcceptorIdStoresItOnTheSupplier() {
+    var acme = newBuyer();
+    var taxId = newTaxId();
+
+    var carrying =
+        submit(acme, newKey(), invoiceJson(taxId, "INV-1", 1_240_000, "GLOBEX000000001"));
+    var later = submit(acme, newKey(), invoiceJson(taxId, "INV-2", 500_000));
+
+    assertThat(carrying).hasStatus(201);
+    assertThat(carrying)
+        .bodyJson()
+        .extractingPath("$.supplier.acceptorId")
+        .isEqualTo("GLOBEX000000001");
+    assertThat(later).hasStatus(201);
+    assertThat(later)
+        .bodyJson()
+        .extractingPath("$.supplier.acceptorId")
+        .isEqualTo("GLOBEX000000001");
+  }
+
+  // Like the remittance address, so a later Invoice can't redirect the Supplier's Charges.
+  @Test
+  void theFirstInvoiceCarryingAnAcceptorIdSetsItAndLaterOnesDontChangeIt() {
+    var acme = newBuyer();
+    var initech = newBuyer();
+    var taxId = newTaxId();
+
+    var without = submit(acme, newKey(), invoiceJson(taxId, "INV-1", 1_240_000));
+    var first = submit(acme, newKey(), invoiceJson(taxId, "INV-2", 1_240_000, "GLOBEX000000001"));
+    var different =
+        submit(initech, newKey(), invoiceJson(taxId, "INV-3", 1_240_000, "OTHER0000000002"));
+
+    assertThat(without).hasStatus(201);
+    assertThat(without).bodyJson().extractingPath("$.supplier.acceptorId").isNull();
+    assertThat(first)
+        .bodyJson()
+        .extractingPath("$.supplier.acceptorId")
+        .isEqualTo("GLOBEX000000001");
+    assertThat(different).hasStatus(201);
+    assertThat(different)
+        .bodyJson()
+        .extractingPath("$.supplier.acceptorId")
+        .isEqualTo("GLOBEX000000001");
+  }
+
+  @Test
   void idempotencyKeysAreKeptPerBuyer() throws Exception {
     var acme = newBuyer();
     var initech = newBuyer();
@@ -251,6 +297,10 @@ class InvoicesApiTests {
             valid.replace("https://globex.example/remittance-advice", "globex.example"),
             valid.replace("\"USD\"", "\"EUR\""),
             valid.replace("\"dueDate\": \"2026-11-30\"", "\"dueDate\": \"30/11/2026\""),
+            // ISO 8583's DE 42 holds 15 characters.
+            invoiceJson(taxId, "INV-1", 1_240_000, "GLOBEX0000000001"),
+            invoiceJson(taxId, "INV-1", 1_240_000, ""),
+            invoiceJson(taxId, "INV-1", 1_240_000, "   "),
             """
             {"invoiceNumber": "INV-1", "amount": {"minorUnits": 100, "currency": "USD"}, "dueDate": "2026-11-30"}
             """);
@@ -331,5 +381,13 @@ class InvoicesApiTests {
         }
         """
         .formatted(taxId, buyerReference, invoiceNumber, minorUnits);
+  }
+
+  private static String invoiceJson(
+      String taxId, String invoiceNumber, long minorUnits, String acceptorId) {
+    return invoiceJson(taxId, invoiceNumber, minorUnits)
+        .replace(
+            "\"remittanceAddress\":",
+            "\"acceptorId\": \"%s\",\n    \"remittanceAddress\":".formatted(acceptorId));
   }
 }
