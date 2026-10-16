@@ -45,9 +45,9 @@ select outcome, cleared_currency, count(*) as clearings, count(journal_entry_id)
  group by outcome, cleared_currency;
 ```
 
-Compare the number of Clearings with the file's `record_count` (`select record_count from clearing.clearing_file where id = '<file ID>';`). The usual explanations:
+Compare the number of Clearings with the file's `record_count` and `skipped_count` (`select record_count, skipped_count from clearing.clearing_file where id = '<file ID>';`). The usual explanations:
 
-- **A Clearing the file carries but the platform didn't post.** Every recorded Clearing is posted, whatever its outcome (Clearing Suspense included), so `posted` equals `clearings` in each row above. Once #50 skips a record repeating a Network record ID that an earlier file brought, rather than stopping the import, that record is posted with the earlier file only, and the Network may be settling it twice.
+- **A record the platform skipped.** Every recorded Clearing is posted, whatever its outcome (Clearing Suspense included), so `posted` equals `clearings` in each row above. But a record whose Network record ID was already imported, earlier in the file or in an earlier file, is skipped: it is posted once, with the first, and counted in `skipped_count`, not here, while the Network may be settling it twice. A file whose records were all skipped is one the Network sent again under a new file ID and a new sequence number: see [`clearing-file-arrived-twice.md`](clearing-file-arrived-twice.md#a-file-sent-again-under-a-new-file-id-and-a-new-sequence-number).
 - **A Clearing in another currency than the trailer's.** M3 settles one currency: a posted Clearing in another one isn't counted in `imported_total_minor`, and it makes the Settlement mismatched even when the totals agree (the outcome query above shows its currency).
 - **The Network's figure carries something the detail records don't**, such as fees or an adjustment from an earlier day.
 

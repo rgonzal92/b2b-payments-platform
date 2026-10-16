@@ -10,19 +10,27 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.util.Base64;
 import java.util.List;
+import java.util.Objects;
+import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -88,11 +96,15 @@ class AcmeDemoTests {
   @LocalServerPort int port;
   @Autowired MockMvcTester mvc;
 
+  @Autowired NetworkClearingFiles clearingFiles;
+
+  // Each test starts with the Network holding no Clearings from an earlier test's Charges.
   @BeforeEach
   void resetStub() {
     platformRequests.clear();
     platform.reset(port);
     issuer.reset();
+    clearingFiles.write(LocalDate.of(9999, 12, 31));
   }
 
   @Test
@@ -180,8 +192,7 @@ class AcmeDemoTests {
   }
 
   @Test
-  void theClearingFileDemoHasTheNetworkWriteItsFileAndIssuerStaffImportIt(CapturedOutput output)
-      throws IOException {
+  void theClearingFileDemoHasTheNetworkWriteItsFileAndIssuerStaffImportIt(CapturedOutput output) {
     issuer.answerWith("00", "CL34EF");
     assertThat(mvc.post().uri("/demo/invoices").exchange()).hasStatusOk();
     var requestId = issuer.received.getLast().request().getRetrievalReferenceNumber();
@@ -189,57 +200,232 @@ class AcmeDemoTests {
     var demo = mvc.post().uri("/demo/clearing-file").exchange();
 
     assertThat(demo).hasStatusOk();
-    // The platform's summary, as the stub answers it.
-    assertThat(demo)
-        .bodyJson()
-        .isLenientlyEqualTo(
-            """
-            {"id": "NET-STUB-0001", "sequenceNumber": 7, "businessDate": "2026-10-16",
-             "status": "IMPORTED", "recordCount": 1, "outcomes": {"matched": 1},
-             "settlement": {"amount": {"minorUnits": 1240000, "currency": "USD"},
-                            "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
-                            "matched": true}}
-            """);
     assertThat(platformRequests)
         .last()
         .isEqualTo(
             new Recorded("POST", "/v1/clearing-files", "Bearer token-for-simulator-issuer-admin"));
-    // The file the import named is the Network's, in the drop folder, with the demo's Charge in it.
-    var lines =
-        Files.readAllLines(
-            dropFolder.resolve(platform.importedFileName), StandardCharsets.US_ASCII);
-    assertThat(lines.getFirst()).startsWith("90");
-    assertThat(lines)
+    // The file the import named was the Network's, in the drop folder, with the demo's Charge in
+    // it.
+    var imported = platform.imports.getLast();
+    assertThat(imported.content()).startsWith("90");
+    assertThat(imported.content().lines())
         .anySatisfy(line -> assertThat(line).startsWith("05").contains(PAN, requestId, "CL34EF"));
+    // The file's name, and the platform's summary as the stub answered it.
+    assertThat(demo)
+        .bodyJson()
+        .isStrictlyEqualTo(
+            """
+            {"fileName": "%s", "imports": [%s]}
+            """
+                .formatted(imported.fileName(), IMPORTED.shown()));
+    assertThat(demo).bodyText().doesNotContain(PAN);
+    assertThat(output).doesNotContain(PAN);
+  }
+
+  /**
+   * A switch of the clearing-file demo that changes the file the Network writes, how the stub
+   * platform answers its import, and what the file shows of the change (NetworkClearingFileTests
+   * reads each change by the layout).
+   */
+  record FileSwitch(String name, ImportAnswer platformAnswer, Consumer<List<String>> fileShows) {
+
+    @Override
+    public String toString() {
+      return name;
+    }
+  }
+
+  // The file below carries one Charge: $12,400.00 on the stub's card, authorization code CL34EF.
+  static Stream<FileSwitch> fileSwitches() {
+    return Stream.of(
+        new FileSwitch(
+            "duplicateRecord",
+            IMPORTED,
+            lines -> assertThat(details(lines)).hasSize(2).containsOnly(details(lines).getFirst())),
+        new FileSwitch(
+            "aboveAuthorizedAmount",
+            IMPORTED,
+            lines ->
+                assertThat(details(lines))
+                    .extracting(line -> field(line, 42, 53))
+                    .containsExactly("000001250000")),
+        new FileSwitch(
+            "noAuthorization",
+            IMPORTED,
+            lines ->
+                assertThat(details(lines))
+                    .extracting(line -> field(line, 69, 74))
+                    .containsExactly("CL34EF", "NONE  ")),
+        new FileSwitch(
+            "unknownPan",
+            IMPORTED,
+            lines ->
+                assertThat(details(lines))
+                    .extracting(line -> field(line, 23, 41).strip())
+                    .hasSize(2)
+                    .startsWith(PAN)
+                    .doesNotHaveDuplicates()),
+        new FileSwitch(
+            "wrongTrailerTotal",
+            REFUSED,
+            lines -> assertThat(field(lines.getLast(), 11, 25)).isEqualTo("000000001240001")));
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("fileSwitches")
+  void eachSwitchChangesTheFileIssuerStaffImportOnceAndTheAnswerShowsThePlatformsResponse(
+      FileSwitch fileSwitch, CapturedOutput output) {
+    issuer.answerWith("00", "CL34EF");
+    assertThat(mvc.post().uri("/demo/invoices").exchange()).hasStatusOk();
+    platform.answerImportsWith(fileSwitch.platformAnswer());
+
+    var demo = mvc.post().uri("/demo/clearing-file?" + fileSwitch.name() + "=true").exchange();
+
+    assertThat(demo).hasStatusOk();
+    assertThat(platform.imports).hasSize(1);
+    var imported = platform.imports.getFirst();
+    var lines = imported.content().lines().toList();
+    fileSwitch.fileShows().accept(lines);
+    assertThat(demo)
+        .bodyJson()
+        .isStrictlyEqualTo(
+            """
+            {"fileName": "%s", "imports": [%s]}
+            """
+                .formatted(imported.fileName(), fileSwitch.platformAnswer().shown()));
+    for (var pan : details(lines).stream().map(line -> field(line, 23, 41).strip()).toList()) {
+      assertThat(demo).bodyText().doesNotContain(pan);
+      assertThat(output).doesNotContain(pan);
+    }
+  }
+
+  // The platform takes a file out of its drop folder when it imports it, so the Network sends the
+  // file again for the second import.
+  @Test
+  void theSameFileTwiceIsSentAndImportedTwiceAndTheAnswerShowsBothResponses(CapturedOutput output) {
+    issuer.answerWith("00", "CL34EF");
+    assertThat(mvc.post().uri("/demo/invoices").exchange()).hasStatusOk();
+    platform.answerImportsWith(IMPORTED, REPEATED);
+
+    var demo = mvc.post().uri("/demo/clearing-file?sameFileTwice=true").exchange();
+
+    assertThat(demo).hasStatusOk();
+    assertThat(platform.imports).hasSize(2);
+    var first = platform.imports.getFirst();
+    assertThat(first.content()).isNotNull().contains("CL34EF");
+    assertThat(platform.imports.getLast()).isEqualTo(first);
+    assertThat(demo)
+        .bodyJson()
+        .isStrictlyEqualTo(
+            """
+            {"fileName": "%s", "imports": [%s, %s]}
+            """
+                .formatted(first.fileName(), IMPORTED.shown(), REPEATED.shown()));
     assertThat(demo).bodyText().doesNotContain(PAN);
     assertThat(output).doesNotContain(PAN);
   }
 
   @Test
   void withNothingToClearTheDemoWritesNoFileAndImportsNothing() throws IOException {
-    // Sends whatever earlier tests' Charges left, if anything.
-    assertThat(mvc.post().uri("/demo/clearing-file").exchange()).hasStatus2xxSuccessful();
-    platformRequests.clear();
     long filesBefore;
     try (var files = Files.list(dropFolder)) {
       filesBefore = files.count();
     }
 
     var demo = mvc.post().uri("/demo/clearing-file").exchange();
+    // The switches change the file the Network writes; they never make one.
+    var switched =
+        mvc.post()
+            .uri(
+                "/demo/clearing-file?duplicateRecord=true&aboveAuthorizedAmount=true"
+                    + "&noAuthorization=true&unknownPan=true&wrongTrailerTotal=true"
+                    + "&sameFileTwice=true")
+            .exchange();
 
     assertThat(demo).hasStatus(HttpStatus.NO_CONTENT);
+    assertThat(switched).hasStatus(HttpStatus.NO_CONTENT);
     assertThat(platformRequests).isEmpty();
     try (var files = Files.list(dropFolder)) {
       assertThat(files.count()).isEqualTo(filesBefore);
     }
   }
 
+  // A Clearing File's detail records (05).
+  private static List<String> details(List<String> lines) {
+    return lines.stream().filter(line -> line.startsWith("05")).toList();
+  }
+
+  // A field of a Clearing File's record, by the layout's 1-based positions.
+  private static String field(String record, int from, int to) {
+    return record.substring(from - 1, to);
+  }
+
+  /**
+   * A Clearing File import as the stub received it: the file named, and its content then. {@code
+   * toString} leaves out the content, which holds PANs, so a failed assertion doesn't print them.
+   */
+  record Import(String fileName, String content) {
+
+    @Override
+    public String toString() {
+      return "Import[fileName=%s, content %s]"
+          .formatted(fileName, content == null ? "absent" : "of " + content.length() + " chars");
+    }
+  }
+
+  /** How the stub answers an import: the status and body the platform would send. */
+  record ImportAnswer(int status, String body) {
+
+    boolean refused() {
+      return status >= 400;
+    }
+
+    // As the demo's answer shows it: the status, and the body as the summary or the problem.
+    String shown() {
+      return """
+          {"status": %d, "%s": %s}"""
+          .formatted(status, refused() ? "problem" : "summary", body);
+    }
+  }
+
+  static final ImportAnswer IMPORTED =
+      new ImportAnswer(
+          201,
+          """
+          {"id": "NET-STUB-0001", "sequenceNumber": 7, "businessDate": "2026-10-16",
+           "status": "IMPORTED", "recordCount": 1, "skippedCount": 0,
+           "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
+                        "unknownCard": 0, "otherCurrency": 0, "againstReversedAuthorization": 0,
+                        "afterHoldExpired": 0, "authorizationAlreadyCleared": 0},
+           "settlement": {"amount": {"minorUnits": 1240000, "currency": "USD"},
+                          "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
+                          "matched": true}}
+          """);
+  static final ImportAnswer REFUSED =
+      new ImportAnswer(
+          422,
+          """
+          {"type": "about:blank", "title": "Unprocessable Content", "status": 422,
+           "detail": "This isn't a Clearing File the platform can import: Line 3: the amount \
+          total (positions 11–25) isn't the sum of the detail records' amounts",
+           "instance": "/v1/clearing-files"}
+          """);
+  static final ImportAnswer REPEATED =
+      new ImportAnswer(
+          409,
+          """
+          {"type": "about:blank", "title": "Conflict", "status": 409,
+           "detail": "This file repeats Clearing File NET-STUB-0001, imported or importing, so \
+          nothing in it was posted",
+           "instance": "/v1/clearing-files"}
+          """);
+
   /**
    * Plays the platform for one demo Invoice at a time: takes the Invoice, applies Acme's approval
    * rule, and shows its Payment {@code STARTED} on the first read and {@code COMPLETED} on the
    * next, after delivering the Remittance Advice to the simulator's Globex; or {@code FAILED},
-   * delivering nothing, when told to fail it. Answers every Clearing File import with the same
-   * summary.
+   * delivering nothing, when told to fail it. Answers each Clearing File import as it was told to,
+   * or with {@link #IMPORTED}.
    */
   static final class StubPlatform {
 
@@ -253,7 +439,8 @@ class AcmeDemoTests {
     volatile String invoiceNumber;
     volatile long minorUnits;
     volatile String failureReason;
-    volatile String importedFileName;
+    final List<Import> imports = new CopyOnWriteArrayList<>();
+    final Queue<ImportAnswer> importAnswers = new ConcurrentLinkedQueue<>();
     final List<String> approvers = new CopyOnWriteArrayList<>();
     final AtomicInteger reads = new AtomicInteger();
 
@@ -277,10 +464,17 @@ class AcmeDemoTests {
       failureReason = reason;
     }
 
+    // The next imports are answered with these, in order.
+    void answerImportsWith(ImportAnswer... answers) {
+      importAnswers.addAll(List.of(answers));
+    }
+
     void reset(int simulatorPort) {
       this.simulatorPort = simulatorPort;
       invoiceId = null;
       failureReason = null;
+      imports.clear();
+      importAnswers.clear();
       approvers.clear();
       reads.set(0);
     }
@@ -370,29 +564,29 @@ class AcmeDemoTests {
           .toBodilessEntity();
     }
 
+    // Takes the named file out of the drop folder, whatever it answers, as the platform does.
     private void importClearingFile(HttpExchange exchange) throws IOException {
       platformRequests.add(
           new Recorded(
               exchange.getRequestMethod(),
               exchange.getRequestURI().getPath(),
               exchange.getRequestHeaders().getFirst("Authorization")));
-      importedFileName =
+      var fileName =
           find(
               FILE_NAME,
               new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+      var file = dropFolder.resolve(fileName);
+      imports.add(
+          new Import(
+              fileName,
+              Files.exists(file) ? Files.readString(file, StandardCharsets.US_ASCII) : null));
+      Files.deleteIfExists(file);
+      var answer = Objects.requireNonNullElse(importAnswers.poll(), IMPORTED);
       respond(
           exchange,
-          201,
-          """
-          {"id": "NET-STUB-0001", "sequenceNumber": 7, "businessDate": "2026-10-16",
-           "status": "IMPORTED", "recordCount": 1,
-           "outcomes": {"matched": 1, "aboveAuthorizedAmount": 0, "noAuthorization": 0,
-                        "unknownCard": 0, "otherCurrency": 0, "againstReversedAuthorization": 0,
-                        "afterHoldExpired": 0, "authorizationAlreadyCleared": 0},
-           "settlement": {"amount": {"minorUnits": 1240000, "currency": "USD"},
-                          "importedTotal": {"minorUnits": 1240000, "currency": "USD"},
-                          "matched": true}}
-          """);
+          answer.status(),
+          answer.refused() ? "application/problem+json" : "application/json",
+          answer.body());
     }
 
     private void cardLink(HttpExchange exchange) throws IOException {
@@ -457,8 +651,13 @@ class AcmeDemoTests {
     }
 
     private static void respond(HttpExchange exchange, int status, String json) throws IOException {
+      respond(exchange, status, "application/json", json);
+    }
+
+    private static void respond(HttpExchange exchange, int status, String contentType, String json)
+        throws IOException {
       var bytes = json.getBytes(StandardCharsets.UTF_8);
-      exchange.getResponseHeaders().add("Content-Type", "application/json");
+      exchange.getResponseHeaders().add("Content-Type", contentType);
       exchange.sendResponseHeaders(status, bytes.length);
       exchange.getResponseBody().write(bytes);
       exchange.close();
