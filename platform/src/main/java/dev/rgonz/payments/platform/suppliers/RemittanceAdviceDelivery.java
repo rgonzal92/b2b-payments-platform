@@ -66,6 +66,17 @@ class RemittanceAdviceDelivery implements RemittanceAdvices {
                 .cardLink(cardLink)
                 .cardLinkExpiresAt(link.expiresAt().atOffset(ZoneOffset.UTC)))
         .retrieve()
+        // Anything but 2xx fails the attempt. The error names only the status: the Supplier's
+        // answer
+        // stays out of it, and so out of the logs, since it might echo the link back.
+        .onStatus(
+            status -> !status.is2xxSuccessful(),
+            (request, response) -> {
+              throw new IllegalStateException(
+                  "The Supplier's remittance address answered "
+                      + response.getStatusCode().value()
+                      + ".");
+            })
         .toBodilessEntity();
   }
 }
