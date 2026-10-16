@@ -9,15 +9,17 @@ public interface Holds {
 
   /**
    * Places a Hold for the amount on the Buyer's Available Credit. The caller chooses the Hold's ID
-   * (a Payment's ID, say), so placing it again with the same ID finds the same Hold instead of
-   * placing a second one; the first placement's Buyer and amount stand. Joins the caller's
+   * (a Payment's ID, say), so placing it again with the same ID while it is placed finds the same
+   * Hold instead of placing a second one; the first placement's Buyer and amount stand. Placing a
+   * released Hold again reserves the amount afresh, after the same check. Joins the caller's
    * transaction, so the Hold commits or rolls back with whatever the caller records about it.
    */
   Outcome place(UUID holdId, BuyerId buyerId, Money amount);
 
   /**
-   * Releases the Hold, so its amount is Available Credit again. Releasing a Hold that is already
-   * released, or was never placed, changes nothing. Joins the caller's transaction.
+   * Releases the Hold, so its amount is Available Credit again; its record stays, marked released.
+   * Releasing a Hold that is already released, or was never placed, changes nothing. Joins the
+   * caller's transaction.
    */
   void release(UUID holdId);
 

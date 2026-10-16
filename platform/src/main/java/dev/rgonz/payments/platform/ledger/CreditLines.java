@@ -71,7 +71,7 @@ class CreditLines implements Holds {
       return Outcome.INSUFFICIENT_CREDIT;
     }
     var alreadyPlaced =
-        jdbc.sql("select exists (select 1 from ledger.hold where id = :id)")
+        jdbc.sql("select exists (select 1 from ledger.hold where id = :id and status = 'PLACED')")
             .param("id", holdId)
             .query(Boolean.class)
             .single();
@@ -82,10 +82,17 @@ class CreditLines implements Holds {
     if (amount.isMoreThan(credit.availableCredit())) {
       return Outcome.INSUFFICIENT_CREDIT;
     }
+    // A released Hold's row is placed again: its credit is reserved afresh, after the same check.
     jdbc.sql(
             """
             insert into ledger.hold (id, buyer_id, amount_minor, currency)
             values (:id, :buyerId, :amount, :currency)
+            on conflict (id) do update
+               set status       = 'PLACED',
+                   amount_minor = excluded.amount_minor,
+                   currency     = excluded.currency,
+                   placed_at    = now(),
+                   released_at  = null
             """)
         .param("id", holdId)
         .param("buyerId", buyerId.value())
@@ -95,18 +102,31 @@ class CreditLines implements Holds {
     return Outcome.PLACED;
   }
 
-  // Deleting the row leaves nothing for a second release to do. Placing the same Hold again would
-  // reserve the credit afresh, after the usual check.
+  // The row stays, marked released; releasing it again finds no placed Hold and changes nothing.
   @Override
   public void release(UUID holdId) {
-    jdbc.sql("delete from ledger.hold where id = :id").param("id", holdId).update();
+    jdbc.sql(
+            """
+            update ledger.hold
+               set status = 'RELEASED', released_at = now()
+             where id = :id
+               and status = 'PLACED'
+            """)
+        .param("id", holdId)
+        .update();
   }
 
   // A statement of its own: after place's lock, it sees what other transactions committed while
   // that one waited (READ COMMITTED); a subquery inside the locking statement would not.
   private Money openHolds(BuyerId buyerId, Currency currency) {
     var held =
-        jdbc.sql("select coalesce(sum(amount_minor), 0) from ledger.hold where buyer_id = :buyerId")
+        jdbc.sql(
+                """
+                select coalesce(sum(amount_minor), 0)
+                  from ledger.hold
+                 where buyer_id = :buyerId
+                   and status = 'PLACED'
+                """)
             .param("buyerId", buyerId.value())
             .query(Long.class)
             .single();
