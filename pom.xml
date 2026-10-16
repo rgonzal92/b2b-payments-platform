@@ -55,6 +55,7 @@
 	<build>
 		<pluginManagement>
 			<plugins>
+				<!-- CI runs it by its full name, outside any phase: this pins the version that call uses. -->
 				<plugin>
 					<groupId>org.sonarsource.scanner.maven</groupId>
 					<artifactId>sonar-maven-plugin</artifactId>
