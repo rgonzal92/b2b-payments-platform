@@ -12,12 +12,16 @@ import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Currency;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +32,7 @@ import org.springframework.boot.restclient.test.autoconfigure.AutoConfigureMockR
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -51,7 +56,9 @@ class RemittanceLinksTests {
   @Autowired Suppliers suppliers;
   @Autowired Cards cards;
   @Autowired RemittanceAdvices remittanceAdvices;
-  @MockitoSpyBean RemittanceLinks links;
+  @Autowired JdbcClient jdbc;
+  @Autowired ObservationRegistry observations;
+  @MockitoSpyBean RemittanceAdviceLinks links;
 
   @Test
   void theFirstOpenShowsTheCardsDetailsAndKeepsThemOutOfCaches() throws Exception {
@@ -74,6 +81,34 @@ class RemittanceLinksTests {
         .endsWith(card.lastFour());
     assertThat(JsonPath.<String>read(body, "$.securityCode")).matches("\\d{3}");
     assertThat(Instant.parse(JsonPath.read(body, "$.expiresAt"))).isEqualTo(card.expiresAt());
+  }
+
+  @Test
+  void theLinksTokenStaysOutOfTraces() {
+    var link = deliveredLink(issuedCard(), Instant.now());
+    var token = link.substring(link.lastIndexOf('/') + 1);
+    var recorded = new CopyOnWriteArrayList<String>();
+    // Every observation's name and tags, which become spans and metrics.
+    observations
+        .observationConfig()
+        .observationHandler(
+            new ObservationHandler<>() {
+              @Override
+              public boolean supportsContext(Observation.Context context) {
+                return true;
+              }
+
+              @Override
+              public void onStop(Observation.Context context) {
+                recorded.add(context.getName() + " " + context.getAllKeyValues());
+              }
+            });
+
+    assertThat(mvc.get().uri(link).exchange()).hasStatusOk();
+
+    assertThat(recorded)
+        .anyMatch(observation -> observation.startsWith("http.server.requests"))
+        .noneMatch(observation -> observation.contains(token));
   }
 
   @Test
@@ -114,6 +149,14 @@ class RemittanceLinksTests {
     cards.cancel(card.cardToken());
 
     assertThat(mvc.get().uri(link).exchange()).hasStatus(410);
+    // Nothing was shown, so the link isn't marked used: the stuck-Payment runbook reads a used link
+    // as a Supplier holding the card's details.
+    assertThat(
+            jdbc.sql("select link_used_at is null from suppliers.remittance_advice where id = :id")
+                .param("id", card.paymentId())
+                .query(Boolean.class)
+                .single())
+        .isTrue();
   }
 
   @Test

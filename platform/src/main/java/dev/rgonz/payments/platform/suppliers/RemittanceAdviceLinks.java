@@ -17,14 +17,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** Remittance Advice and their one-time links, stored by the hash of each link's token. */
 @Repository
-class RemittanceLinks {
+class RemittanceAdviceLinks {
 
   private final JdbcClient jdbc;
   private final LinkTokens tokens;
   private final Cards cards;
   private final Vault vault;
 
-  RemittanceLinks(JdbcClient jdbc, LinkTokens tokens, Cards cards, Vault vault) {
+  RemittanceAdviceLinks(JdbcClient jdbc, LinkTokens tokens, Cards cards, Vault vault) {
     this.jdbc = jdbc;
     this.tokens = tokens;
     this.cards = cards;
@@ -70,52 +70,53 @@ class RemittanceLinks {
 
   /**
    * Uses up the link with this token and returns its card's details, fetched from the vault now and
-   * never stored here.
+   * never stored here. A link that shows nothing (unknown, used, expired, or its card cancelled)
+   * isn't marked used.
    */
   @Transactional
   public Opening open(String token) {
     var tokenHash = LinkTokens.hash(token);
+    var cardToken =
+        jdbc.sql("select card_token from suppliers.remittance_advice where link_token_hash = :h")
+            .param("h", tokenHash)
+            .query(String.class)
+            .optional();
+    if (cardToken.isEmpty()) {
+      return new Opening.Unknown();
+    }
+    var card = cards.find(cardToken.get()).orElseThrow();
+    if (card.status() == SingleUseCard.Status.CANCELLED) {
+      return new Opening.Gone();
+    }
     // Reads the link and marks it used in one statement: of two opens at once, one updates the row
     // and the other waits for its lock, then finds it used.
-    var opened =
+    var used =
         jdbc.sql(
                 """
                 update suppliers.remittance_advice
                    set link_used_at = now()
-                 where link_token_hash = :tokenHash
+                 where link_token_hash = :h
                    and link_used_at is null
                    and link_expires_at > now()
-                returning invoice_number, amount_minor, currency, card_token
+                returning invoice_number, amount_minor, currency
                 """)
-            .param("tokenHash", tokenHash)
+            .param("h", tokenHash)
             .query(
                 (row, rowNumber) ->
                     new UsedLink(
                         row.getString("invoice_number"),
                         new Money(
                             row.getLong("amount_minor"),
-                            Currency.getInstance(row.getString("currency"))),
-                        row.getString("card_token")))
+                            Currency.getInstance(row.getString("currency")))))
             .optional();
-    if (opened.isEmpty()) {
-      return exists(tokenHash) ? new Opening.Gone() : new Opening.Unknown();
-    }
-    var used = opened.get();
-    var card = cards.find(used.cardToken()).orElseThrow();
-    if (card.status() == SingleUseCard.Status.CANCELLED) {
+    if (used.isEmpty()) {
       return new Opening.Gone();
     }
     return new Opening.Opened(
-        used.invoiceNumber(), used.amount(), card, vault.cardDetails(card.cardToken()));
+        used.get().invoiceNumber(), used.get().amount(), card, vault.cardDetails(card.cardToken()));
   }
 
-  private boolean exists(byte[] tokenHash) {
-    return jdbc.sql(
-            "select exists (select 1 from suppliers.remittance_advice where link_token_hash = :h)")
-        .param("h", tokenHash)
-        .query(Boolean.class)
-        .single();
-  }
+  private record UsedLink(String invoiceNumber, Money amount) {}
 
   /** What opening a link found. */
   sealed interface Opening {
@@ -130,8 +131,6 @@ class RemittanceLinks {
     /** No link has this token. */
     record Unknown() implements Opening {}
   }
-
-  private record UsedLink(String invoiceNumber, Money amount, String cardToken) {}
 
   /** A Remittance Advice's one-time link. The token is a credential, so it isn't in toString. */
   record Link(String token, Instant expiresAt) {

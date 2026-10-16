@@ -3,7 +3,7 @@ package dev.rgonz.payments.platform.suppliers;
 import dev.rgonz.payments.contracts.server.RemittanceLinksApi;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
 import dev.rgonz.payments.contracts.server.model.SingleUseCardDetailsDto;
-import dev.rgonz.payments.platform.suppliers.RemittanceLinks.Opening;
+import dev.rgonz.payments.platform.suppliers.RemittanceAdviceLinks.Opening;
 import java.time.ZoneOffset;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
@@ -19,9 +19,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 class RemittanceLinksController implements RemittanceLinksApi {
 
-  private final RemittanceLinks links;
+  private final RemittanceAdviceLinks links;
 
-  RemittanceLinksController(RemittanceLinks links) {
+  RemittanceLinksController(RemittanceAdviceLinks links) {
     this.links = links;
   }
 

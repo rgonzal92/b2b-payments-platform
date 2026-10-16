@@ -28,10 +28,10 @@ payables worker (step 3, inside the Payment's transaction)
             2xx → Payment COMPLETED; anything else → retried, then card cancelled
 
 Supplier: GET /v1/remittance-links/{token}             (no sign-in)
+  no advice with link_token_hash = sha256(token)? 404; its card cancelled? 410
   update suppliers.remittance_advice set link_used_at = now()
    where link_token_hash = sha256(token) and link_used_at is null and link_expires_at > now()
-  returning …                                          ── no row: 410 if the hash exists, else 404
-  card cancelled? 410
+  returning …                                          ── no row: 410
   vault.Vault.cardDetails(card token) → PAN, security code   (Cache-Control: no-store)
 ```
 
@@ -45,7 +45,7 @@ Supplier: GET /v1/remittance-links/{token}             (no sign-in)
 - **A link that works only after the commit.** Recording the advice in the worker's transaction, which commits after the Supplier answers, would let a Supplier that opens the link while handling the POST (the simulator's Globex does) find nothing and get `404`. The advice commits in a transaction of its own (`REQUIRES_NEW`) before the POST.
 - **Error messages carry URLs and bodies.** Spring's I/O errors quote the request URL, and its 4xx/5xx errors quote the response body. Globex's link carries the token, so Globex logs only the error's class or status; a Supplier's error answer might echo the advice, link included, so the platform's delivery error names only the status.
 - **Generated models print every field.** The contract's `SingleUseCardDetails` comes with a `toString` that includes the PAN and security code. Nothing logs one; `vault.CardDetails` overrides its `toString` to show only the last four digits.
-- **Traces record full URLs.** A server span's `http.url` holds the request path, token included. Opening a link uses it up, so a token in a trace is already spent; only an open that fails with a server error leaves a live token there.
+- **Traces record full URLs.** Every traced request records its URL (`http.url`), which for a link is the token. A test that records every observation while a link is opened caught it on both sides. The platform's `RequestObservations` records a link request by its route (`/v1/remittance-links/{token}`), and Globex opens links with a client that isn't traced.
 - **Testing the delivery with `MockRestServiceServer`.** `@AutoConfigureMockRestServiceServer` binds a mock server to every `RestClient.Builder` Spring Boot hands out, so the delivery must build its client from the injected builder; setting its own request factory would replace the mock's. Its timeouts therefore come from `spring.http.clients.*`. The mock takes no new expectations once it has served a request (tests call `reset()` between deliveries), and a request nobody expected throws an `AssertionError`, which the worker doesn't catch, so a stray delivery fails the test loudly.
 - **CSRF in the simulator.** Spring Security's CSRF protection refused the platform's POST to Globex with `403`: the POST has no session and no CSRF token. That path is exempt, since a request without cookies has no session for a forged cross-site request to ride on.
 - **A race test has to make the race happen.** Two opens started together often run one after the other. The test makes both wait at a barrier just before opening; a version that read the link and then marked it in two statements (with a pause between them) failed it, both opens showing the card.

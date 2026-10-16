@@ -23,13 +23,13 @@ class RemittanceAdviceDelivery implements RemittanceAdvices {
   private static final Duration LINK_VALIDITY = Duration.ofDays(7);
 
   private final Suppliers suppliers;
-  private final RemittanceLinks links;
+  private final RemittanceAdviceLinks links;
   private final RestClient http;
   private final String publicUrl;
 
   RemittanceAdviceDelivery(
       Suppliers suppliers,
-      RemittanceLinks links,
+      RemittanceAdviceLinks links,
       RestClient.Builder http,
       @Value("${platform.public-url}") String publicUrl) {
     this.suppliers = suppliers;

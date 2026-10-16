@@ -3,6 +3,7 @@ package dev.rgonz.payments.simulator;
 import dev.rgonz.payments.contracts.client.model.Money;
 import dev.rgonz.payments.contracts.client.model.RemittanceAdvice;
 import dev.rgonz.payments.contracts.client.model.SingleUseCardDetails;
+import io.micrometer.observation.ObservationRegistry;
 import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.Objects;
@@ -38,8 +39,9 @@ class GlobexSupplier {
   private final Set<String> receivedAdvice = ConcurrentHashMap.newKeySet();
   private final Map<UUID, ReceivedCard> cardsByInvoice = new ConcurrentHashMap<>();
 
+  // Untraced: a trace would record each request's URL, and here the URL is the card link.
   GlobexSupplier(RestClient.Builder platform) {
-    this.platform = platform.build();
+    this.platform = platform.observationRegistry(ObservationRegistry.NOOP).build();
   }
 
   /**

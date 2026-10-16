@@ -3,10 +3,14 @@ package dev.rgonz.payments.simulator;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sun.net.httpserver.HttpServer;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -42,6 +46,7 @@ class GlobexSupplierTests {
 
   @Autowired MockMvcTester mvc;
   @Autowired GlobexSupplier globex;
+  @Autowired ObservationRegistry observations;
 
   @Test
   void opensEachAdvicesCardLinkOnceAndLogsOnlyTheLastFourDigits(CapturedOutput output) {
@@ -60,6 +65,23 @@ class GlobexSupplierTests {
         """
             .formatted(adviceId, invoiceId, platform.getAddress().getPort(), TOKEN);
 
+    // Every observation's name and tags, which become spans and metrics.
+    var recorded = new CopyOnWriteArrayList<String>();
+    observations
+        .observationConfig()
+        .observationHandler(
+            new ObservationHandler<>() {
+              @Override
+              public boolean supportsContext(Observation.Context context) {
+                return true;
+              }
+
+              @Override
+              public void onStop(Observation.Context context) {
+                recorded.add(context.getName() + " " + context.getAllKeyValues());
+              }
+            });
+
     // The platform delivers at least once: the same advice again, under the same key.
     var first = deliver(adviceId, advice);
     var repeat = deliver(adviceId, advice);
@@ -74,6 +96,7 @@ class GlobexSupplierTests {
               assertThat(card.lastFour()).isEqualTo("7899");
             });
     assertThat(output).contains("7899").doesNotContain(PAN).doesNotContain(TOKEN);
+    assertThat(recorded).isNotEmpty().noneMatch(observation -> observation.contains(TOKEN));
   }
 
   // A server-to-server POST, with no session cookie or CSRF token, as the platform sends it.

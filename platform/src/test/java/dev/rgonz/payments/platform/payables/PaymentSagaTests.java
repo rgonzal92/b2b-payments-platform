@@ -10,7 +10,9 @@ import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withBadRequest;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import com.jayway.jsonpath.Configuration;
@@ -23,6 +25,7 @@ import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.io.UnsupportedEncodingException;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -35,14 +38,18 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.restclient.test.autoconfigure.AutoConfigureMockRestServiceServer;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.http.client.MockClientHttpRequest;
@@ -409,6 +416,36 @@ class PaymentSagaTests {
     assertThat(deliveries).hasSize(2);
     assertThat(deliveries.get(1)).isEqualTo(deliveries.getFirst());
     assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
+  }
+
+  @Test
+  @ExtendWith(OutputCaptureExtension.class)
+  void aRedirectOrAnErrorFromTheSupplierFailsTheAttemptAndItsAnswerStaysOutOfTheLogs(
+      CapturedOutput output) throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    // A redirect elsewhere, then an error answer that echoes the advice back, link included.
+    var deliveries =
+        supplierAnswers(
+            withStatus(HttpStatus.SEE_OTHER).location(URI.create("https://elsewhere.example/")),
+            request ->
+                withBadRequest()
+                    .body(((MockClientHttpRequest) request).getBodyAsString())
+                    .createResponse(request));
+    var now = Instant.now();
+
+    saga.runDueSteps(now);
+    var stateAfterRedirect = paymentState(acme, invoiceId);
+    saga.runDueSteps(now.plusSeconds(10));
+
+    assertThat(stateAfterRedirect).isEqualTo("CARD_ISSUED");
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
+    assertThat(deliveries).hasSize(2);
+    String link = JsonPath.read(deliveries.getFirst().body(), "$.cardLink");
+    assertThat(output)
+        .contains("answered 303")
+        .contains("answered 400")
+        .doesNotContain(link.substring(link.lastIndexOf('/') + 1));
   }
 
   @Test

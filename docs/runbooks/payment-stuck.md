@@ -65,13 +65,11 @@ select id, invoice_id, state, attempts, next_attempt_at
 
 ## The Supplier's remittance address doesn't accept the Remittance Advice
 
-A `CARD_ISSUED` Payment retries while the Supplier's address doesn't answer 2xx within the timeouts (2 seconds to connect, 5 to answer). The log line under the Payment's ID says why: `The Supplier's remittance address answered 503.` (any answer but 2xx, a redirect included), a `ResourceAccessException` naming a timeout, a refused connection or an unknown host. Find the address the Payment delivers to:
+A `CARD_ISSUED` Payment retries while the Supplier's address doesn't answer 2xx within the timeouts (2 seconds to connect, 5 to answer). The log line under the Payment's ID says why: `The Supplier's remittance address answered 503.` (any answer but 2xx, a redirect included), a `ResourceAccessException` naming a timeout, a refused connection or an unknown host. Find the address the Payment delivers to, one module's schema at a time (ADR-0009):
 
 ```sql
-select s.name, s.remittance_address
-  from payables.payment p
-  join suppliers.supplier s on s.id = p.supplier_id
- where p.id = '<payment id>';
+select supplier_id from payables.payment where id = '<payment id>';
+select name, remittance_address from suppliers.supplier where id = '<supplier id>';
 ```
 
 - **The address is wrong or the Supplier is down.** The address comes from the first Invoice naming the Supplier's tax ID, and later Invoices don't change it. There is no way yet to correct it through the API; in local development, `update suppliers.supplier set remittance_address = … where id = …` takes effect at the next retry. Locally, the simulator serves Globex's address (`http://localhost:8081/globex/remittance-advice`); check it is running.
