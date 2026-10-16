@@ -2,12 +2,16 @@ package dev.rgonz.payments.platform.authorization;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.awaitility.Awaitility.await;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.contracts.network.AuthorizationResponse;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
+import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc.IssuerAuthorizationBlockingStub;
+import dev.rgonz.payments.contracts.network.ReversalRequest;
+import dev.rgonz.payments.contracts.network.ReversalResponse;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
@@ -22,6 +26,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.NettyChannelBuilder;
 import java.io.UnsupportedEncodingException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -34,15 +39,18 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import javax.sql.DataSource;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
@@ -58,8 +66,9 @@ import org.springframework.test.web.servlet.assertj.MockMvcTester;
  * The Network asks for an Authorization over gRPC, with a mocked Network token, on PostgreSQL: a
  * Charge that passes every rule is approved; each decline leaves the card and its Hold as they
  * were; every answer is recorded, once per request ID, and a resent request gets the first answer.
+ * The Network's Reversals cancel them ({@link Reversals}).
  */
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, AuthorizeTests.NetworkTokens.class})
 @SpringBootTest
 @AutoConfigureMockMvc
 class AuthorizeTests {
@@ -71,8 +80,11 @@ class AuthorizeTests {
   private static final DateTimeFormatter EXPIRATION_DATE =
       DateTimeFormatter.ofPattern("yyMM").withZone(ZoneOffset.UTC);
 
-  /** Every bearer token decodes as the Network's, so the test can call over gRPC. */
-  @TestConfiguration(proxyBeanMethods = false)
+  /**
+   * Every bearer token decodes as the Network's, so the test can call over gRPC. Imported rather
+   * than a nested {@code @TestConfiguration}: Spring Framework 7.0 ignores an enclosing class's
+   * nested configuration in a {@code @Nested} class, which would then start a context of its own.
+   */
   static class NetworkTokens {
 
     @Bean
@@ -88,6 +100,7 @@ class AuthorizeTests {
 
   @Autowired MockMvcTester mvc;
   @Autowired JdbcClient jdbc;
+  @Autowired DataSource dataSource;
   @Autowired Cards cards;
   @Autowired Holds holds;
   @Autowired Vault vault;
@@ -300,12 +313,7 @@ class AuthorizeTests {
   void aRequestWithoutARetrievalReferenceNumberIsRefusedAndNothingIsRecorded() {
     var card = issuedCard(buyerWithCreditLine(10_000_000));
 
-    assertThat(
-            assertThatExceptionOfType(StatusRuntimeException.class)
-                .isThrownBy(() -> authorize(chargeOn(card).clearRetrievalReferenceNumber()))
-                .actual()
-                .getStatus()
-                .getCode())
+    assertThat(grpcStatusOf(() -> authorize(chargeOn(card).clearRetrievalReferenceNumber())))
         .isEqualTo(Status.Code.INVALID_ARGUMENT);
     assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
     assertThat(
@@ -396,6 +404,207 @@ class AuthorizeTests {
     assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
   }
 
+  /**
+   * The Network cancels an Authorization by its request ID. Every Reversal is acknowledged with
+   * {@code 00}; only an approved Authorization changes, and the Hold stays on every path.
+   */
+  @Nested
+  class Reversals {
+
+    @Test
+    void anApprovedAuthorizationIsReversedAndItsCardCanBeChargedAgainWhileItsHoldStays()
+        throws Exception {
+      var buyerId = buyerWithCreditLine(10_000_000);
+      var card = issuedCard(buyerId);
+      var charge = chargeOn(card);
+      var requestId = charge.getRetrievalReferenceNumber();
+      var approval = authorize(charge);
+      assertThat(approval.getResponseCode()).isEqualTo("00");
+      var creditBefore = availableCredit(buyerId);
+
+      var response = reverse(requestId);
+
+      assertThat(response).isEqualTo(acknowledgement(requestId));
+      // The record keeps the answer the Network was given.
+      assertThat(recorded(requestId))
+          .containsEntry("response_code", "00")
+          .containsEntry("authorization_code", approval.getAuthorizationCode())
+          .containsEntry("status", "REVERSED");
+      assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
+      assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+      assertThat(authorize(chargeOn(card)).getResponseCode()).isEqualTo("00");
+      assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
+    }
+
+    // Sent twice, as a Network that missed the first acknowledgement would.
+    @Test
+    void aDeclinedAuthorizationIsAcknowledgedAndNothingChanges() throws Exception {
+      var buyerId = buyerWithCreditLine(10_000_000);
+      var card = issuedCard(buyerId);
+      var charge = chargeOn(card).setAmountMinor(AMOUNT + 1);
+      var requestId = charge.getRetrievalReferenceNumber();
+      assertThat(authorize(charge).getResponseCode()).isEqualTo("61");
+      var creditBefore = availableCredit(buyerId);
+
+      var response = reverse(requestId);
+      var again = reverse(requestId);
+
+      assertThat(response).isEqualTo(acknowledgement(requestId));
+      assertThat(again).isEqualTo(acknowledgement(requestId));
+      assertThat(recorded(requestId))
+          .containsEntry("response_code", "61")
+          .containsEntry("status", "DECLINED");
+      assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
+      assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    }
+
+    // Only the reversed Authorization's own record decides what its Reversal does: reversing A
+    // again mustn't free the card that B now holds.
+    @Test
+    void aRepeatedReversalIsAcknowledgedAndChangesNothingMore() throws Exception {
+      var buyerId = buyerWithCreditLine(10_000_000);
+      var card = issuedCard(buyerId);
+      var first = chargeOn(card);
+      var firstRequestId = first.getRetrievalReferenceNumber();
+      assertThat(authorize(first).getResponseCode()).isEqualTo("00");
+      assertThat(reverse(firstRequestId)).isEqualTo(acknowledgement(firstRequestId));
+      var second = chargeOn(card);
+      assertThat(authorize(second).getResponseCode()).isEqualTo("00");
+      var creditBefore = availableCredit(buyerId);
+
+      var response = reverse(firstRequestId);
+
+      assertThat(response).isEqualTo(acknowledgement(firstRequestId));
+      assertThat(recorded(firstRequestId)).containsEntry("status", "REVERSED");
+      assertThat(recorded(second.getRetrievalReferenceNumber()))
+          .containsEntry("status", "APPROVED");
+      assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
+      assertThat(availableCredit(buyerId)).isEqualTo(creditBefore);
+    }
+
+    // The Network gave up on a slow Authorization and reversed it, twice, before the platform
+    // recorded it.
+    @Test
+    void aReversalBeforeItsAuthorizationMakesTheLateAuthorizationAnswerDoNotHonour() {
+      var card = issuedCard(buyerWithCreditLine(10_000_000));
+      var charge = chargeOn(card);
+      var requestId = charge.getRetrievalReferenceNumber();
+
+      var reversal = reverse(requestId);
+      var again = reverse(requestId);
+      var late = authorize(charge);
+
+      assertThat(reversal).isEqualTo(acknowledgement(requestId));
+      assertThat(again).isEqualTo(acknowledgement(requestId));
+      assertThat(late.getResponseCode()).isEqualTo("05");
+      assertThat(late.getAuthorizationCode()).isEmpty();
+      assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
+      assertThat(recordedCount(requestId)).isOne();
+      assertThat(recorded(requestId))
+          .containsEntry("card_token", null)
+          .containsEntry("response_code", "05")
+          .containsEntry("authorization_code", null)
+          .containsEntry("status", "REVERSED");
+    }
+
+    // The Reversal commits while the Authorization is running: it has started, but a lock on the
+    // cards holds it before it reads the card, so it claims its request ID only afterwards.
+    @Test
+    void anAuthorizationStillRunningWhenItsReversalCommitsAnswersDoNotHonour() throws Exception {
+      var card = issuedCard(buyerWithCreditLine(10_000_000));
+      var charge = chargeOn(card).build();
+      var requestId = charge.getRetrievalReferenceNumber();
+
+      // Closed in reverse order: the lock's connection rolls back before the executor waits.
+      try (var network = Executors.newSingleThreadExecutor();
+          var cardsLock = dataSource.getConnection()) {
+        cardsLock.setAutoCommit(false);
+        try (var lock = cardsLock.createStatement()) {
+          lock.execute("lock table cards.card in access exclusive mode");
+        }
+        var late = network.submit(() -> authorize(charge));
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 1);
+
+        var reversal = reverse(requestId);
+        cardsLock.rollback();
+
+        assertThat(reversal).isEqualTo(acknowledgement(requestId));
+        var answer = late.get(10, TimeUnit.SECONDS);
+        assertThat(answer.getResponseCode()).isEqualTo("05");
+        assertThat(answer.getAuthorizationCode()).isEmpty();
+      }
+      assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
+      assertThat(recorded(requestId))
+          .containsEntry("card_token", null)
+          .containsEntry("status", "REVERSED");
+    }
+
+    // The Authorization claims its request ID first, and approves after the Reversal arrived: a
+    // lock on the card holds it after it recorded its approval, before it moved the card. The
+    // Reversal's claim waits for it to commit, then reverses it.
+    @Test
+    void anAuthorizationApprovedAfterItsReversalArrivedIsReversed() throws Exception {
+      var card = issuedCard(buyerWithCreditLine(10_000_000));
+      var charge = chargeOn(card).build();
+      var requestId = charge.getRetrievalReferenceNumber();
+
+      // Closed in reverse order: the lock's connection rolls back before the executor waits.
+      try (var network = Executors.newFixedThreadPool(2);
+          var cardLock = dataSource.getConnection()) {
+        cardLock.setAutoCommit(false);
+        try (var lock =
+            cardLock.prepareStatement("select 1 from cards.card where card_token = ? for update")) {
+          lock.setString(1, card.cardToken());
+          lock.executeQuery().close();
+        }
+        var slow = network.submit(() -> authorize(charge));
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 1);
+        var reversal = network.submit(() -> reverse(requestId));
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 2);
+
+        cardLock.rollback();
+
+        assertThat(slow.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("00");
+        assertThat(reversal.get(10, TimeUnit.SECONDS)).isEqualTo(acknowledgement(requestId));
+      }
+      assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.ACTIVE);
+      assertThat(recorded(requestId))
+          .containsEntry("response_code", "00")
+          .containsEntry("status", "REVERSED");
+    }
+
+    @ParameterizedTest(name = "retrieval reference number \"{0}\"")
+    @ValueSource(strings = {"", "   "})
+    void aReversalWithoutARetrievalReferenceNumberIsRefusedAndNothingIsRecorded(String requestId) {
+      assertThat(grpcStatusOf(() -> reverse(requestId))).isEqualTo(Status.Code.INVALID_ARGUMENT);
+      assertThat(recordedCount(requestId)).isZero();
+    }
+
+    // Connections to the test database waiting for a lock: the requests a test holds up.
+    private long lockWaiters() {
+      return jdbc.sql(
+              """
+              select count(*) from pg_stat_activity
+               where datname = current_database() and wait_event_type = 'Lock'
+              """)
+          .query(Long.class)
+          .single();
+    }
+
+    private ReversalResponse reverse(String requestId) {
+      return network()
+          .reverse(ReversalRequest.newBuilder().setRetrievalReferenceNumber(requestId).build());
+    }
+
+    // Every Reversal's answer: its request ID and 00, whatever it changed.
+    private static ReversalResponse acknowledgement(String requestId) {
+      return ReversalResponse.newBuilder()
+          .setRetrievalReferenceNumber(requestId)
+          .setResponseCode("00")
+          .build();
+    }
+  }
+
   // Everything the Network would send for a Charge of the card's whole amount, under a new request
   // ID: the PAN, security code and expiry as the Supplier read them through its link.
   private AuthorizationRequest.Builder chargeOn(SingleUseCard card) {
@@ -416,10 +625,23 @@ class AuthorizeTests {
   }
 
   private AuthorizationResponse authorize(AuthorizationRequest request) {
+    return network().authorize(request);
+  }
+
+  // The gRPC status of a call refused before any answer.
+  private static Status.Code grpcStatusOf(ThrowingCallable call) {
+    return assertThatExceptionOfType(StatusRuntimeException.class)
+        .isThrownBy(call)
+        .actual()
+        .getStatus()
+        .getCode();
+  }
+
+  // Signed in as the Network (NetworkTokens), with a deadline so a hang fails the test quickly.
+  private IssuerAuthorizationBlockingStub network() {
     return IssuerAuthorizationGrpc.newBlockingStub(channel)
         .withDeadlineAfter(5, TimeUnit.SECONDS)
-        .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"))
-        .authorize(request);
+        .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"));
   }
 
   private SingleUseCard issuedCard(BuyerId buyerId) {

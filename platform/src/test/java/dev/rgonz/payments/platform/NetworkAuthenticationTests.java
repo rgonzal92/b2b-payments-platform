@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc.IssuerAuthorizationBlockingStub;
+import dev.rgonz.payments.contracts.network.ReversalRequest;
 import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -28,8 +29,9 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * Only the Network may call the Network link over gRPC: checked with real Keycloak tokens from the
- * repository's realm file, sent as gRPC metadata to the platform's gRPC server.
+ * Only the Network may call the Network link over gRPC, Authorizations and Reversals alike: checked
+ * with real Keycloak tokens from the repository's realm file, sent as gRPC metadata to the
+ * platform's gRPC server.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -86,6 +88,17 @@ class NetworkAuthenticationTests {
 
     assertThat(statusOf(() -> erp.authorize(chargeOn(UNKNOWN_PAN))))
         .isEqualTo(Status.Code.PERMISSION_DENIED);
+  }
+
+  @Test
+  void anotherClientsTokenIsDeniedAReversal() {
+    var erp = signedInWith(clientCredentialsToken("acme-erp"));
+    var reversal =
+        ReversalRequest.newBuilder()
+            .setRetrievalReferenceNumber(UUID.randomUUID().toString())
+            .build();
+
+    assertThat(statusOf(() -> erp.reverse(reversal))).isEqualTo(Status.Code.PERMISSION_DENIED);
   }
 
   private IssuerAuthorizationBlockingStub signedInWith(String token) {

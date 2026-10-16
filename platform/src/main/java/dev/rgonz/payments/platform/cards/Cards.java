@@ -37,4 +37,11 @@ public interface Cards {
    * doesn't exist. Joins the caller's transaction.
    */
   boolean authorize(String cardToken);
+
+  /**
+   * Moves the card from {@code AUTHORIZED} back to {@code ACTIVE} when its approved Authorization
+   * is reversed, in one conditional update, so it can be charged again; a card in any other status
+   * is left as it is. Joins the caller's transaction.
+   */
+  void reverse(String cardToken);
 }
