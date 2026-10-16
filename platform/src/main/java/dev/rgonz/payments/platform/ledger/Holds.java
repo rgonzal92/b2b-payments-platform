@@ -18,8 +18,9 @@ public interface Holds {
 
   /**
    * Releases the Hold, so its amount is Available Credit again; its record stays, marked released.
-   * Releasing a Hold that is already released, or was never placed, changes nothing. Joins the
-   * caller's transaction.
+   * Releasing a Hold that is already released, or was never placed, changes nothing; so does
+   * releasing a cleared Hold, whose Charge the Buyer Receivable already carries (a card that
+   * expired after its Clearing came). Joins the caller's transaction.
    */
   void release(UUID holdId);
 
@@ -30,6 +31,14 @@ public interface Holds {
    * never placed) is left as it is. Joins the caller's transaction.
    */
   void clear(UUID holdId);
+
+  /**
+   * Whether the Hold was released, its credit back with the Buyer (its card expired, say): false
+   * for a Hold that is placed or cleared, or was never placed. Locks the Hold until the caller's
+   * transaction ends, so it can't be released or cleared between this answer and what the caller
+   * does about it. Joins the caller's transaction.
+   */
+  boolean isReleased(UUID holdId);
 
   enum Outcome {
     PLACED,

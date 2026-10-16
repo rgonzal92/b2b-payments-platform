@@ -21,8 +21,9 @@ POST /v1/clearing-files {fileName}  or  the drop-folder check, every 30 s
             ├─ validate   tasklet, one transaction: header, every record, trailer parse; clearing_file row IMPORTING
             ├─ import     chunks of 100, each one transaction:
             │               read 100 ─▶ for each: vault.cardFor(PAN), cards.find, authorizations.find
-            │                           matched: cards.clear, journal.postClearing, holds.clear
-            │                           record the Clearing (MATCHED or UNMATCHED)
+            │                           a known card: cards.clear, holds.isReleased, holds.clear
+            │                           the outcome; journal.postClearing (or …ToSuspense)
+            │                           record the Clearing with its outcome
             │               + the reader's position into the step's execution context, same commit
             ├─ settle     tasklet, one transaction: total the posted Clearings; post the trailer's figure;
             │               record the Settlement (keyed by the file ID, so a second run adds nothing)

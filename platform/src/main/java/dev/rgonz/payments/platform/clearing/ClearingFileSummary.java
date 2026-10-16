@@ -2,11 +2,13 @@ package dev.rgonz.payments.platform.clearing;
 
 import dev.rgonz.payments.platform.shared.Money;
 import java.time.LocalDate;
+import java.util.Map;
 
 /**
  * A Clearing File the platform received, as its header and its Clearings describe it.
  *
  * @param recordCount the number of Clearings in the file
+ * @param outcomes how many of its recorded Clearings ended with each outcome, zero included
  * @param settlement the file's Settlement; null until the file is settled
  */
 record ClearingFileSummary(
@@ -15,7 +17,12 @@ record ClearingFileSummary(
     LocalDate businessDate,
     Status status,
     long recordCount,
+    Map<ClearingOutcome, Long> outcomes,
     Settlement settlement) {
+
+  ClearingFileSummary {
+    outcomes = Map.copyOf(outcomes);
+  }
 
   enum Status {
     /** Its Clearings are being posted, or an import of it stopped partway. */

@@ -3,10 +3,12 @@ package dev.rgonz.payments.platform.clearing;
 import dev.rgonz.payments.contracts.server.ClearingFilesApi;
 import dev.rgonz.payments.contracts.server.model.ClearingFileDto;
 import dev.rgonz.payments.contracts.server.model.ClearingFileImportDto;
+import dev.rgonz.payments.contracts.server.model.ClearingOutcomeCountsDto;
 import dev.rgonz.payments.contracts.server.model.MoneyDto;
 import dev.rgonz.payments.contracts.server.model.SettlementDto;
 import dev.rgonz.payments.platform.clearing.ClearingFileImports.ImportResult;
 import dev.rgonz.payments.platform.shared.Money;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -64,7 +66,29 @@ class ClearingFilesController implements ClearingFilesApi {
         .businessDate(file.businessDate())
         .status(ClearingFileDto.StatusEnum.fromValue(file.status().name()))
         .recordCount(file.recordCount())
+        .outcomes(toDto(file.outcomes()))
         .settlement(file.settlement() == null ? null : toDto(file.settlement()));
+  }
+
+  private static ClearingOutcomeCountsDto toDto(Map<ClearingOutcome, Long> outcomes) {
+    var counts = new ClearingOutcomeCountsDto();
+    outcomes.forEach((outcome, count) -> withCount(counts, outcome, count));
+    return counts;
+  }
+
+  // A switch expression: an outcome added without its count here doesn't compile.
+  private static ClearingOutcomeCountsDto withCount(
+      ClearingOutcomeCountsDto counts, ClearingOutcome outcome, long count) {
+    return switch (outcome) {
+      case MATCHED -> counts.matched(count);
+      case ABOVE_AUTHORIZED_AMOUNT -> counts.aboveAuthorizedAmount(count);
+      case NO_AUTHORIZATION -> counts.noAuthorization(count);
+      case UNKNOWN_CARD -> counts.unknownCard(count);
+      case OTHER_CURRENCY -> counts.otherCurrency(count);
+      case AGAINST_REVERSED_AUTHORIZATION -> counts.againstReversedAuthorization(count);
+      case AFTER_HOLD_EXPIRED -> counts.afterHoldExpired(count);
+      case AUTHORIZATION_ALREADY_CLEARED -> counts.authorizationAlreadyCleared(count);
+    };
   }
 
   private static SettlementDto toDto(ClearingFileSummary.Settlement settlement) {
