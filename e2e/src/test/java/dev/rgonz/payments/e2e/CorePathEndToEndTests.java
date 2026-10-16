@@ -19,6 +19,8 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.json.JsonContent;
 import org.springframework.test.util.TestSocketUtils;
 import org.springframework.web.client.RestClient;
@@ -64,11 +66,12 @@ class CorePathEndToEndTests {
 
   private static ConfigurableApplicationContext platform;
   private static ConfigurableApplicationContext simulator;
+  private static int platformPort;
   private static int simulatorPort;
 
   @BeforeAll
   static void startBothApps() {
-    var platformPort = TestSocketUtils.findAvailableTcpPort();
+    platformPort = TestSocketUtils.findAvailableTcpPort();
     // The Network link's gRPC server, off the fixed 9090 another build may be using.
     var platformGrpcPort = TestSocketUtils.findAvailableTcpPort();
     simulatorPort = TestSocketUtils.findAvailableTcpPort();
@@ -195,6 +198,16 @@ class CorePathEndToEndTests {
     assertThat(json).extractingPath("$.globexReceived.invoiceNumber").isEqualTo(invoiceNumber);
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
     assertThat(json).extractingPath("$.authorization.authorizationCode").asString().hasSize(6);
+    // Until the Charge clears, its Hold reserves Acme's credit.
+    assertThat(acmesCredit())
+        .isLenientlyEqualTo(
+            """
+            {
+              "openHolds": {"minorUnits": 1240000, "currency": "USD"},
+              "buyerReceivable": {"minorUnits": 0, "currency": "USD"},
+              "availableCredit": {"minorUnits": 8760000, "currency": "USD"}
+            }
+            """);
 
     var imported =
         RestClient.create()
@@ -217,9 +230,44 @@ class CorePathEndToEndTests {
               }
             }
             """);
+    // The Hold became posted spend: Acme owes the cleared amount, and its Available Credit counts
+    // that instead of the Hold.
+    assertThat(acmesCredit())
+        .isLenientlyEqualTo(
+            """
+            {
+              "openHolds": {"minorUnits": 0, "currency": "USD"},
+              "buyerReceivable": {"minorUnits": 1240000, "currency": "USD"},
+              "availableCredit": {"minorUnits": 8760000, "currency": "USD"}
+            }
+            """);
     // The platform deletes a file once it has imported it: the shared drop folder is empty again.
     try (var left = Files.walk(dropFolder)) {
       assertThat(left.filter(Files::isRegularFile)).isEmpty();
     }
+  }
+
+  // Acme's credit, as Issuer staff read it: signed in through Keycloak as the simulator's
+  // issuer-admin client.
+  private static JsonContent acmesCredit() {
+    String tokenResponse =
+        RestClient.create()
+            .post()
+            .uri(keycloak.getAuthServerUrl() + "/realms/payments/protocol/openid-connect/token")
+            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+            .body(
+                "grant_type=client_credentials&client_id=simulator-issuer-admin&client_secret="
+                    + CLIENT_SECRET)
+            .retrieve()
+            .body(String.class);
+    String accessToken = JsonPath.read(tokenResponse, "$.access_token");
+    var acme = simulator.getEnvironment().getRequiredProperty("simulator.acme.buyer-id");
+    return new JsonContent(
+        RestClient.create()
+            .get()
+            .uri("http://localhost:{port}/v1/buyers/{buyerId}/credit", platformPort, acme)
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+            .retrieve()
+            .body(String.class));
   }
 }
