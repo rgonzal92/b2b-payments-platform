@@ -1,6 +1,6 @@
 # A Supplier's Charges are declined `57`
 
-**Signals:** every `Authorize` on one Supplier's cards answers `57` (not permitted); the platform logs `Authorization … answered 57`; rows in `"authorization".authorizations` for those cards have `response_code = '57'` and a `card_token`.
+**Signals:** every `Authorize` on one Supplier's cards answers `57` (not permitted); the platform logs `Authorization … answered 57`; rows in `"authorization".authorizations` for those cards have `response_code = '57'` and a `card_token`. A `57` also answers a second Charge on a card that already has an approved Authorization; in the query below those rows show the same Acceptor ID on both sides, and aren't this failure.
 
 Authorization approves a Charge only when its Acceptor ID (DE 42) is exactly the one stored for the card's Supplier, and a card whose Supplier has no Acceptor ID can't be charged at all (see [The Network link](../architecture.md#the-network-link)). The Supplier's Acceptor ID comes from the Buyer's ERP: the first Invoice that carries one sets it, and a different one on a later Invoice is ignored. So either no Invoice has given the Supplier one, or the first one it got isn't what its Acquirer sends. A decline changes nothing: the card stays `ACTIVE` with its Hold until it expires, so the Supplier can charge it again once the Acceptor ID is right.
 

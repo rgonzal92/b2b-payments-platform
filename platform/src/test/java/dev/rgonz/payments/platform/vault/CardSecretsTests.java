@@ -15,7 +15,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
- * The vault stores each card's PAN on PostgreSQL, one card per PAN, and finds a card by its PAN.
+ * The vault stores each card's PAN on PostgreSQL, one card per PAN, finds a card by its PAN, and
+ * checks a security code without returning the stored one.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -38,6 +39,18 @@ class CardSecretsTests {
   void anUnknownPanFindsNoCard() {
     // Outside the 990000 range the vault draws from, so no card has it.
     assertThat(vault.cardFor("4000000000000002")).isEmpty();
+  }
+
+  @Test
+  void theCardsOwnSecurityCodeMatchesAndAnyOtherDoesNot() {
+    var cardToken = "card-" + UUID.randomUUID();
+    vault.generatePan(cardToken);
+    var securityCode = vault.cardDetails(cardToken).securityCode();
+    var otherCode = String.format("%03d", (Integer.parseInt(securityCode) + 1) % 1_000);
+
+    assertThat(vault.securityCodeMatches(cardToken, securityCode)).isTrue();
+    assertThat(vault.securityCodeMatches(cardToken, otherCode)).isFalse();
+    assertThat(vault.securityCodeMatches(cardToken, "")).isFalse();
   }
 
   @Test
