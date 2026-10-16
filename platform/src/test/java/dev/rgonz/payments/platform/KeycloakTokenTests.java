@@ -2,6 +2,7 @@ package dev.rgonz.payments.platform;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.nimbusds.jwt.JWTParser;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
 import java.util.Map;
 import java.util.UUID;
@@ -35,7 +36,8 @@ class KeycloakTokenTests {
       // Same image as compose.yaml: change both together.
       new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
           .withRealmImportFile("/keycloak/payments-realm.json")
-          .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET);
+          .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)
+          .withEnv("ACME_ERP_SECRET", CLIENT_SECRET);
 
   @DynamicPropertySource
   static void issuer(DynamicPropertyRegistry registry) {
@@ -59,6 +61,50 @@ class KeycloakTokenTests {
                 """)
             .exchange();
 
+    assertThat(response).hasStatus(201);
+  }
+
+  @Test
+  void acmesErpGetsATokenForAcmeAndSubmitsAnInvoice() throws Exception {
+    var acmeId = "dc9a9857-e40f-4d50-9ee3-879f0c7472c5";
+    var acme =
+        mvc.put()
+            .uri("/v1/buyers/{buyerId}", acmeId)
+            .header("Authorization", "Bearer " + clientCredentialsToken("simulator-issuer-admin"))
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(
+                """
+                {"name": "Acme", "approvalThreshold": {"minorUnits": 1000000, "currency": "USD"}}
+                """)
+            .exchange();
+    assertThat(acme).hasStatus(201);
+
+    var token = clientCredentialsToken("acme-erp");
+    var response =
+        mvc.post()
+            .uri("/v1/invoices")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(
+                """
+                {
+                  "supplier": {
+                    "name": "Globex",
+                    "taxId": "12-3456789",
+                    "buyerReference": "GLOBEX-01",
+                    "remittanceAddress": "https://globex.example/remittance-advice"
+                  },
+                  "invoiceNumber": "INV-1",
+                  "amount": {"minorUnits": 1240000, "currency": "USD"},
+                  "dueDate": "2026-11-30"
+                }
+                """)
+            .exchange();
+
+    var claims = JWTParser.parse(token).getJWTClaimsSet();
+    assertThat(claims.getStringClaim("buyer_id")).isEqualTo(acmeId);
+    assertThat(claims.getStringListClaim("roles")).contains("erp");
     assertThat(response).hasStatus(201);
   }
 

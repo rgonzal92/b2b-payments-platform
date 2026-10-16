@@ -1,6 +1,7 @@
 package dev.rgonz.payments.simulator;
 
 import dev.rgonz.payments.contracts.client.BuyersApi;
+import dev.rgonz.payments.contracts.client.InvoicesApi;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -27,5 +28,18 @@ class PlatformClients {
     return HttpServiceProxyFactory.builderFor(RestClientAdapter.create(restClient))
         .build()
         .createClient(BuyersApi.class);
+  }
+
+  @Bean
+  InvoicesApi invoicesApi(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl) {
+    var acmeErp = new OAuth2ClientHttpRequestInterceptor(clients);
+    acmeErp.setClientRegistrationIdResolver(request -> "acme-erp");
+    var restClient = builder.baseUrl(platformUrl).requestInterceptor(acmeErp).build();
+    return HttpServiceProxyFactory.builderFor(RestClientAdapter.create(restClient))
+        .build()
+        .createClient(InvoicesApi.class);
   }
 }
