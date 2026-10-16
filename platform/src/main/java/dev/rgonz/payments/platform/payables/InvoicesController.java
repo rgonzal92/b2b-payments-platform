@@ -1,6 +1,7 @@
 package dev.rgonz.payments.platform.payables;
 
 import dev.rgonz.payments.contracts.server.InvoicesApi;
+import dev.rgonz.payments.contracts.server.model.DecisionDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceRequestDto;
 import dev.rgonz.payments.contracts.server.model.InvoiceSupplierDto;
@@ -11,7 +12,9 @@ import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.SupplierOnInvoice;
 import dev.rgonz.payments.platform.suppliers.SupplierRelationship;
 import dev.rgonz.payments.platform.suppliers.Suppliers;
+import java.time.ZoneOffset;
 import java.util.Currency;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -29,16 +32,22 @@ class InvoicesController implements InvoicesApi {
   private final Suppliers suppliers;
   private final IdempotentRequests idempotentRequests;
   private final BuyerDirectory buyers;
+  private final Approvals approvals;
+  private final Decisions decisions;
 
   InvoicesController(
       Invoices invoices,
       Suppliers suppliers,
       IdempotentRequests idempotentRequests,
-      BuyerDirectory buyers) {
+      BuyerDirectory buyers,
+      Approvals approvals,
+      Decisions decisions) {
     this.invoices = invoices;
     this.suppliers = suppliers;
     this.idempotentRequests = idempotentRequests;
     this.buyers = buyers;
+    this.approvals = approvals;
+    this.decisions = decisions;
   }
 
   @Override
@@ -80,19 +89,38 @@ class InvoicesController implements InvoicesApi {
       throw problem(
           HttpStatus.CONFLICT, "This Buyer already has an Invoice with this Supplier and number.");
     }
-    return ResponseEntity.status(HttpStatus.CREATED).body(toDto(invoice, relationship));
+    return ResponseEntity.status(HttpStatus.CREATED).body(toDto(invoice, relationship, List.of()));
   }
 
   @Override
   @PreAuthorize("hasAnyRole('erp', 'approver')")
   public ResponseEntity<InvoiceDto> getInvoice(UUID invoiceId) {
+    return ResponseEntity.ok(current(currentBuyer(), invoiceId));
+  }
+
+  @Override
+  @PreAuthorize("hasRole('approver')")
+  public ResponseEntity<InvoiceDto> approveInvoice(UUID invoiceId) {
     var buyerId = currentBuyer();
+    approvals.approve(buyerId, invoiceId, currentApprover());
+    return ResponseEntity.ok(current(buyerId, invoiceId));
+  }
+
+  @Override
+  @PreAuthorize("hasRole('approver')")
+  public ResponseEntity<InvoiceDto> rejectInvoice(UUID invoiceId) {
+    var buyerId = currentBuyer();
+    approvals.reject(buyerId, invoiceId, currentApprover());
+    return ResponseEntity.ok(current(buyerId, invoiceId));
+  }
+
+  private InvoiceDto current(BuyerId buyerId, UUID invoiceId) {
     var invoice =
         invoices
             .find(buyerId, invoiceId)
             .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No such Invoice."));
     var relationship = suppliers.find(buyerId, invoice.supplierId()).orElseThrow();
-    return ResponseEntity.ok(toDto(invoice, relationship));
+    return toDto(invoice, relationship, decisions.of(invoiceId));
   }
 
   // The Buyer always comes from the token, never from the request, so one Buyer can't act as
@@ -113,6 +141,15 @@ class InvoicesController implements InvoicesApi {
     throw problem(HttpStatus.FORBIDDEN, "Your token isn't linked to a known Buyer.");
   }
 
+  // The subject is the Approver's stable ID; the user name only makes the record readable.
+  private static Approver currentApprover() {
+    var token =
+        ((JwtAuthenticationToken) SecurityContextHolder.getContext().getAuthentication())
+            .getToken();
+    var name = token.getClaimAsString("preferred_username");
+    return new Approver(token.getSubject(), name != null ? name : token.getSubject());
+  }
+
   private static ErrorResponseException problem(HttpStatus status, String detail) {
     return new ErrorResponseException(
         status, ProblemDetail.forStatusAndDetail(status, detail), null);
@@ -122,7 +159,8 @@ class InvoicesController implements InvoicesApi {
     return new Money(money.getMinorUnits(), Currency.getInstance(money.getCurrency().getValue()));
   }
 
-  private static InvoiceDto toDto(Invoice invoice, SupplierRelationship relationship) {
+  private static InvoiceDto toDto(
+      Invoice invoice, SupplierRelationship relationship, List<Decision> decisions) {
     var supplier = relationship.supplier();
     return new InvoiceDto()
         .id(invoice.id())
@@ -140,6 +178,15 @@ class InvoicesController implements InvoicesApi {
                 .minorUnits(invoice.amount().minorUnits())
                 .currency(
                     MoneyDto.CurrencyEnum.fromValue(invoice.amount().currency().getCurrencyCode())))
-        .dueDate(invoice.dueDate());
+        .dueDate(invoice.dueDate())
+        .decisions(decisions.stream().map(InvoicesController::toDto).toList());
+  }
+
+  private static DecisionDto toDto(Decision decision) {
+    return new DecisionDto()
+        .decision(DecisionDto.DecisionEnum.fromValue(decision.outcome().name()))
+        .approverId(decision.approver().id())
+        .approverName(decision.approver().name())
+        .decidedAt(decision.decidedAt().atOffset(ZoneOffset.UTC));
   }
 }

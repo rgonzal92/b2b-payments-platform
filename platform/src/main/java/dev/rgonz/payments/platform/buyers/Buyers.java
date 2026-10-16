@@ -53,6 +53,11 @@ class Buyers implements BuyerDirectory {
   }
 
   @Override
+  public Optional<Money> approvalThreshold(BuyerId id) {
+    return find(id).map(Buyer::approvalThreshold);
+  }
+
+  @Override
   public boolean exists(BuyerId id) {
     return jdbc.sql("select exists (select 1 from buyers.buyer where id = :id)")
         .param("id", id.value())

@@ -17,4 +17,12 @@ public record Money(long minorUnits, Currency currency) {
     }
     return new Money(Math.subtractExact(minorUnits, other.minorUnits), currency);
   }
+
+  public boolean isMoreThan(Money other) {
+    if (!currency.equals(other.currency)) {
+      throw new IllegalArgumentException(
+          "Can't compare " + currency + " with " + other.currency + ".");
+    }
+    return minorUnits > other.minorUnits;
+  }
 }
