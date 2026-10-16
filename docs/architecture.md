@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 (foundations) and M1 (Invoice to card) are done. The M1 modules are built: `shared`, `buyers`, `ledger` (Credit Lines and Holds), `suppliers` (Suppliers, Supplier Relationships, Remittance Advice), `payables` (Invoice intake, approvals, the Payment saga), `cards` (Single-Use Cards) and `vault`. M2 (Authorization) is under way: `authorization` answers the Network over gRPC (see [The Network link](#the-network-link)). `clearing` and `reconciliation` arrive with M3 and M4, as the module table shows. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
+**Status:** M0 (foundations) and M1 (Invoice to card) are done. The M1 modules are built: `shared`, `buyers`, `ledger` (Credit Lines and Holds), `suppliers` (Suppliers, Supplier Relationships, Remittance Advice), `payables` (Invoice intake, approvals, the Payment saga), `cards` (Single-Use Cards) and `vault`. M2 (Authorization) is under way: `authorization` answers the Network over gRPC (see [The Network link](#the-network-link)), and the simulator's Acquirer and Network charge Globex's card through it (see [The simulator](#the-simulator)). `clearing` and `reconciliation` arrive with M3 and M4, as the module table shows. Terms follow [`GLOSSARY.md`](../GLOSSARY.md), and the reasoning behind each choice is in [`docs/adr/`](adr/). The milestone plan is in the [README](../README.md#roadmap).
 
 ## System context
 
@@ -265,17 +265,19 @@ sequenceDiagram
 - **The PAN stays in the vault (ADR-0004):** `authorization` holds the PAN and security code in memory only, on their way to the vault. Nothing logs a request (a protobuf message's `toString` prints every field) or puts a request field in an exception message; the one log line per answer names its request ID and response code. Traces record the RPC's full method name, its status and the caller's address and port (Micrometer's gRPC observation), never message fields or metadata.
 - **How it works and why:** [`learning/grpc.md`](learning/grpc.md). When the Network's calls are refused: [`runbooks/keycloak-unavailable.md`](runbooks/keycloak-unavailable.md); when every Charge answers `14`, or fails `UNKNOWN`: [`runbooks/vault-key-invalid.md`](runbooks/vault-key-invalid.md); when a Supplier's Charges answer `57`: [`runbooks/supplier-charges-declined.md`](runbooks/supplier-charges-declined.md).
 
-## The simulator in M1
+## The simulator
 
-The `simulator` plays every party on M1's core path other than the platform; each role that calls the platform signs in as its own Keycloak client:
+The `simulator` plays every party on the core path other than the platform; each role that calls the platform signs in as its own Keycloak client:
 
 | Role | Class | What it does |
 |---|---|---|
 | Issuer staff | `AcmeSeeder` | At startup, creates the Buyer Acme (fixed ID, Approval Threshold $10,000) and gives it a $100,000 Credit Line (`simulator-issuer-admin`) |
 | Acme's ERP | `AcmeErp` | Submits Invoices from Globex, with Globex's Acceptor ID (`simulator.globex.acceptor-id`), under a new `Idempotency-Key` each, and reads them back (`acme-erp`) |
 | Acme's Approvers | `AcmeApprovers` | Approve on request, as `acme-approver-1` or `acme-approver-2` |
-| Supplier Globex | `GlobexSupplier` | Receives Remittance Advice at `/globex/remittance-advice`, drops repeats by `Idempotency-Key`, opens each card link once with an untraced client, and keeps only the last four digits, expiry and amount |
-| Demo | `AcmeDemo` | `POST /demo/invoices[?minorUnits=…]`: runs the whole path in one call (below) |
+| Supplier Globex | `GlobexSupplier` | Receives Remittance Advice at `/globex/remittance-advice`, drops repeats by `Idempotency-Key`, opens each card link once with an untraced client, keeps the card's details in memory, and charges the card for its full amount through its Acquirer |
+| Globex's Acquirer | `GlobexAcquirer` | Turns Globex's Charge into an Authorization request: the card's PAN, security code, amount and currency, and expiry month (`YYMM`, in UTC); the time sent; a STAN counting from `000001`; a retrieval reference number of 12 random letters and digits; Globex's Acceptor ID and name; the made-up category code `5085` |
+| Network | `Network` | Sends the Acquirer's request to the platform's `Authorize` over gRPC and returns the answer, signed in as `network` (below) |
+| Demo | `AcmeDemo` | `POST /demo/invoices[?minorUnits=…]`: runs the whole path in one call, the Charge included (below) |
 
 ```mermaid
 sequenceDiagram
@@ -283,6 +285,7 @@ sequenceDiagram
   participant DEMO as simulator: AcmeDemo
   participant PLT as platform
   participant GLX as simulator: Globex
+  participant NET as simulator: Acquirer, Network
 
   You->>DEMO: POST /demo/invoices
   DEMO->>PLT: POST /v1/invoices (as acme-erp)
@@ -294,8 +297,17 @@ sequenceDiagram
   Note over PLT: the worker places the Hold, issues the card, delivers the advice
   PLT->>GLX: POST /globex/remittance-advice
   GLX->>PLT: GET /v1/remittance-links/{token}
-  DEMO-->>You: Invoice, approvers, Payment state, what Globex received (no PAN)
+  DEMO->>GLX: the Payment is COMPLETED: charge the card
+  GLX->>NET: the Charge: the card and its amount
+  NET->>PLT: Authorize (gRPC, authorization: Bearer <network token>)
+  PLT-->>NET: 00 and an authorization code, or a decline code
+  NET-->>DEMO: the Issuer's answer, through Globex
+  DEMO-->>You: Invoice, approvers, Payment state, what Globex received (no PAN), the Charge's answer
 ```
+
+- **The Network's channel:** Spring Boot's gRPC client starter builds the channel named `platform` from `spring.grpc.client.channel.platform.target`, which is `static://` plus `simulator.platform-grpc-address` (`localhost:9090` by default). The channel is plaintext, like the platform's server, until M7. The Network signs in as the Keycloak client `network` (secret `NETWORK_CLIENT_SECRET` from `.env`) through the same authorized-client manager as the REST clients, so it reuses its token until the token expires. Spring gRPC's `BearerTokenAuthenticationInterceptor` puts the token in every call's `authorization` metadata. There is no deadline yet: the 1-second deadline, the decline on a timeout and the Reversal come with #37.
+- **Card details in the simulator:** Globex keeps the PAN and security code it reads through the link in memory only, to charge the card. Its record's `toString` leaves both out, logs show the last four digits at most, and the demo's Summary shows a copy of the card without them. Nothing logs the Authorization request, since a protobuf message's `toString` prints every field. The one log line per Charge names its retrieval reference number, the card's last four digits, the Invoice number and the response code.
+- **The demo's Charge:** once the Payment is `COMPLETED`, Globex already has the card, and the demo has it charge the card. The Summary's `charge` shows `approved`, the `responseCode` and the `authorizationCode` (null on a decline). It is null when the Payment didn't complete.
 
 - **One trace across both apps.** Both apps export traces to Grafana's Tempo over OTLP, and Spring's HTTP clients pass the trace context on (W3C `traceparent`). The demo's request is one trace, rooted at the simulator's `http post /demo/invoices`, holding the platform's spans for the Invoice submission, the approvals and every read. Delivering the advice is a trace of its own, rooted at the worker's task (`task paymentWorkerSchedule.runDueSteps`), that continues into Globex's `http post /globex/remittance-advice`. A card link's GET is deliberately untraced on Globex's side and recorded by its route on the platform's.
 
@@ -305,8 +317,8 @@ sequenceDiagram
 - **No PAN outside the vault:** the same test class reads the PAN and security code through the link, has the Network charge the card with them over gRPC, then searches every column of every table outside `vault` (the `authorization` schema included) and the captured logs, the gRPC call's included, for either.
 - **A crash at each Payment state** (`PaymentSagaTests`): the platform stops mid-step after `STARTED`, `HOLD_PLACED` and `CARD_ISSUED`, and the next pass completes the Payment with one Hold and one card.
 - **Module boundaries:** `ModularityTests` (Spring Modulith's verification, and only `cards`, `suppliers` and `authorization` using `vault`).
-- **The simulator's roles and the demo** against stub Keycloak and platform servers.
-- **The core path through both apps** (`e2e`, `CorePathEndToEndTests`): the platform and the simulator run in one JVM against real PostgreSQL and Keycloak, and the simulator's demo endpoint takes an Invoice through two approvals to a completed Payment whose card Globex opens through its link. `docs/learning/testcontainers.md` explains how two apps share one JVM.
+- **The simulator's roles and the demo** against stub Keycloak and platform servers, and a stub `IssuerAuthorization` gRPC server: after the Payment completes, the demo's Summary shows the Charge's answer (`AcmeDemoTests`).
+- **The core path through both apps** (`e2e`, `CorePathEndToEndTests`): the platform and the simulator run in one JVM against real PostgreSQL and Keycloak. The simulator's demo endpoint takes an Invoice through two approvals to a completed Payment, Globex opens the card through its link and charges it, and the platform approves the Charge (`00`, a six-character authorization code). `docs/learning/testcontainers.md` explains how two apps share one JVM.
 
 ## How the Network link is proven
 
@@ -316,6 +328,7 @@ sequenceDiagram
 - **A resent request** (`AuthorizeTests`): the same request ID again, with another amount, gets the first answer and leaves one row; eight requests with one request ID at once record one Authorization, all get its answer, and the card moves once.
 - **The Supplier's Acceptor ID** (`InvoicesApiTests`): an Invoice carrying one stores it on the Supplier, later Invoices show it, a different one later doesn't change it, and Invoices without one are still accepted.
 - **The vault finds a card by its PAN and checks its security code** (`CardSecretsTests`): a known PAN gives its Card Token, an unknown one nothing; the card's own security code matches, any other doesn't.
+- **The simulator's Acquirer and Network** (`GlobexAcquirerTests`): against a stub Keycloak and a stub `IssuerAuthorization` server on a free port. The request carries Globex's Acceptor ID and name and the card's PAN, security code, amount, currency and expiry month in UTC: `2612` for a card that expires at 21:00 on 30 November 2026 in New York. Each Charge has its own retrieval reference number and STAN, and the metadata carries the `network` client's token as `Bearer`. An approval and a decline come back to Globex as the stub sent them. Neither the card record's `toString` nor a Charge's logs show the PAN or security code.
 
 ## Quality targets
 
