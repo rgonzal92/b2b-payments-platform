@@ -28,6 +28,7 @@ import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.RemittanceAdvices;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.time.Duration;
@@ -97,6 +98,7 @@ class PaymentSagaTests {
   @Autowired JdbcClient jdbc;
   @Autowired MockRestServiceServer supplier;
   @Autowired ApplicationContext context;
+  @Autowired MeterRegistry meters;
   @MockitoSpyBean Holds holds;
   @MockitoSpyBean Cards cards;
   @MockitoSpyBean RemittanceAdvices remittanceAdvices;
@@ -158,6 +160,31 @@ class PaymentSagaTests {
             """
             {"status": "APPROVED", "payment": {"state": "COMPLETED"}}
             """);
+  }
+
+  // The Payments dashboard reads these meters (grafana/dashboards/payments.json).
+  @Test
+  void eachStateAPaymentReachesIsCountedAndEachStepTimed() throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var states = List.of("STARTED", "HOLD_PLACED", "CARD_ISSUED", "COMPLETED", "FAILED");
+    var steps = List.of("place-hold", "issue-card", "deliver-remittance-advice");
+    var reachedBefore = states.stream().map(this::paymentsReached).toList();
+    var timedBefore = steps.stream().map(this::stepsTimed).toList();
+    approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
+
+    saga.runDueSteps(Instant.now());
+
+    assertThat(states.stream().map(this::paymentsReached).toList())
+        .isEqualTo(
+            List.of(
+                reachedBefore.get(0) + 1,
+                reachedBefore.get(1) + 1,
+                reachedBefore.get(2) + 1,
+                reachedBefore.get(3) + 1,
+                reachedBefore.get(4)));
+    assertThat(steps.stream().map(this::stepsTimed).toList())
+        .isEqualTo(List.of(timedBefore.get(0) + 1, timedBefore.get(1) + 1, timedBefore.get(2) + 1));
   }
 
   @Test
@@ -743,6 +770,17 @@ class PaymentSagaTests {
                     .formatted(creditLine))
             .exchange();
     assertThat(response).hasStatus(expectedStatus);
+  }
+
+  // The test context's registry outlives each test, so a test compares counts before and after.
+  private double paymentsReached(String state) {
+    var counter = meters.find("payments.state.changes").tag("state", state).counter();
+    return counter == null ? 0 : counter.count();
+  }
+
+  private long stepsTimed(String step) {
+    var timer = meters.find("payments.steps").tag("step", step).timer();
+    return timer == null ? 0 : timer.count();
   }
 
   // Submitted, approved, and its Payment started by InvoiceApproved, which arrives asynchronously.

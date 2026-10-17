@@ -25,6 +25,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.NettyChannelBuilder;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.UnsupportedEncodingException;
 import java.time.Duration;
 import java.time.Instant;
@@ -105,6 +106,7 @@ class AuthorizeTests {
   @Autowired Holds holds;
   @Autowired Vault vault;
   @Autowired Suppliers suppliers;
+  @Autowired MeterRegistry meters;
 
   @LocalGrpcServerPort int port;
 
@@ -286,6 +288,20 @@ class AuthorizeTests {
         .containsEntry("response_code", answer)
         .containsEntry("authorization_code", null)
         .containsEntry("status", "DECLINED");
+  }
+
+  // The Authorization dashboard reads this counter (grafana/dashboards/authorization.json).
+  @Test
+  void everyAnswerIsCountedByItsResponseCode() throws Exception {
+    var card = issuedCard(buyerWithCreditLine(10_000_000));
+    var approvedBefore = answersCounted("00");
+    var declinedBefore = answersCounted("57");
+
+    authorize(chargeOn(card));
+    authorize(chargeOn(card));
+
+    assertThat(answersCounted("00")).isEqualTo(approvedBefore + 1);
+    assertThat(answersCounted("57")).isEqualTo(declinedBefore + 1);
   }
 
   @Test
@@ -618,6 +634,12 @@ class AuthorizeTests {
         .setRetrievalReferenceNumber(UUID.randomUUID().toString())
         .setCardAcceptorId(ACCEPTOR_ID)
         .setCardAcceptorName("Globex, Springfield");
+  }
+
+  // The test context's registry outlives each test, so a test compares counts before and after.
+  private double answersCounted(String responseCode) {
+    var counter = meters.find("authorization.answers").tag("response.code", responseCode).counter();
+    return counter == null ? 0 : counter.count();
   }
 
   private AuthorizationResponse authorize(AuthorizationRequest.Builder request) {

@@ -176,6 +176,82 @@
       ]
     },
     {
+      "clientId": "initech-erp",
+      "description": "Initech's ERP, the load test's Buyer, played by the simulator",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "${INITECH_ERP_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "realm roles as roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "Initech as buyer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "buyer_id",
+            "claim.value": "13542409-3211-4b3d-8ba0-3762801cffcd",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "initech-approver",
+      "description": "Initech's Approver, played by the simulator",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "${INITECH_APPROVER_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "realm roles as roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "Initech as buyer_id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "buyer_id",
+            "claim.value": "13542409-3211-4b3d-8ba0-3762801cffcd",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
       "clientId": "network",
       "description": "The card Network, played by the simulator",
       "enabled": true,
@@ -224,6 +300,18 @@
       "username": "service-account-acme-approver-2",
       "enabled": true,
       "serviceAccountClientId": "acme-approver-2",
+      "realmRoles": ["approver"]
+    },
+    {
+      "username": "service-account-initech-erp",
+      "enabled": true,
+      "serviceAccountClientId": "initech-erp",
+      "realmRoles": ["erp"]
+    },
+    {
+      "username": "service-account-initech-approver",
+      "enabled": true,
+      "serviceAccountClientId": "initech-approver",
       "realmRoles": ["approver"]
     },
     {

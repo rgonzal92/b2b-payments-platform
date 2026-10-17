@@ -1,0 +1,15 @@
+# Grafana reads this at startup from /otel-lgtm/grafana/conf/provisioning/dashboards/, beside the image's own
+# providers, and loads every dashboard in the folder compose.yaml mounts (docs/learning/grafana-provisioning.md).
+apiVersion: 1
+
+providers:
+  - name: "B2B Payments"
+    type: file
+    folder: "B2B Payments"
+    # The files are the source: Grafana won't save a UI edit over them. Export the edited JSON into
+    # grafana/dashboards/ instead, and Grafana picks the file up within updateIntervalSeconds.
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /otel-lgtm/b2b-payments-dashboards
+      foldersFromFilesStructure: false
