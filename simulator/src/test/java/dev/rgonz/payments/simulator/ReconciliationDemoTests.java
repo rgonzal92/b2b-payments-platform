@@ -169,7 +169,7 @@ class ReconciliationDemoTests {
                               "33333333-3333-4333-8333-333333333333",
                               "NEVER_CLEARED",
                               today.minusDays(1),
-                              "\"dc9a9857-e40f-4d50-9ee3-879f0c7472c5\"",
+                              "dc9a9857-e40f-4d50-9ee3-879f0c7472c5",
                               1000))
                   : """
                     {"items": [%s, %s], "nextCursor": "page-2"}
@@ -185,7 +185,7 @@ class ReconciliationDemoTests {
                               "22222222-2222-4222-8222-222222222222",
                               "UNDERCHARGE",
                               today,
-                              "\"dc9a9857-e40f-4d50-9ee3-879f0c7472c5\"",
+                              "dc9a9857-e40f-4d50-9ee3-879f0c7472c5",
                               500)));
         });
     server.start();
@@ -205,7 +205,7 @@ class ReconciliationDemoTests {
             id,
             kind,
             businessDate,
-            buyerId == null ? "" : "\"buyerId\": " + buyerId + ", ",
+            buyerId == null ? "" : "\"buyerId\": \"" + buyerId + "\", ",
             gap,
             CARD_TOKEN,
             businessDate);
