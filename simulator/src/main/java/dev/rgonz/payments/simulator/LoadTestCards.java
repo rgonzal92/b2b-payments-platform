@@ -46,9 +46,9 @@ class LoadTestCards {
   private static final Logger log = LoggerFactory.getLogger(LoadTestCards.class);
   // $10.00.
   private static final long AMOUNT = 1_000;
-  // Invoices in flight at once. The platform's saga runs up to 10 steps a second and a Payment
-  // takes
-  // three, so a few dozen keep it busy; more would only wait in its queue.
+  // Invoices in flight at once. The platform's saga worker runs at most 10 steps a pass, a pass
+  // about a second apart, and a Payment takes three steps: a few dozen in flight keep every pass
+  // full, and more would only wait in its queue. The worker, not this number, sets the pace.
   private static final int IN_FLIGHT = 32;
   private static final Duration PAYMENT_WAIT = Duration.ofMinutes(2);
   private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
@@ -84,14 +84,14 @@ class LoadTestCards {
     // Invoice numbers are unique per Buyer and Supplier: each run gets its own prefix.
     var run = "LT-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     var started = Instant.now();
-    var settled = new AtomicInteger();
+    var done = new AtomicInteger();
     log.info("Load-test run {} sends {} Invoices from Initech to Globex", run, count);
     var futures = new ArrayList<Future<Optional<ReceivedCard>>>(count);
     // Closing the executor waits for every Invoice.
     try (var executor = Executors.newFixedThreadPool(IN_FLIGHT)) {
       IntStream.rangeClosed(1, count)
           .mapToObj(n -> "%s-%05d".formatted(run, n))
-          .forEach(number -> futures.add(executor.submit(() -> cardFor(number, settled, count))));
+          .forEach(number -> futures.add(executor.submit(() -> cardFor(number, done, count))));
     }
     var lines = new ArrayList<String>(count + 1);
     lines.add(HEADER);
@@ -116,7 +116,7 @@ class LoadTestCards {
   // Sends one Invoice, approves it and waits for its Payment; the card Globex received once it
   // completed, or empty. A failure here ends only this Invoice, logged without the platform's
   // message.
-  private Optional<ReceivedCard> cardFor(String invoiceNumber, AtomicInteger settled, int count) {
+  private Optional<ReceivedCard> cardFor(String invoiceNumber, AtomicInteger done, int count) {
     try {
       var invoiceId =
           initech
@@ -150,11 +150,14 @@ class LoadTestCards {
       return Optional.empty();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+      log.warn(
+          "Load-test Invoice {} has no card: the wait for its Payment was interrupted",
+          invoiceNumber);
       return Optional.empty();
     } finally {
-      var done = settled.incrementAndGet();
-      if (done % PROGRESS_EVERY == 0) {
-        log.info("Load-test Invoices settled: {} of {}", done, count);
+      var finished = done.incrementAndGet();
+      if (finished % PROGRESS_EVERY == 0) {
+        log.info("Load-test Invoices done: {} of {}", finished, count);
       }
     }
   }

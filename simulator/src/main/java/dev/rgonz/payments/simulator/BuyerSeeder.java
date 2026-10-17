@@ -49,18 +49,18 @@ class BuyerSeeder {
   @EventListener(ApplicationReadyEvent.class)
   void seedBuyers() {
     // Approval Threshold $10,000, Credit Line $100,000.
-    seed(acmeId, "Acme", 1_000_000L, 10_000_000L);
+    seed(acmeId, "Acme", usd(1_000_000L), usd(10_000_000L));
     // Approval Threshold $100, so one Approver approves each $10 load-test Invoice; Credit Line
-    // $1,000,000, enough for 10,000 of them at once.
-    seed(initechId, "Initech", 10_000L, 100_000_000L);
+    // $1,000,000, enough for 100,000 of them.
+    seed(initechId, "Initech", usd(10_000L), usd(100_000_000L));
   }
 
   // Without its Buyers and their credit every scenario fails, so a platform that never answers
   // stops the simulator's startup. Both requests are safe to repeat.
-  private void seed(UUID buyerId, String name, long approvalThreshold, long creditLine) {
-    var request = new BuyerRequest().name(name).approvalThreshold(usd(approvalThreshold));
+  private void seed(UUID buyerId, String name, Money approvalThreshold, Money creditLine) {
+    var request = new BuyerRequest().name(name).approvalThreshold(approvalThreshold);
     retry.invoke(() -> buyers.putBuyer(buyerId, request));
-    retry.invoke(() -> credit.putCreditLine(buyerId, usd(creditLine)));
+    retry.invoke(() -> credit.putCreditLine(buyerId, creditLine));
     log.info("{} is ready as Buyer {} with a Credit Line", name, buyerId);
   }
 

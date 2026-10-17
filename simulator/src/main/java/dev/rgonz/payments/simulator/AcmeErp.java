@@ -30,7 +30,7 @@ class AcmeErp {
   // ID the Network will carry on Globex's Charges.
   AcmeErp(
       InvoicesApi invoices,
-      @Value("http://localhost:${server.port}/globex/remittance-advice")
+      @Value("http://localhost:${server.port}" + GlobexSupplier.ADVICE_PATH)
           String globexRemittanceAddress,
       @Value("${simulator.globex.acceptor-id}") String globexAcceptorId) {
     this.invoices = invoices;

@@ -75,9 +75,8 @@ class PlatformClients {
             .createClient(InvoicesApi.class));
   }
 
-  // Initech's ERP and Approver: more clients of the same API, kept inside Initech likewise.
-  // Globex's
-  // remittance address and Acceptor ID as AcmeErp names them.
+  // Initech's ERP and Approver: more clients of the same API, kept inside Initech likewise. Its
+  // Invoices name Globex as Acme's do: the same remittance address and Acceptor ID.
   @Bean
   Initech initech(
       RestClient.Builder builder,
