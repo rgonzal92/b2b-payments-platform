@@ -80,14 +80,21 @@ class BreaksApiTests {
     var undercharge = raise(BreakKind.UNDERCHARGE, buyerId, Duration.ofHours(2));
     var noAuthorization = raise(BreakKind.NO_AUTHORIZATION, buyerId, Duration.ofHours(1));
     var otherBuyers = raise(BreakKind.UNDERCHARGE, new BuyerId(UUID.randomUUID()), Duration.ZERO);
+    var accepted = raise(BreakKind.UNKNOWN_CARD, buyerId, Duration.ofMinutes(30));
+    breaks.resolve(
+        idOf(accepted),
+        Resolution.Kind.ACCEPTED,
+        "Agreed with the Buyer",
+        new Reconciler("r-1", "rita"));
     var buyer = "buyerId=" + buyerId.value();
 
-    assertThat(recordIds(list(buyer, RECONCILER))).containsExactly(noAuthorization, undercharge);
+    assertThat(recordIds(list(buyer, RECONCILER)))
+        .containsExactly(accepted, noAuthorization, undercharge);
     assertThat(recordIds(list(buyer + "&kind=UNDERCHARGE", RECONCILER)))
         .containsExactly(undercharge);
     assertThat(recordIds(list(buyer + "&status=OPEN", RECONCILER)))
         .containsExactly(noAuthorization, undercharge);
-    assertThat(recordIds(list(buyer + "&status=RESOLVED", RECONCILER))).isEmpty();
+    assertThat(recordIds(list(buyer + "&status=RESOLVED", RECONCILER))).containsExactly(accepted);
     // Without a Buyer, the kind still narrows the list: the other Buyer's Undercharge is in it,
     // and no other kind is.
     var undercharges = list("kind=UNDERCHARGE&limit=100", RECONCILER);
@@ -155,6 +162,26 @@ class BreaksApiTests {
   }
 
   @Test
+  void aResolvedBreakShowsHowWhoAndWhen() {
+    var id = idOf(raise(BreakKind.UNDERCHARGE, new BuyerId(UUID.randomUUID()), Duration.ZERO));
+    breaks.resolve(
+        id, Resolution.Kind.ACCEPTED, "Agreed with the Buyer", new Reconciler("r-1", "rita"));
+
+    var response = get(id.toString(), ISSUER_ADMIN);
+
+    assertThat(response).hasStatus(200);
+    assertThat(response)
+        .bodyJson()
+        .isLenientlyEqualTo(
+            """
+            {"status": "RESOLVED",
+             "resolution": {"kind": "ACCEPTED", "note": "Agreed with the Buyer",
+                            "resolvedBy": "r-1", "resolvedByName": "rita"}}
+            """);
+    assertThat(response).bodyJson().extractingPath("$.resolution.resolvedAt").isNotNull();
+  }
+
+  @Test
   void aBreakIdNoBreakHasIsNotFound() {
     assertProblem(get(UUID.randomUUID().toString(), ISSUER_ADMIN), 404);
   }
@@ -162,16 +189,19 @@ class BreaksApiTests {
   @Test
   void onlyReconcilersAndIssuerStaffMayReadTheBreaks() {
     var recordId = raise(BreakKind.UNKNOWN_CARD, new BuyerId(UUID.randomUUID()), Duration.ZERO);
-    String id =
-        jdbc.sql("select id::text from reconciliation.break where record_id = :recordId")
-            .param("recordId", recordId)
-            .query(String.class)
-            .single();
+    var id = idOf(recordId).toString();
 
     for (var role : List.of("ROLE_approver", "ROLE_erp", "ROLE_network")) {
       assertProblem(list("limit=20", role), 403);
       assertProblem(get(id, role), 403);
     }
+  }
+
+  private UUID idOf(String recordId) {
+    return jdbc.sql("select id from reconciliation.break where record_id = :recordId")
+        .param("recordId", recordId)
+        .query(UUID.class)
+        .single();
   }
 
   private MvcTestResult get(String id, String authority) {

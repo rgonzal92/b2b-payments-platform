@@ -11,11 +11,9 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Currency;
 import java.util.EnumMap;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -32,9 +30,25 @@ class Breaks {
   private static final String SELECT =
       """
       select id, kind, record_id, status, business_date, buyer_id, gap_minor, gap_currency,
-             facts::text as facts, created_at
+             facts::text as facts, created_at, resolution_kind, resolution_note, resolved_by,
+             resolved_by_name, resolved_at, correcting_entry_id
         from reconciliation.break
       """;
+  // A filter left out, or the first page's missing position, is a null parameter, which matches
+  // every row: one fixed statement for every combination. The casts give PostgreSQL the type a
+  // null alone doesn't. Keyset paging: a page starts after the earlier page's last Break, compared
+  // on the ordering columns, which break_created_at_id_idx keeps in order, so it never reads and
+  // skips the Breaks before it, as OFFSET would.
+  private static final String PAGE =
+      SELECT
+          + """
+           where (cast(:status as text) is null or status = :status)
+             and (cast(:kind as text) is null or kind = :kind)
+             and (cast(:buyerId as uuid) is null or buyer_id = :buyerId)
+             and (cast(:raisedAt as timestamptz) is null or (created_at, id) < (:raisedAt, :id))
+           order by created_at desc, id desc
+           limit :limit
+          """;
   private static final TypeReference<Map<String, Object>> FACTS = new TypeReference<>() {};
 
   private final JdbcClient jdbc;
@@ -72,8 +86,40 @@ class Breaks {
         == 1;
   }
 
+  /**
+   * Marks the Break {@code RESOLVED} this way, by this Reconciler, now, and says whether it did:
+   * false when no {@code OPEN} Break has this ID. Conditional on its status, not read first: of two
+   * resolutions at once, the second waits for the first to commit, then finds it resolved and
+   * changes nothing. Joins the caller's transaction.
+   */
+  boolean resolve(UUID id, Resolution.Kind kind, String note, Reconciler reconciler) {
+    return jdbc.sql(
+                """
+                update reconciliation.break
+                   set status = 'RESOLVED', resolution_kind = :kind, resolution_note = :note,
+                       resolved_by = :resolvedBy, resolved_by_name = :resolvedByName,
+                       resolved_at = now()
+                 where id = :id and status = 'OPEN'
+                """)
+            .param("id", id)
+            .param("kind", kind.name())
+            .param("note", note)
+            .param("resolvedBy", reconciler.id())
+            .param("resolvedByName", reconciler.name())
+            .update()
+        == 1;
+  }
+
+  /** Records the Correcting Entry the Break's resolution posted. Joins the caller's transaction. */
+  void recordCorrectingEntry(UUID id, UUID entryId) {
+    jdbc.sql("update reconciliation.break set correcting_entry_id = :entryId where id = :id")
+        .param("id", id)
+        .param("entryId", entryId)
+        .update();
+  }
+
   /** The raised Break with this ID, if any. */
-  Optional<Raised> find(UUID id) {
+  Optional<RaisedBreak> find(UUID id) {
     return jdbc.sql(SELECT + " where id = :id").param("id", id).query(this::raised).optional();
   }
 
@@ -84,38 +130,19 @@ class Breaks {
    * @param after the position of the earlier page's last Break; null for the first page
    */
   Page list(Filter filter, Position after, int limit) {
-    var conditions = new ArrayList<String>();
-    var params = new HashMap<String, Object>();
-    if (filter.status() != null) {
-      conditions.add("status = :status");
-      params.put("status", filter.status());
-    }
-    if (filter.kind() != null) {
-      conditions.add("kind = :kind");
-      params.put("kind", filter.kind().name());
-    }
-    if (filter.buyerId() != null) {
-      conditions.add("buyer_id = :buyerId");
-      params.put("buyerId", filter.buyerId().value());
-    }
-    // Keyset paging: a page starts after the earlier page's last Break, compared on the ordering
-    // columns, which break_created_at_id_idx keeps in order, so it never reads and skips the
-    // Breaks before it, as OFFSET would.
-    if (after != null) {
-      conditions.add("(created_at, id) < (:raisedAt, :id)");
-      params.put("raisedAt", after.raisedAt().atOffset(ZoneOffset.UTC));
-      params.put("id", after.id());
-    }
-    var where = conditions.isEmpty() ? "" : " where " + String.join(" and ", conditions);
-    // One Break more than the page holds tells whether another page follows.
-    params.put("limit", limit + 1);
     var rows =
-        jdbc.sql(SELECT + where + " order by created_at desc, id desc limit :limit")
-            .params(params)
+        jdbc.sql(PAGE)
+            .param("status", filter.status() == null ? null : filter.status().name())
+            .param("kind", filter.kind() == null ? null : filter.kind().name())
+            .param("buyerId", filter.buyerId() == null ? null : filter.buyerId().value())
+            .param("raisedAt", after == null ? null : after.raisedAt().atOffset(ZoneOffset.UTC))
+            .param("id", after == null ? null : after.id())
+            // One Break more than the page holds tells whether another page follows.
+            .param("limit", limit + 1)
             .query(this::raised)
             .list();
     var page = rows.subList(0, Math.min(limit, rows.size()));
-    var next = rows.size() > limit ? page.getLast().position() : null;
+    var next = rows.size() > limit ? Position.of(page.getLast()) : null;
     return new Page(page, next);
   }
 
@@ -163,39 +190,32 @@ class Breaks {
     }
   }
 
-  private Raised raised(ResultSet row, int rowNumber) throws SQLException {
+  private RaisedBreak raised(ResultSet row, int rowNumber) throws SQLException {
     var buyerId = row.getObject("buyer_id", UUID.class);
-    var found =
-        new Break(
-            BreakKind.valueOf(row.getString("kind")),
-            row.getString("record_id"),
-            row.getObject("business_date", LocalDate.class),
-            buyerId == null ? null : new BuyerId(buyerId),
-            new Money(
-                row.getLong("gap_minor"), Currency.getInstance(row.getString("gap_currency"))),
-            json.readValue(row.getString("facts"), FACTS));
-    return new Raised(
+    var resolutionKind = row.getString("resolution_kind");
+    return new RaisedBreak(
         row.getObject("id", UUID.class),
-        row.getString("status"),
+        BreakKind.valueOf(row.getString("kind")),
+        row.getString("record_id"),
+        RaisedBreak.Status.valueOf(row.getString("status")),
+        row.getObject("business_date", LocalDate.class),
+        buyerId == null ? null : new BuyerId(buyerId),
+        new Money(row.getLong("gap_minor"), Currency.getInstance(row.getString("gap_currency"))),
+        json.readValue(row.getString("facts"), FACTS),
         row.getObject("created_at", OffsetDateTime.class).toInstant(),
-        found);
-  }
-
-  /**
-   * A Break as raised.
-   *
-   * @param status {@code OPEN} until a Reconciler resolves it
-   * @param raisedAt when a run raised it
-   */
-  record Raised(UUID id, String status, Instant raisedAt, Break found) {
-
-    Position position() {
-      return new Position(raisedAt, id);
-    }
+        resolutionKind == null
+            ? null
+            : new RaisedBreak.Resolved(
+                Resolution.Kind.valueOf(resolutionKind),
+                row.getString("resolution_note"),
+                row.getString("resolved_by"),
+                row.getString("resolved_by_name"),
+                row.getObject("resolved_at", OffsetDateTime.class).toInstant(),
+                row.getObject("correcting_entry_id", UUID.class)));
   }
 
   /** Which Breaks a list shows: those that match every field given; a null field matches any. */
-  record Filter(String status, BreakKind kind, BuyerId buyerId) {}
+  record Filter(RaisedBreak.Status status, BreakKind kind, BuyerId buyerId) {}
 
   /**
    * A page of Breaks.
@@ -203,7 +223,7 @@ class Breaks {
    * @param next the position of the page's last Break, to ask for the page after it; null on the
    *     last page
    */
-  record Page(List<Raised> breaks, Position next) {
+  record Page(List<RaisedBreak> breaks, Position next) {
 
     Page {
       breaks = List.copyOf(breaks);
@@ -212,6 +232,10 @@ class Breaks {
 
   /** Where a Break stands in the list: when it was raised, and its ID. */
   record Position(Instant raisedAt, UUID id) {
+
+    static Position of(RaisedBreak raised) {
+      return new Position(raised.raisedAt(), raised.id());
+    }
 
     /** The position as a cursor, opaque to callers: its fields, in base64url. */
     String cursor() {
