@@ -104,12 +104,12 @@ class ReconciliationRunTests {
             json.readTree(
                 """
             {"clearing": {"networkRecordId": "%s", "fileId": "%s", "businessDate": "%s",
-                          "cardToken": "%s", "authorizationRequestId": "A%s",
+                          "cardToken": "%s", "buyerId": "%s", "authorizationRequestId": "A%s",
                           "cleared": {"minorUnits": 1000000, "currency": "USD"},
                           "authorized": {"minorUnits": 1240000, "currency": "USD"},
                           "outcome": "MATCHED"}}
             """
-                    .formatted(undercharge, fileId, date, cardToken, undercharge)));
+                    .formatted(undercharge, fileId, date, cardToken, buyer, undercharge)));
   }
 
   @Test

@@ -6,7 +6,7 @@ import java.time.LocalDate;
 import java.util.Map;
 
 /**
- * A mismatch a run found, before it is raised. Its kind and record ID are its natural key.
+ * What a run could not match, before it is raised. Its kind and record ID are its natural key.
  *
  * @param recordId the ID of the record it names, of the type its kind says
  * @param businessDate the Business Date of the run that found it

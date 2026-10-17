@@ -929,7 +929,7 @@ components:
         runId:
           type: string
           format: uuid
-          description: The run's ID, its `runId` job parameter in Spring Batch's job repository.
+          description: The run's ID, as the platform's log names it.
         businessDate:
           type: string
           format: date

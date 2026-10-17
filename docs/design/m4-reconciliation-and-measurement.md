@@ -44,7 +44,7 @@ M3 books every Clearing and settles every file, and records how each Clearing ma
 | Kind | Found from | Names |
 |---|---|---|
 | One per M3 outcome other than matched: above authorized amount, no Authorization, unknown card, other currency, against a reversed Authorization, after Hold expired, Authorization already cleared | the Clearing's outcome | the Clearing (and its Authorization when there is one) |
-| Undercharge | a matched Clearing below its authorized amount | the Clearing, its Authorization and Invoice (Changed during #69: the Clearing and its Authorization's request ID; the Invoice waits for `payables`' read API, #70) |
+| Undercharge | a matched Clearing below its authorized amount | the Clearing, its Authorization and Invoice (Changed during #69: the Clearing and its Authorization's request ID; the Invoice isn't named yet, as `payables` has no read API; no ticket covers it so far) |
 | Never cleared | an approved Authorization expired by the 7-day rule | the Authorization and its Invoice |
 | Unpaid Invoice | a Payment that ended `EXPIRED` or `FAILED` | the Payment and its Invoice |
 | Mismatched Settlement | a Settlement whose Network figure differed from the imported total | the Settlement and its Clearing File |

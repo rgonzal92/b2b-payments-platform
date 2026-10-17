@@ -21,8 +21,8 @@ import org.springframework.transaction.PlatformTransactionManager;
  * File import uses. Each run is a job instance of its own, identified by the Business Date and a
  * new run ID, so a date reconciled already can be reconciled again: a failed run isn't restarted
  * but run again, and the Breaks' natural keys keep the re-run from raising any twice. Each step
- * finds one kind of mismatch and writes its Breaks through {@link BreakWriter}; the run's summary
- * adds up every step's.
+ * finds one kind of Break and writes its Breaks through {@link BreakWriter}; the run's summary adds
+ * up every step's.
  */
 @Configuration(proxyBeanMethods = false)
 class ReconciliationJob {

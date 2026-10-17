@@ -1,6 +1,6 @@
 package dev.rgonz.payments.platform.reconciliation;
 
-/** What kind of mismatch a Break is (M4 design, "Kinds of Break"). */
+/** What Reconciliation could not match, by kind (M4 design, "Kinds of Break"). */
 enum BreakKind {
   // One per Clearing outcome other than matched; each names the Clearing.
   ABOVE_AUTHORIZED_AMOUNT,

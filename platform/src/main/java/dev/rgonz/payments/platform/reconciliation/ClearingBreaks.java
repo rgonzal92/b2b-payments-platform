@@ -41,12 +41,18 @@ class ClearingBreaks implements ItemProcessor<RecordedClearing, Break> {
   }
 
   // What cleared above or below the Authorization; for every other kind, the whole Clearing is in
-  // question.
+  // question. Every kind listed, so a new one doesn't compile until its gap is decided.
   private static Money gap(BreakKind kind, RecordedClearing clearing) {
     return switch (kind) {
       case ABOVE_AUTHORIZED_AMOUNT -> clearing.cleared().subtract(clearing.authorized());
       case UNDERCHARGE -> clearing.authorized().subtract(clearing.cleared());
-      default -> clearing.cleared();
+      case NO_AUTHORIZATION,
+          UNKNOWN_CARD,
+          OTHER_CURRENCY,
+          AGAINST_REVERSED_AUTHORIZATION,
+          AFTER_HOLD_EXPIRED,
+          AUTHORIZATION_ALREADY_CLEARED ->
+          clearing.cleared();
     };
   }
 
@@ -57,6 +63,7 @@ class ClearingBreaks implements ItemProcessor<RecordedClearing, Break> {
     facts.put("fileId", clearing.fileId());
     facts.put("businessDate", clearing.businessDate().toString());
     facts.put("cardToken", clearing.cardToken());
+    facts.put("buyerId", clearing.buyerId() == null ? null : clearing.buyerId().value().toString());
     facts.put("authorizationRequestId", clearing.authorizationRequestId());
     facts.put("cleared", money(clearing.cleared()));
     facts.put("authorized", clearing.authorized() == null ? null : money(clearing.authorized()));

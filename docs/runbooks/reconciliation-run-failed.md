@@ -2,7 +2,7 @@
 
 **Signals:** `POST /v1/reconciliation-runs` answers `500` "The Reconciliation run … of … didn't complete"; the platform logs `The Reconciliation run <run ID> of <Business Date> didn't complete: see docs/runbooks/reconciliation-run-failed.md`, usually after Spring Batch's `Rolling back chunk transaction` and `Encountered an error executing step clearings`; the daily run at 00:05 UTC logs no `Reconciliation run … : … Breaks found` line.
 
-How a run works (details in [`docs/learning/reconciliation.md`](../learning/reconciliation.md)): the Spring Batch job `reconciliation` reads the Business Date's Clearings through `clearing`'s API and raises a Break for each mismatch, 100 to a transaction. Each Break has a natural key (its kind and the record it names), so **running the same date again is always safe: it raises what the failed run didn't, and finds the rest as already known.** A failed run is never restarted; it is run again, as a new job instance with a new run ID.
+How a run works (details in [`docs/learning/reconciliation.md`](../learning/reconciliation.md)): the Spring Batch job `reconciliation` reads the Business Date's Clearings through `clearing`'s API and raises a Break for each Clearing that didn't match, 100 to a transaction. Each Break has a natural key (its kind and the record it names), so **running the same date again is always safe: it raises what the failed run didn't, and finds the rest as already known.** A failed run is never restarted; it is run again, as a new job instance with a new run ID.
 
 Every query below runs against the development database: `docker compose exec postgres psql -U payments payments`.
 
