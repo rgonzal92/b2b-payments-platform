@@ -69,6 +69,7 @@ Every Break records the amount gap and enough of the records' facts (amounts, da
 - **The mix:** about 90% approvals on fresh cards and 10% declines (a second Charge on a card, a wrong security code), so the approval path's writes dominate.
 - **The profile:** a 30-second warm-up, then 200 Authorizations a second for 2 minutes.
 - **Pass:** the platform's server-side p99 (Micrometer's gRPC timing, in Grafana) under 100 ms, and no failed call; Gatling's client-side numbers are reported alongside. If it misses, M4 still finishes: this document records the number, the cause found and any fix, and the number goes into M5's case for extracting Authorization.
+- (Changed during #75: the warm-up ramps from 1 to 200 Authorizations a second, and the report shows it as a group apart from the measured 2 minutes. Both kinds of decline charge cards the run already approved, 5% each, the security code being checked before the card's status, so only approvals use fresh cards: about 24,300 a run. The module sits in the default build, which compiles the simulation and unit-tests how it reads the cards file; only the `load-test` profile runs it. Gatling shares one gRPC channel across users, as the Network keeps one connection.)
 
 ### Grafana (Q7)
 
@@ -99,6 +100,6 @@ A Break for a missing Clearing File (the file list already shows sequence gaps);
 ## Risks
 
 - **The measurement is one laptop:** Docker, the JVM's warm-up and other processes move the p99. The run records the hardware and is repeated before the number is written down.
-- **Seeding thousands of cards through the saga is slow:** the worker takes Payments one at a time; seeding may take minutes. Acceptable for a manual run; if it's too slow, the fix is the worker's batch size, recorded here.
+- **Seeding thousands of cards through the saga is slow:** the worker takes Payments one at a time; seeding may take minutes. Acceptable for a manual run; if it's too slow, the fix is the worker's batch size, recorded here. (Changed during #75: at about three Payments a second, the ~25,000 cards a run needs would take two hours. The worker now claims Payments until none is due instead of stopping after ten, and runs `payables.payment-worker.threads` workers at once (4) on virtual threads, still one Payment per transaction under SKIP LOCKED. `POST /demo/load-test-cards` takes up to 25,000, keeps 64 Invoices in flight and can append to the file. In the tests, four workers drained 300 Payments in under a second with the Supplier stubbed.)
 - **`reconciliation` reads four modules:** its queries go through public APIs, so a slow one shows in the run's duration; the first ticket proves a run over a day's data before the other kinds arrive.
 - **A corrected Break can move money between any two Accounts:** limited to the `reconciler` role, always balanced, always with a note, and never editing what's there.
