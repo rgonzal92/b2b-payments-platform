@@ -17,6 +17,12 @@ services:
       - "127.0.0.1:3000:3000" # Grafana
       - "127.0.0.1:4317:4317" # OTLP over gRPC
       - "127.0.0.1:4318:4318" # OTLP over HTTP
+    # Dashboards and the alert rule as code (docs/learning/grafana-provisioning.md). Each provisioning file is
+    # mounted on its own, so the image's own providers and data sources stay.
+    volumes:
+      - ./grafana/dashboards:/otel-lgtm/b2b-payments-dashboards:ro
+      - ./grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/b2b-payments.yaml:ro
+      - ./grafana/provisioning/alerting.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/b2b-payments.yaml:ro
 
   keycloak:
     # Same image as the platform's TestKeycloak and e2e's CorePathEndToEndTests: change all three.
