@@ -1,6 +1,6 @@
 # M4: Reconciliation and measurement
 
-**Status:** approved 2026-10-16. Decisions from the M4 grilling (Rounds 1–2, Q1–Q12, 2026-10-16).
+**Status:** approved 2026-10-16; done 2026-10-16 (#76 proved every "Done when" item). Decisions from the M4 grilling (Rounds 1–2, Q1–Q12, 2026-10-16).
 
 ## Problem
 
@@ -93,6 +93,7 @@ Every Break records the amount gap and enough of the records' facts (amounts, da
   | 2 | 22,512 | 187.6/s | 3 / 5 / 106 / 205 ms | 58 ms | 110 ms |
 
   The achieved rate fell short of 200 a second because each slow answer delayed its user's next Charge (the paced model above).
+- **Reading the client side:** the load test runs a closed workload (5 paced users, because of the open-source Gatling gRPC plugin's limits), so a slow call delays the next send and Gatling's client-side numbers can understate latency: the Charges a stall held back are never sent, so never timed. The server-side histogram, which times every call the platform answered, is unaffected, which is why the pass mark is the server-side p99.
 - **Seeding:** 25,000 cards in 574 s and 639 s (about 40 a second), plus 3,000 appended in 73 s and 80 s.
 - **Cause of the miss:** the slow calls come in bursts of a few seconds, not as a steady tail. With PostgreSQL logging statements over 50 ms during a shorter run (60 s at 200 a second) that reproduced the miss (p99 108.2 ms), every slow statement was a `COMMIT`: about 290 of them in 13 seconds, each about 108 ms, the concurrent ones finishing at the same instant. They were all waiting for one WAL flush to disk. The bursts came while an autovacuum and a spread checkpoint were writing; Docker's storage here is btrfs, whose fsync can wait on other writes. The same run with `synchronous_commit=off` gave a p99 of 1.4 ms and a p50 of 0.6 ms, with no slow statement: most of `Authorize`'s server time, and all of its tail, is waiting for the commit to reach the disk. GC was ruled out (14 young collections, 15 ms in total over a run), and so was the platform's own code: a declines-only run at the same rate stayed at a p99 of 21 ms.
 - **Fix:** none in this ticket. Turning `synchronous_commit` off would let a crash lose an Authorization the Network was told was approved, which the Issuer can't accept, and the disk is the laptop's, not the platform's. The candidates for M5's case: a PostgreSQL volume on storage with fast, steady fsync (outside btrfs copy-on-write), checkpoint and autovacuum tuning so their writes don't land as bursts, and measuring on hardware that isn't shared with other services.
@@ -108,6 +109,7 @@ Every Break records the amount gap and enough of the records' facts (amounts, da
 
 - `POST /demo/reconciliation` runs Reconciliation for today and answers the Breaks found. After `POST /demo/clearing-file?unknownPan=true` it shows the unknown-card Break, and the README resolves it with one `curl` signed in as `simulator-reconciler`.
 - The end-to-end test's happy path ends with a Reconciliation run that finds no Break for its Charge.
+- (Decided during #76: the demo runs as Issuer staff and answers the run's summary beside today's open Breaks, each by ID, kind, gap and Buyer, never their facts; `GET /v1/breaks/{id}` shows those. The simulator gets no `simulator-reconciler` registration, as it never resolves a Break: the README's `curl` signs in as that client itself.)
 
 ## Deferred
 
