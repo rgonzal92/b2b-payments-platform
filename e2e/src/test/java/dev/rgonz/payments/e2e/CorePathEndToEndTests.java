@@ -9,6 +9,8 @@ import dev.rgonz.payments.simulator.SimulatorApplication;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -39,7 +41,8 @@ import org.testcontainers.utility.DockerImageName;
  * worker pays it with a Single-Use Card, Globex opens the card through its Remittance Advice link,
  * and Globex charges it: the simulator's Acquirer and Network ask the platform over gRPC, signed in
  * as the network client, and the platform approves the Charge. Then the demo's second call has the
- * Network write its Clearing File into the platform's drop folder and Issuer staff import it.
+ * Network write its Clearing File into the platform's drop folder and Issuer staff import it, and
+ * its third has Issuer staff run today's Reconciliation, which finds no Break.
  */
 @Testcontainers
 class CorePathEndToEndTests {
@@ -183,7 +186,7 @@ class CorePathEndToEndTests {
   @Test
   // The demo itself waits up to 30 seconds for the worker to pay the Invoice.
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
-  void theDemoInvoiceIsPaidGlobexsChargeApprovedAndItsClearingImportedFromTheNetworksFile()
+  void theDemoInvoiceIsPaidItsChargeApprovedClearedFromTheNetworksFileAndReconciledWithoutABreak()
       throws IOException {
     var summary =
         RestClient.create()
@@ -278,6 +281,34 @@ class CorePathEndToEndTests {
     try (var left = Files.walk(dropFolder)) {
       assertThat(left.filter(Files::isRegularFile)).isEmpty();
     }
+
+    var reconciled =
+        RestClient.create()
+            .post()
+            .uri("http://localhost:{port}/demo/reconciliation", simulatorPort)
+            .retrieve()
+            .body(String.class);
+
+    // Today's Reconciliation finds nothing to raise: the Charge's Clearing matched its
+    // Authorization at the full amount, the Settlement matched the file, and the books balance.
+    // So no Break names the Charge, and none is open for today.
+    assertThat(new JsonContent(reconciled))
+        .isStrictlyEqualTo(
+            """
+            {
+              "run": {
+                "runId": "%s",
+                "businessDate": "%s",
+                "breaksFound": 0,
+                "newBreaks": 0,
+                "knownBreaks": 0
+              },
+              "openBreaks": []
+            }
+            """
+                .formatted(
+                    JsonPath.<String>read(reconciled, "$.run.runId"),
+                    LocalDate.now(ZoneOffset.UTC)));
   }
 
   // Each kind of Account's balance in the platform's journal, its debits less its credits.
