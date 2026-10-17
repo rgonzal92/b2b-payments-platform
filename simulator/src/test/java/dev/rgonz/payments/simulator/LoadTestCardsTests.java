@@ -150,6 +150,22 @@ class LoadTestCardsTests {
   }
 
   @Test
+  void aRunWithAppendAddsItsCardsToTheFileUnderTheOneHeader() throws IOException {
+    assertThat(mvc.post().uri("/demo/load-test-cards?count=2").exchange()).hasStatusOk();
+
+    var run = mvc.post().uri("/demo/load-test-cards?count=1&append=true").exchange();
+
+    assertThat(run).hasStatusOk();
+    assertThat(run).bodyJson().isLenientlyEqualTo("{\"requested\": 1, \"written\": 1}");
+    var lines = Files.readAllLines(varFolder.resolve("load-test/cards.csv"));
+    assertThat(lines).first().isEqualTo(HEADER);
+    // The stub numbers the cards of both runs, three in all.
+    assertThat(lines.subList(1, lines.size()))
+        .containsExactlyInAnyOrderElementsOf(platform.cardLines())
+        .hasSize(3);
+  }
+
+  @Test
   void aCardWhosePaymentFailedIsLeftOutOfTheFile() throws IOException {
     platform.failPaymentOfInvoice(2);
 
@@ -161,10 +177,10 @@ class LoadTestCardsTests {
   }
 
   @Test
-  void aCountOutsideOneTo10000IsRefusedAndSendsNothing() {
+  void aCountOutsideOneTo25000IsRefusedAndSendsNothing() {
     assertThat(mvc.post().uri("/demo/load-test-cards?count=0").exchange())
         .hasStatus(HttpStatus.BAD_REQUEST);
-    assertThat(mvc.post().uri("/demo/load-test-cards?count=10001").exchange())
+    assertThat(mvc.post().uri("/demo/load-test-cards?count=25001").exchange())
         .hasStatus(HttpStatus.BAD_REQUEST);
     assertThat(platformRequests).isEmpty();
   }

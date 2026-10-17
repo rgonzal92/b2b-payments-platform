@@ -6,6 +6,7 @@ import dev.rgonz.payments.simulator.GlobexSupplier.ReceivedCard;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -16,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,14 +33,14 @@ import org.springframework.web.server.ResponseStatusException;
  * Makes the load test's cards through the platform's real path: Initech's ERP sends N $10.00
  * Invoices to Globex, Initech's Approver approves each, the run waits for each Payment, and Globex
  * reads each card through its one-time link. Then it writes every card Globex received to the cards
- * file, overwriting the last run's. The file holds PANs and security codes; the logs and the answer
- * never do.
+ * file, overwriting the last run's, or adding to it with {@code append=true}. The file holds PANs
+ * and security codes; the logs and the answer never do.
  */
 @RestController
 class LoadTestCards {
 
   static final String DEMO_PATH = "/demo/load-test-cards";
-  static final int MAX_COUNT = 10_000;
+  static final int MAX_COUNT = 25_000;
 
   /** The cards file's first line: the columns the load test reads. */
   static final String HEADER = "pan,securityCode,expiry,amountMinorUnits,currency,acceptorId";
@@ -46,10 +48,11 @@ class LoadTestCards {
   private static final Logger log = LoggerFactory.getLogger(LoadTestCards.class);
   // $10.00.
   private static final long AMOUNT = 1_000;
-  // Invoices in flight at once. The platform's saga worker runs at most 10 steps a pass, a pass
-  // about a second apart, and a Payment takes three steps: a few dozen in flight keep every pass
-  // full, and more would only wait in its queue. The worker, not this number, sets the pace.
-  private static final int IN_FLIGHT = 32;
+  // Invoices in flight at once. Each waits about a second and a half: up to a second for the
+  // platform's next saga worker pass, which runs every due Payment to the end, and up to half a
+  // second for the next read. So this number sets the pace, about 40 cards a second, while keeping
+  // the platform's connection pool from queueing.
+  private static final int IN_FLIGHT = 64;
   private static final Duration PAYMENT_WAIT = Duration.ofMinutes(2);
   private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
   private static final int PROGRESS_EVERY = 100;
@@ -71,12 +74,13 @@ class LoadTestCards {
   }
 
   /**
-   * Sends {@code count} (1 to 10,000) Invoices and writes the cards Globex received. A card whose
-   * Payment failed, or didn't complete within two minutes, is left out, so {@code written} can be
-   * less than {@code requested}.
+   * Sends {@code count} (1 to 25,000) Invoices and writes the cards Globex received, after the
+   * file's existing cards if {@code append}. A card whose Payment failed, or didn't complete within
+   * two minutes, is left out, so {@code written} can be less than {@code requested}.
    */
   @PostMapping(DEMO_PATH)
-  Result run(@RequestParam int count) throws IOException {
+  Result run(@RequestParam int count, @RequestParam(defaultValue = "false") boolean append)
+      throws IOException {
     if (count < 1 || count > MAX_COUNT) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "count must be from 1 to " + MAX_COUNT);
@@ -93,16 +97,15 @@ class LoadTestCards {
           .mapToObj(n -> "%s-%05d".formatted(run, n))
           .forEach(number -> futures.add(executor.submit(() -> cardFor(number, done, count))));
     }
-    var lines = new ArrayList<String>(count + 1);
-    lines.add(HEADER);
-    futures.stream()
-        .map(Future::resultNow)
-        .flatMap(Optional::stream)
-        .map(this::line)
-        .forEach(lines::add);
+    var lines =
+        futures.stream().map(Future::resultNow).flatMap(Optional::stream).map(this::line).toList();
     Files.createDirectories(cardsFile.getParent());
-    Files.write(cardsFile, lines);
-    var written = lines.size() - 1;
+    if (append && Files.exists(cardsFile) && Files.size(cardsFile) > 0) {
+      Files.write(cardsFile, lines, StandardOpenOption.APPEND);
+    } else {
+      Files.write(cardsFile, Stream.concat(Stream.of(HEADER), lines.stream()).toList());
+    }
+    var written = lines.size();
     log.info(
         "Load-test run {} wrote {} cards of {} to {} in {} s",
         run,
