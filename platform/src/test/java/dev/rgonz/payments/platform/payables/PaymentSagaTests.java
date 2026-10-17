@@ -772,7 +772,6 @@ class PaymentSagaTests {
     assertThat(response).hasStatus(expectedStatus);
   }
 
-  // Submitted, approved, and its Payment started by InvoiceApproved, which arrives asynchronously.
   // The test context's registry outlives each test, so a test compares counts before and after.
   private double paymentsReached(String state) {
     var counter = meters.find("payments.state.changes").tag("state", state).counter();
@@ -784,6 +783,7 @@ class PaymentSagaTests {
     return timer == null ? 0 : timer.count();
   }
 
+  // Submitted, approved, and its Payment started by InvoiceApproved, which arrives asynchronously.
   private String approvedInvoice(UUID buyerId, long minorUnits)
       throws UnsupportedEncodingException {
     var submitted =

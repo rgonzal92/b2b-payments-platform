@@ -1203,7 +1203,6 @@ class ClearingFileImportTests {
     assertThat(DROP_FOLDER.resolve(fileName)).exists();
   }
 
-  // A refused or repeated file waits in failed/ for a person, out of processing/.
   // The test context's registry outlives each test, so a test compares counts before and after.
   private Map<String, Double> countsOfClearingMeters() {
     var counts = new HashMap<String, Double>();
@@ -1224,6 +1223,7 @@ class ClearingFileImportTests {
     return counter == null ? 0 : counter.count();
   }
 
+  // A refused or repeated file waits in failed/ for a person, out of processing/.
   private static void assertMovedToFailed(String fileName) {
     assertThat(DROP_FOLDER.resolve("failed").resolve(fileName)).exists();
     assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();

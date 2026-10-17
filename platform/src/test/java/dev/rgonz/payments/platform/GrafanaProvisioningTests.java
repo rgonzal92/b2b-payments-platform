@@ -103,6 +103,7 @@ class GrafanaProvisioningTests {
     var rule = map(rules.getFirst());
     assertThat(rule.get("for")).isEqualTo("5m");
     var data = list(rule.get("data")).stream().map(GrafanaProvisioningTests::map).toList();
+    assertThat(data.getFirst()).containsEntry("datasourceUid", "prometheus");
     var query = map(data.getFirst().get("model"));
     assertThat((String) query.get("expr"))
         .contains("histogram_quantile(0.99")
