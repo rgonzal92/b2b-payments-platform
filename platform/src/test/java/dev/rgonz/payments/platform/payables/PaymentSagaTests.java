@@ -8,6 +8,8 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
@@ -34,6 +36,8 @@ import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Currency;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +46,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -414,6 +419,37 @@ class PaymentSagaTests {
     assertThat(List.of(paymentState(acme, first), paymentState(acme, second)))
         .containsExactlyInAnyOrder("COMPLETED", "FAILED");
     assertThat(availableCredit(acme)).isZero();
+  }
+
+  @Test
+  void severalWorkersDrainEveryDuePaymentAndRunEachOfItsStepsOnce() throws Exception {
+    // More than one pass of the old worker took (10 steps), so draining shows.
+    var count = 40;
+    var buyer = newBuyerWithCreditLine(100_000_000);
+    var invoiceIds = new ArrayList<String>();
+    for (var i = 0; i < count; i++) {
+      invoiceIds.add(approvedInvoice(buyer, 1_000));
+    }
+    var deliveries =
+        supplierAnswers(Collections.nCopies(count, withSuccess()).toArray(ResponseCreator[]::new));
+    var now = Instant.now();
+
+    try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+      var passes =
+          IntStream.range(0, 4).mapToObj(i -> workers.submit(() -> saga.runDueSteps(now))).toList();
+      for (var pass : passes) {
+        pass.get(60, TimeUnit.SECONDS);
+      }
+    }
+
+    for (var invoiceId : invoiceIds) {
+      assertThat(paymentState(buyer, invoiceId)).isEqualTo("COMPLETED");
+    }
+    var buyerId = new BuyerId(buyer);
+    verify(holds, times(count)).place(any(), eq(buyerId), any());
+    verify(cards, times(count)).issueSingleUse(any(), eq(buyerId), any(), any(), any());
+    assertThat(deliveries).hasSize(count);
+    assertThat(availableCredit(buyer)).isEqualTo(100_000_000 - count * 1_000L);
   }
 
   @Test

@@ -24,7 +24,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 class PaymentSaga {
 
   private static final Logger log = LoggerFactory.getLogger(PaymentSaga.class);
-  private static final int BATCH_SIZE = 10;
   // The payments.steps timer's steps.
   private static final String PLACE_HOLD = "place-hold";
   private static final String ISSUE_CARD = "issue-card";
@@ -93,11 +92,13 @@ class PaymentSaga {
   }
 
   /**
-   * Runs the next step of up to {@value BATCH_SIZE} due Payments, one transaction each. The
+   * Runs due Payments' next steps, one transaction each, until none is due at {@code now}. A step
+   * that moves a Payment on leaves its next step due at {@code now}, so one pass usually completes
+   * it. Several callers may run at once: SKIP LOCKED keeps them on different Payments. The
    * scheduler calls it; tests call it with a later {@code now} instead of waiting out a backoff.
    */
   void runDueSteps(Instant now) {
-    for (var ran = 0; ran < BATCH_SIZE; ran++) {
+    while (true) {
       var claimed = new AtomicReference<Payment>();
       try {
         if (!Boolean.TRUE.equals(transaction.execute(status -> runNextStep(now, claimed)))) {
