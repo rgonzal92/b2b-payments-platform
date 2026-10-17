@@ -35,7 +35,7 @@ flowchart LR
 
 ## Runtime (M0 to M4)
 
-Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, and Keycloak, which issues every token. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
+Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, with dashboards provisioned from `grafana/` ([Dashboards and alerts](#dashboards-and-alerts)), and Keycloak, which issues every token. The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support.
 
 - **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp`, `issuer-admin` and `network` (the `network` client, which the Network signs in with), and puts them in a flat `roles` claim. Every Buyer-side client also carries its Buyer in a `buyer_id` claim (`acme-erp`, `acme-approver-1` and `acme-approver-2` carry Acme's), and the platform takes the Buyer only from that claim. An Approver is the token's subject (`sub`); its `preferred_username` is kept beside it to make the approval record readable. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
 - **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it. The Network link's contract is a protobuf file in the same module (`src/main/proto`), from which both sides get generated messages and gRPC stubs.
@@ -497,6 +497,22 @@ sequenceDiagram
 
 - **Over HTTP on PostgreSQL** (`RepaymentsApiTests`), after a Clearing posted through `ledger.Journal`: a Repayment answers `201` with its amount, posts one Journal Entry debiting Issuer Cash and crediting the Buyer Receivable, and the credit endpoint shows the Buyer Receivable lower and Available Credit higher by its amount. One minor unit above the Buyer Receivable, zero, a negative amount, `EUR` or `XYZ`: `422`, nothing posted; exactly the Buyer Receivable is posted. An unknown Buyer, or one without a Credit Line: `404`; the `erp`, `approver` and `network` roles: `403`; no `Idempotency-Key`: `400`. The same key twice: the same answer, posted once; the same key with another amount or another Buyer: `422`. Two Repayments at once that together exceed the Buyer Receivable, both held on a lock on the journal until both are running: one `201`, one `422`. The same test fails without the row lock.
 - **The credit endpoint** (`CreditApiTests`): after a Hold and a Clearing, it shows the open Holds and the Buyer Receivable beside Available Credit.
+
+## Dashboards and alerts
+
+The `lgtm` container loads its dashboards and its one alert rule from `grafana/` at startup: compose mounts `grafana/dashboards/` read-only, and the provider and rule files into Grafana's provisioning folders beside the image's own ([explainer](learning/grafana-provisioning.md)). They sit in Grafana's **B2B Payments** folder and read Prometheus, which stores what the apps push over OTLP every minute.
+
+| Dashboard | Shows | From |
+|---|---|---|
+| Authorization | `Authorize` calls per second by gRPC status; server-side p50/p95/p99 with the 100 ms line; answers by response code | Spring gRPC's `grpc.server` timing, a histogram with a 100 ms bucket (`application.properties`); `authorization.answers` (`IssuerAuthorizationService`), tagged `response.code` |
+| Payments | Payments reaching each saga state; each step's average and p95 duration | `payments.state.changes` (`Payments`, counted when the state's transaction commits), tagged `state`; `payments.steps` (`PaymentSaga`), tagged `step`: `place-hold`, `issue-card`, `deliver-remittance-advice` |
+| Clearing | Clearing Files by result; Clearings by outcome; Settlements matched and mismatched | `clearing.files` (`imported`, `refused`, `repeated`), `clearing.clearings` (`outcome`) and `clearing.settlements` (`matched`), counted by `ClearingFileImports` once an import completes, from what it committed |
+| Breaks | Open Breaks by kind and age: arrives with #72 as `grafana/dashboards/breaks.json` | `reconciliation`'s own metric |
+
+- **The alert rule** `authorization-p99` evaluates every minute and fires once `Authorize`'s p99 over the last 5 minutes has stayed above 100 ms for 5 minutes (ADR-0010). No contact point is set up: it shows as firing in Grafana only. No traffic is not a breach (`noDataState: OK`).
+- **Tags never carry a PAN, Card Token or ID**, only a small fixed set of values; each counter is registered at zero for every value at startup, since Prometheus's `rate()` and `increase()` miss a series' first increment.
+- **What isn't measured yet:** the time a Payment waits between steps, for the worker or a retry's backoff; the payment row keeps no time it entered its state.
+- **Proven by** a test per metric, in its module's tests (`AuthorizeTests`, `PaymentSagaTests`, `ClearingFileImportTests`), and `GrafanaProvisioningTests`, which parses the dashboards and the rule and checks they query only metrics the platform exports.
 
 ## Quality targets
 
