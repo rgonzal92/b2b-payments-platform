@@ -7,14 +7,12 @@ import dev.rgonz.payments.contracts.server.model.BreakResolutionDto;
 import dev.rgonz.payments.contracts.server.model.BreakResolutionRequestDto;
 import dev.rgonz.payments.contracts.server.model.LedgerAccountDto;
 import dev.rgonz.payments.contracts.server.model.ResolutionKindDto;
-import dev.rgonz.payments.platform.buyers.BuyerDirectory;
 import dev.rgonz.payments.platform.ledger.Account;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.time.ZoneOffset;
 import java.util.Currency;
 import java.util.UUID;
-import java.util.stream.Stream;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -29,11 +27,9 @@ import org.springframework.web.bind.annotation.RestController;
 class BreaksController implements BreaksApi {
 
   private final BreakResolutions resolutions;
-  private final BuyerDirectory buyers;
 
-  BreaksController(BreakResolutions resolutions, BuyerDirectory buyers) {
+  BreaksController(BreakResolutions resolutions) {
     this.resolutions = resolutions;
-    this.buyers = buyers;
   }
 
   // Not issuer-admin: the role that sets Credit Lines and records Repayments doesn't also move
@@ -45,38 +41,39 @@ class BreaksController implements BreaksApi {
     return ResponseEntity.ok(toDto(resolutions.resolve(breakId, resolution, currentReconciler())));
   }
 
-  private Resolution toResolution(BreakResolutionRequestDto request) {
-    Resolution resolution;
+  private static Resolution toResolution(BreakResolutionRequestDto request) {
+    // A field the kind doesn't take is a mistake to point out, not something to ignore.
+    var accounts = request.getDebitAccount() != null || request.getCreditAccount() != null;
+    var extra =
+        switch (request.getKind()) {
+          case ACCEPTED -> accounts || request.getBuyerId() != null || request.getAmount() != null;
+          case REASSIGNED -> accounts;
+          case CORRECTED -> request.getBuyerId() != null;
+        };
+    if (extra) {
+      throw unprocessable(
+          "An accepted Break takes only a note; a reassignment, a Buyer and an amount; a"
+              + " correction, two Accounts and an amount.");
+    }
     try {
       var note = request.getNote();
-      resolution =
-          switch (request.getKind()) {
-            case ACCEPTED -> Resolution.accepted(note);
-            case REASSIGNED ->
-                Resolution.reassigned(
-                    note,
-                    request.getBuyerId() == null ? null : new BuyerId(request.getBuyerId()),
-                    toMoney(request.getAmount()));
-            case CORRECTED ->
-                Resolution.corrected(
-                    note,
-                    toAccount(request.getDebitAccount()),
-                    toAccount(request.getCreditAccount()),
-                    toMoney(request.getAmount()));
-          };
+      return switch (request.getKind()) {
+        case ACCEPTED -> Resolution.accepted(note);
+        case REASSIGNED ->
+            Resolution.reassigned(
+                note,
+                request.getBuyerId() == null ? null : new BuyerId(request.getBuyerId()),
+                toMoney(request.getAmount()));
+        case CORRECTED ->
+            Resolution.corrected(
+                note,
+                toAccount(request.getDebitAccount()),
+                toAccount(request.getCreditAccount()),
+                toMoney(request.getAmount()));
+      };
     } catch (IllegalArgumentException invalid) {
       throw unprocessable(invalid.getMessage());
     }
-    // A Buyer Receivable of no Buyer would carry money no one owes.
-    if (Stream.of(resolution.debited(), resolution.credited())
-        .anyMatch(
-            account ->
-                account != null
-                    && account.buyerId() != null
-                    && !buyers.exists(account.buyerId()))) {
-      throw unprocessable("No Buyer has this ID.");
-    }
-    return resolution;
   }
 
   private static Account toAccount(LedgerAccountDto account) {

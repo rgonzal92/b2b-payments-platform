@@ -211,7 +211,21 @@ class BreakResolutionTests {
          "creditAccount": {"kind": "ISSUER_CASH"}, "amount": {"minorUnits": 5, "currency": "USD"}}""",
         """
         {"kind": "CORRECTED", "note": "n", "debitAccount": {"kind": "CLEARING_SUSPENSE"},
-         "creditAccount": {"kind": "ISSUER_CASH"}}"""
+         "creditAccount": {"kind": "ISSUER_CASH"}}""",
+        // A Buyer Receivable in another currency than its Buyer's would be debt nothing counts.
+        """
+        {"kind": "REASSIGNED", "note": "n", "buyerId": "{buyer}",
+         "amount": {"minorUnits": 5, "currency": "EUR"}}""",
+        // A field the kind doesn't take is a mistake, not something to ignore.
+        """
+        {"kind": "ACCEPTED", "note": "n", "amount": {"minorUnits": 5, "currency": "USD"}}""",
+        """
+        {"kind": "REASSIGNED", "note": "n", "buyerId": "{buyer}",
+         "debitAccount": {"kind": "ISSUER_CASH"}, "amount": {"minorUnits": 5, "currency": "USD"}}""",
+        """
+        {"kind": "CORRECTED", "note": "n", "buyerId": "{buyer}",
+         "debitAccount": {"kind": "CLEARING_SUSPENSE"}, "creditAccount": {"kind": "ISSUER_CASH"},
+         "amount": {"minorUnits": 5, "currency": "USD"}}"""
       })
   void anInvalidResolutionIsRefusedAndLeavesTheBreakOpen(String body) {
     var breakId = openBreak("UNKNOWN_CARD", null, 700_000, "USD");

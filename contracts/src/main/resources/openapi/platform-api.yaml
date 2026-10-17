@@ -19,7 +19,8 @@ paths:
         the named Buyer's Buyer Receivable and credits Clearing Suspense by the amount; `CORRECTED` posts a balanced
         Correcting Entry that debits one named Account and credits another by the amount. Nothing already in the books
         is changed. A missing or blank note, an amount of zero or less or in an unknown currency, the same Account on
-        both sides, an unknown Buyer, or a field the kind needs left out is `422`. A Break already resolved answers
+        both sides, an unknown Buyer, a Buyer Receivable in another currency than its Buyer's, or a field the kind
+        needs left out or doesn't take is `422`. A Break already resolved answers
         `409`, so a repeat can't move money twice and there is no `Idempotency-Key`; an unknown Break answers `404`.
       parameters:
         - name: breakId
