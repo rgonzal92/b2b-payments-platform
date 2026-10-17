@@ -2,12 +2,15 @@ package dev.rgonz.payments.platform.authorization;
 
 import dev.rgonz.payments.platform.authorization.Authorization.ResponseCode;
 import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Currency;
+import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -132,6 +135,38 @@ class Authorizations implements ApprovedAuthorizations {
                         row.getLong("amount_minor"),
                         Currency.getInstance(row.getString("currency"))),
                     Authorization.Status.REVERSED.name().equals(row.getString("status"))))
+        .optional();
+  }
+
+  // A card is AUTHORIZED by one approval at a time, and a Reversal makes that one REVERSED before
+  // another can be approved, so an expired card has at most one APPROVED Authorization. Every
+  // approval has an authorization code, which lets the lookup use the (card, code) index.
+  @Override
+  public List<NeverClearedAuthorization> neverClearedOn(LocalDate day) {
+    return cards.expiredUnclearedOn(day).stream()
+        .flatMap(card -> approvedFor(card).stream())
+        .toList();
+  }
+
+  private Optional<NeverClearedAuthorization> approvedFor(SingleUseCard card) {
+    return jdbc.sql(
+            """
+            select request_id, amount_minor, currency
+              from "authorization".authorizations
+             where card_token = :cardToken and status = :approved
+               and authorization_code is not null
+            """)
+        .param("cardToken", card.cardToken())
+        .param("approved", Authorization.Status.APPROVED.name())
+        .query(
+            (row, rowNumber) ->
+                new NeverClearedAuthorization(
+                    row.getString("request_id"),
+                    card.cardToken(),
+                    card.buyerId(),
+                    new Money(
+                        row.getLong("amount_minor"),
+                        Currency.getInstance(row.getString("currency")))))
         .optional();
   }
 

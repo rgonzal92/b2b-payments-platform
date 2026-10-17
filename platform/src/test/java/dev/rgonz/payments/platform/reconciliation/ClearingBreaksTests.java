@@ -9,6 +9,7 @@ import dev.rgonz.payments.platform.shared.Money;
 import java.time.LocalDate;
 import java.util.Currency;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -20,7 +21,7 @@ class ClearingBreaksTests {
   private static final Currency USD = Currency.getInstance("USD");
   private static final BuyerId BUYER = new BuyerId(UUID.randomUUID());
 
-  private final ClearingBreaks breaks = new ClearingBreaks();
+  private final ClearingBreaks breaks = new ClearingBreaks(cardToken -> Optional.empty());
 
   @Test
   void aMatchedClearingAtItsAuthorizedAmountRaisesNothing() {

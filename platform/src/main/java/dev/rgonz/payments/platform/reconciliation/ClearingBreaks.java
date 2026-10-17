@@ -4,13 +4,27 @@ import dev.rgonz.payments.platform.clearing.RecordedClearing;
 import dev.rgonz.payments.platform.shared.Money;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Function;
 import org.springframework.batch.infrastructure.item.ItemProcessor;
 
 /**
  * The Break a Clearing raises, if any: one of its outcome's kind when it didn't match, an
- * Undercharge when it matched below its Authorization's amount, and none when it matched in full.
+ * Undercharge, naming the Invoice too, when it matched below its Authorization's amount, and none
+ * when it matched in full.
  */
 class ClearingBreaks implements ItemProcessor<RecordedClearing, Break> {
+
+  private final Function<String, Optional<UUID>> invoiceForCard;
+
+  /**
+   * @param invoiceForCard the Invoice a card's Payment pays, by Card Token, which an Undercharge
+   *     names
+   */
+  ClearingBreaks(Function<String, Optional<UUID>> invoiceForCard) {
+    this.invoiceForCard = invoiceForCard;
+  }
 
   @Override
   public Break process(RecordedClearing clearing) {
@@ -31,13 +45,22 @@ class ClearingBreaks implements ItemProcessor<RecordedClearing, Break> {
     if (kind == null) {
       return null;
     }
+    // An Undercharge leaves part of an Invoice unpaid, so it names the Invoice too.
+    Map<String, Object> facts =
+        kind == BreakKind.UNDERCHARGE
+            ? Map.<String, Object>of(
+                "clearing",
+                facts(clearing),
+                "invoice",
+                RecordBreaks.invoice(invoiceForCard.apply(clearing.cardToken()).orElse(null)))
+            : Map.<String, Object>of("clearing", facts(clearing));
     return new Break(
         kind,
         clearing.networkRecordId(),
         clearing.businessDate(),
         clearing.buyerId(),
         gap(kind, clearing),
-        Map.of("clearing", facts(clearing)));
+        facts);
   }
 
   // What cleared above or below the Authorization; for every other kind, the whole Clearing is in
@@ -53,6 +76,8 @@ class ClearingBreaks implements ItemProcessor<RecordedClearing, Break> {
           AFTER_HOLD_EXPIRED,
           AUTHORIZATION_ALREADY_CLEARED ->
           clearing.cleared();
+      case NEVER_CLEARED, UNPAID_INVOICE, MISMATCHED_SETTLEMENT, BOOKS_OUT_OF_BALANCE ->
+          throw new IllegalArgumentException("A Clearing never raises a " + kind + " Break.");
     };
   }
 
