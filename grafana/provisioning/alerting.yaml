@@ -1,0 +1,55 @@
+# Grafana reads this at startup from /otel-lgtm/grafana/conf/provisioning/alerting/ (docs/learning/grafana-provisioning.md).
+# One rule, ADR-0010's target: Authorize's server-side p99 above 100 ms for 5 minutes. No contact point is set up
+# locally, so it only shows as firing in Grafana (Alerting > Alert rules).
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: authorization
+    folder: B2B Payments
+    interval: 1m
+    rules:
+      - uid: authorization-p99
+        title: Authorization p99 above 100 ms
+        condition: C
+        for: 5m
+        # No Authorize calls means nothing to measure, not a breach; a query that fails is shown as an error.
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: authorization
+        panelId: 2
+        annotations:
+          summary: Authorize's server-side p99 has stayed above 100 ms for 5 minutes (ADR-0010).
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              expr: histogram_quantile(0.99, sum by (le) (rate(grpc_server_milliseconds_bucket{rpc_method="Authorize"}[5m])))
+              instant: true
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 100
