@@ -4,12 +4,15 @@ import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * A Break as stored, with its status and, once resolved, how.
  *
  * @param buyerId the Buyer it concerns; null when none is known
+ * @param facts the named records' facts as the run that raised it found them, keyed by record type
+ * @param raisedAt when a run raised it
  * @param resolved how it was resolved; null while {@code OPEN}
  */
 record RaisedBreak(
@@ -20,6 +23,8 @@ record RaisedBreak(
     LocalDate businessDate,
     BuyerId buyerId,
     Money gap,
+    Map<String, Object> facts,
+    Instant raisedAt,
     Resolved resolved) {
 
   enum Status {

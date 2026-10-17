@@ -3,8 +3,11 @@ package dev.rgonz.payments.platform.reconciliation;
 import dev.rgonz.payments.contracts.server.BreaksApi;
 import dev.rgonz.payments.contracts.server.model.AmountDto;
 import dev.rgonz.payments.contracts.server.model.BreakDto;
+import dev.rgonz.payments.contracts.server.model.BreakKindDto;
+import dev.rgonz.payments.contracts.server.model.BreakListDto;
 import dev.rgonz.payments.contracts.server.model.BreakResolutionDto;
 import dev.rgonz.payments.contracts.server.model.BreakResolutionRequestDto;
+import dev.rgonz.payments.contracts.server.model.BreakStatusDto;
 import dev.rgonz.payments.contracts.server.model.LedgerAccountDto;
 import dev.rgonz.payments.contracts.server.model.ResolutionKindDto;
 import dev.rgonz.payments.platform.ledger.Account;
@@ -22,14 +25,54 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import org.springframework.web.ErrorResponseException;
 import org.springframework.web.bind.annotation.RestController;
 
-/** A Reconciler resolves a Break. */
+/**
+ * Reconcilers and Issuer staff read the Breaks, each with the facts of the records it names; a
+ * Reconciler resolves one.
+ */
 @RestController
 class BreaksController implements BreaksApi {
 
+  private final Breaks breaks;
   private final BreakResolutions resolutions;
 
-  BreaksController(BreakResolutions resolutions) {
+  BreaksController(Breaks breaks, BreakResolutions resolutions) {
+    this.breaks = breaks;
     this.resolutions = resolutions;
+  }
+
+  @Override
+  @PreAuthorize("hasAnyRole('reconciler', 'issuer-admin')")
+  public ResponseEntity<BreakListDto> listBreaks(
+      BreakStatusDto status, BreakKindDto kind, UUID buyerId, String cursor, Integer limit) {
+    var filter =
+        new Breaks.Filter(
+            status == null ? null : RaisedBreak.Status.valueOf(status.getValue()),
+            kind == null ? null : BreakKind.valueOf(kind.getValue()),
+            buyerId == null ? null : new BuyerId(buyerId));
+    var page = breaks.list(filter, cursor == null ? null : position(cursor), limit);
+    return ResponseEntity.ok(
+        new BreakListDto()
+            .items(page.breaks().stream().map(BreaksController::toDto).toList())
+            .nextCursor(page.next() == null ? null : page.next().cursor()));
+  }
+
+  @Override
+  @PreAuthorize("hasAnyRole('reconciler', 'issuer-admin')")
+  public ResponseEntity<BreakDto> getBreak(UUID breakId) {
+    return breaks
+        .find(breakId)
+        .map(found -> ResponseEntity.ok(toDto(found)))
+        .orElseThrow(() -> problem(HttpStatus.NOT_FOUND, "No Break has this ID."));
+  }
+
+  private static Breaks.Position position(String cursor) {
+    try {
+      return Breaks.Position.of(cursor);
+    } catch (IllegalArgumentException e) {
+      throw problem(
+          HttpStatus.BAD_REQUEST,
+          "This cursor can't be read: pass a page's nextCursor as it is, or leave it out.");
+    }
   }
 
   // Not issuer-admin: the role that sets Credit Lines and records Repayments doesn't also move
@@ -111,12 +154,14 @@ class BreaksController implements BreaksApi {
     var dto =
         new BreakDto()
             .id(found.id())
-            .kind(BreakDto.KindEnum.fromValue(found.kind().name()))
+            .kind(BreakKindDto.fromValue(found.kind().name()))
             .recordId(found.recordId())
-            .status(BreakDto.StatusEnum.fromValue(found.status().name()))
+            .status(BreakStatusDto.fromValue(found.status().name()))
             .businessDate(found.businessDate())
             .buyerId(found.buyerId() == null ? null : found.buyerId().value())
-            .gap(toDto(found.gap()));
+            .gap(toDto(found.gap()))
+            .facts(found.facts())
+            .raisedAt(found.raisedAt().atOffset(ZoneOffset.UTC));
     if (found.resolved() instanceof RaisedBreak.Resolved resolved) {
       dto.resolution(
           new BreakResolutionDto()
@@ -137,9 +182,11 @@ class BreaksController implements BreaksApi {
   }
 
   private static ErrorResponseException unprocessable(String detail) {
+    return problem(HttpStatus.UNPROCESSABLE_CONTENT, detail);
+  }
+
+  private static ErrorResponseException problem(HttpStatus status, String detail) {
     return new ErrorResponseException(
-        HttpStatus.UNPROCESSABLE_CONTENT,
-        ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_CONTENT, detail),
-        null);
+        status, ProblemDetail.forStatusAndDetail(status, detail), null);
   }
 }

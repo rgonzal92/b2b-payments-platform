@@ -42,7 +42,9 @@ class GrafanaProvisioningTests {
           // clearing: ClearingFileImports.
           "clearing_files_total",
           "clearing_clearings_total",
-          "clearing_settlements_total");
+          "clearing_settlements_total",
+          // reconciliation: OpenBreaksMetric, a gauge, so no suffix.
+          "reconciliation_breaks_open");
 
   // A metric name in PromQL is followed by its label matchers or its range: name{…} or name[…].
   private static final Pattern METRIC = Pattern.compile("([a-zA-Z_:][a-zA-Z0-9_:]*)\\s*[{\\[]");
@@ -50,8 +52,8 @@ class GrafanaProvisioningTests {
   private final JsonMapper json = JsonMapper.builder().build();
 
   @Test
-  void theAuthorizationPaymentsAndClearingDashboardsQueryOnlyExportedMetrics() throws IOException {
-    for (var name : List.of("authorization", "payments", "clearing")) {
+  void everyDashboardQueriesOnlyExportedMetrics() throws IOException {
+    for (var name : List.of("authorization", "payments", "clearing", "breaks")) {
       var dashboard = json.readTree(GRAFANA.resolve("dashboards").resolve(name + ".json").toFile());
 
       assertThat(dashboard.path("uid").asString()).as(name).isEqualTo(name);
