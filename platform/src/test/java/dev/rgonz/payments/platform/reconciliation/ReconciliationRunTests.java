@@ -173,6 +173,9 @@ class ReconciliationRunTests {
     var facts = facts(neverCleared.requestId());
     assertThat(facts.at("/invoice/id").asString()).isEqualTo(neverCleared.invoiceId());
     assertThat(facts.at("/authorization/cardToken").asString()).isEqualTo(neverCleared.cardToken());
+    // A re-run of the day finds it again, and adds none.
+    assertThat(run(today(), ISSUER_ADMIN)).hasStatus(201);
+    assertThat(breaksNaming(neverCleared.requestId())).hasSize(1);
   }
 
   // The Network settled more than the platform imported for one file and less for another; a third

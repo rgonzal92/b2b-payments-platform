@@ -90,13 +90,11 @@ class ClearingBreaks implements ItemProcessor<RecordedClearing, Break> {
     facts.put("cardToken", clearing.cardToken());
     facts.put("buyerId", clearing.buyerId() == null ? null : clearing.buyerId().value().toString());
     facts.put("authorizationRequestId", clearing.authorizationRequestId());
-    facts.put("cleared", money(clearing.cleared()));
-    facts.put("authorized", clearing.authorized() == null ? null : money(clearing.authorized()));
+    facts.put("cleared", RecordBreaks.money(clearing.cleared()));
+    facts.put(
+        "authorized",
+        clearing.authorized() == null ? null : RecordBreaks.money(clearing.authorized()));
     facts.put("outcome", clearing.outcome().name());
     return facts;
-  }
-
-  private static Map<String, Object> money(Money money) {
-    return Map.of("minorUnits", money.minorUnits(), "currency", money.currency().getCurrencyCode());
   }
 }
