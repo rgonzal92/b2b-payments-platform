@@ -30,4 +30,14 @@ public interface Journal {
    * caller's transaction.
    */
   UUID postSettlement(String fileId, Money amount);
+
+  /**
+   * Posts a Correcting Entry: debits one Account and credits another by the amount, and returns the
+   * entry's ID, so a mistake in the books is put right by a new entry, never by changing one
+   * (ADR-0015). The key (a Break's ID) is its idempotency key: posting it again returns the first
+   * entry's ID and posts nothing, whatever the Accounts and amount. Joins the caller's transaction.
+   *
+   * @throws IllegalArgumentException when both are one Account, or the amount isn't positive
+   */
+  UUID postCorrection(String key, Account debited, Account credited, Money amount);
 }

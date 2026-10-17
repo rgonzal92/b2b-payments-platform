@@ -6,7 +6,8 @@
       { "name": "approver", "description": "A Buyer's employee who approves or rejects Invoices" },
       { "name": "erp", "description": "A Buyer's ERP, signing in as a machine" },
       { "name": "issuer-admin", "description": "Issuer staff" },
-      { "name": "network", "description": "The card Network, asking for Authorizations over gRPC" }
+      { "name": "network", "description": "The card Network, asking for Authorizations over gRPC" },
+      { "name": "reconciler", "description": "Issuer staff who resolve Breaks; kept apart from issuer-admin" }
     ]
   },
   "clients": [
@@ -16,6 +17,31 @@
       "enabled": true,
       "publicClient": false,
       "secret": "${SIMULATOR_ISSUER_ADMIN_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "realm roles as roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "simulator-reconciler",
+      "description": "The simulator acting as a Reconciler",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "${SIMULATOR_RECONCILER_SECRET}",
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
@@ -205,6 +231,12 @@
       "enabled": true,
       "serviceAccountClientId": "network",
       "realmRoles": ["network"]
+    },
+    {
+      "username": "service-account-simulator-reconciler",
+      "enabled": true,
+      "serviceAccountClientId": "simulator-reconciler",
+      "realmRoles": ["reconciler"]
     }
   ]
 }

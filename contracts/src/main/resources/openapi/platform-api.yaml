@@ -8,6 +8,51 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /v1/breaks/{breakId}/resolution:
+    post:
+      tags: [Breaks]
+      operationId: resolveBreak
+      summary: Resolve a Break
+      description: >-
+        Reconcilers only (role `reconciler`); the Reconciler is the token's subject. Resolves an `OPEN` Break in one of
+        three ways, with a note saying why: `ACCEPTED` moves no money; `REASSIGNED` posts a Correcting Entry that debits
+        the named Buyer's Buyer Receivable and credits Clearing Suspense by the amount; `CORRECTED` posts a balanced
+        Correcting Entry that debits one named Account and credits another by the amount. Nothing already in the books
+        is changed. A missing or blank note, an amount of zero or less or in an unknown currency, the same Account on
+        both sides, an unknown Buyer, or a field the kind needs left out is `422`. A Break already resolved answers
+        `409`, so a repeat can't move money twice and there is no `Idempotency-Key`; an unknown Break answers `404`.
+      parameters:
+        - name: breakId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BreakResolutionRequest'
+      responses:
+        '200':
+          description: The Break, resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Break'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
   /v1/buyers/{buyerId}:
     put:
       tags: [Buyers]
@@ -945,6 +990,108 @@ components:
           type: integer
           format: int64
           description: The Breaks an earlier run had raised already.
+    BreakResolutionRequest:
+      type: object
+      description: >-
+        How a Reconciler resolves a Break. `note` is required for every kind; `REASSIGNED` also needs `buyerId` and
+        `amount`, and `CORRECTED` needs `debitAccount`, `creditAccount` and `amount`. Only `kind` is checked by the
+        schema; the rest is refused with `422`.
+      required: [kind]
+      properties:
+        kind:
+          $ref: '#/components/schemas/ResolutionKind'
+        note:
+          type: string
+          description: Why the Break is resolved this way.
+        buyerId:
+          type: string
+          format: uuid
+          description: For `REASSIGNED`, the Buyer whose Buyer Receivable is debited.
+        debitAccount:
+          $ref: '#/components/schemas/LedgerAccount'
+        creditAccount:
+          $ref: '#/components/schemas/LedgerAccount'
+        amount:
+          $ref: '#/components/schemas/Amount'
+    ResolutionKind:
+      type: string
+      enum: [ACCEPTED, REASSIGNED, CORRECTED]
+    LedgerAccount:
+      type: object
+      description: An Account in the Issuer's books, by kind; a Buyer Receivable also names its Buyer.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [BUYER_RECEIVABLE, NETWORK_SETTLEMENT_PAYABLE, ISSUER_CASH, CLEARING_SUSPENSE]
+        buyerId:
+          type: string
+          format: uuid
+    Amount:
+      type: object
+      description: >-
+        An amount in integer minor units with its currency. Unlike Money it takes any whole number and any three-letter
+        code, so a Break in another currency can be shown, and a bad amount is refused with `422`.
+      required: [minorUnits, currency]
+      properties:
+        minorUnits:
+          type: integer
+          format: int64
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+    Break:
+      type: object
+      description: What Reconciliation could not match, `OPEN` until a Reconciler resolves it.
+      required: [id, kind, recordId, status, businessDate, gap]
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [ABOVE_AUTHORIZED_AMOUNT, NO_AUTHORIZATION, UNKNOWN_CARD, OTHER_CURRENCY,
+                 AGAINST_REVERSED_AUTHORIZATION, AFTER_HOLD_EXPIRED, AUTHORIZATION_ALREADY_CLEARED, UNDERCHARGE]
+        recordId:
+          type: string
+          description: The ID of the record the Break names, of the type its kind says (a Clearing's Network record ID).
+        status:
+          type: string
+          enum: [OPEN, RESOLVED]
+        businessDate:
+          type: string
+          format: date
+          description: The Business Date of the run that raised it.
+        buyerId:
+          type: string
+          format: uuid
+          description: The Buyer it concerns; null when none is known.
+        gap:
+          $ref: '#/components/schemas/Amount'
+        resolution:
+          $ref: '#/components/schemas/BreakResolution'
+    BreakResolution:
+      type: object
+      description: How and by whom a Break was resolved; present once it is `RESOLVED`.
+      required: [kind, note, resolvedBy, resolvedByName, resolvedAt]
+      properties:
+        kind:
+          $ref: '#/components/schemas/ResolutionKind'
+        note:
+          type: string
+        resolvedBy:
+          type: string
+          description: The Reconciler's user ID at the identity provider (the token's subject).
+        resolvedByName:
+          type: string
+          description: The Reconciler's user name when they resolved it, for reading the record.
+        resolvedAt:
+          type: string
+          format: date-time
+        correctingEntryId:
+          type: string
+          format: uuid
+          description: The Correcting Entry's Journal Entry ID; null for `ACCEPTED`.
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.

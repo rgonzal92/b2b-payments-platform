@@ -61,6 +61,20 @@ class JournalEntries implements Journal {
                 new Line(Account.issuerCash(), Side.CREDIT, amount))));
   }
 
+  @Override
+  @Transactional
+  public UUID postCorrection(String key, Account debited, Account credited, Money amount) {
+    if (debited.equals(credited)) {
+      throw new IllegalArgumentException("A Correcting Entry moves money between two Accounts.");
+    }
+    return post(
+        new JournalEntry(
+            JournalEntry.Kind.CORRECTION,
+            key,
+            List.of(
+                new Line(debited, Side.DEBIT, amount), new Line(credited, Side.CREDIT, amount))));
+  }
+
   // Posts a Repayment's Journal Entry, debiting Issuer Cash and crediting the Buyer's Receivable,
   // and returns the Repayment its idempotency key stands for. Runs in the caller's transaction.
   Repayment postRepayment(String idempotencyKey, BuyerId buyerId, Money amount) {
