@@ -14,7 +14,8 @@ class ClearingSchema {
     return ModuleMigrations.of(dataSource, "clearing");
   }
 
-  // Spring Batch's job repository, which only the Clearing File import uses, in a schema of its own
+  // Spring Batch's job repository, which the Clearing File import and the Reconciliation
+  // (reconciliation) use, in a schema of its own
   // (spring.batch.jdbc.table-prefix=batch.BATCH_). Spring Boot creates the job repository only
   // after every Flyway migration has run.
   @Bean

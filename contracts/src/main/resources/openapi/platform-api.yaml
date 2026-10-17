@@ -425,6 +425,39 @@ paths:
           $ref: '#/components/responses/Problem'
         '404':
           $ref: '#/components/responses/Problem'
+  /v1/reconciliation-runs:
+    post:
+      tags: [ReconciliationRuns]
+      operationId: runReconciliation
+      summary: Run a Reconciliation for a Business Date now
+      description: >-
+        Issuer staff only (role `issuer-admin`). Reconciles the Business Date at once, instead of waiting for the daily
+        run just after midnight UTC, and answers when the run is done. Every Clearing of that day whose outcome isn't
+        matched raises a Break of that outcome's kind, and so does every matched Clearing below its authorized amount
+        (an Undercharge). Each Break has a natural key, its kind and the record it names, so a run that finds a Break
+        raised before counts it as known instead of raising it again: a repeat is harmless, so there is no
+        `Idempotency-Key`. A run that fails keeps the Breaks it raised and answers `500`; running it again finds them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconciliationRunRequest'
+      responses:
+        '201':
+          description: The run is done.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconciliationRun'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '500':
+          $ref: '#/components/responses/Problem'
   /v1/remittance-links/{token}:
     get:
       tags: [RemittanceLinks]
@@ -880,6 +913,38 @@ components:
           $ref: '#/components/schemas/Money'
         matched:
           type: boolean
+    ReconciliationRunRequest:
+      type: object
+      required: [businessDate]
+      properties:
+        businessDate:
+          type: string
+          format: date
+          description: The Business Date to reconcile, by the Network's calendar in UTC.
+    ReconciliationRun:
+      type: object
+      description: What a Reconciliation run found.
+      required: [runId, businessDate, breaksFound, newBreaks, knownBreaks]
+      properties:
+        runId:
+          type: string
+          format: uuid
+          description: The run's ID, its `runId` job parameter in Spring Batch's job repository.
+        businessDate:
+          type: string
+          format: date
+        breaksFound:
+          type: integer
+          format: int64
+          description: Every Break the run found, new or known.
+        newBreaks:
+          type: integer
+          format: int64
+          description: The Breaks this run raised.
+        knownBreaks:
+          type: integer
+          format: int64
+          description: The Breaks an earlier run had raised already.
     Decision:
       type: object
       description: One Approver's approval or rejection of an Invoice.
