@@ -37,3 +37,6 @@ build/
 
 ### Clearing Files (they hold PANs) ###
 /var/
+
+### Playwright browser checks (screenshots) ###
+.playwright-mcp/

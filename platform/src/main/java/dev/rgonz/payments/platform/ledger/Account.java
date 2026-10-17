@@ -5,36 +5,37 @@ import java.util.Objects;
 
 /**
  * An Account in the Issuer's books (ADR-0015): a Buyer Receivable per Buyer, or one of the Accounts
- * the Issuer has once. Its balance is the sum of the Journal Entry lines posted to it.
+ * the Issuer has once per currency. Its balance is the sum of the Journal Entry lines posted to it.
+ * Other modules name one to post a Correcting Entry ({@link Journal#postCorrection}).
  *
  * @param buyerId the Buyer of a Buyer Receivable; null for every other kind
  */
-record Account(Kind kind, BuyerId buyerId) {
+public record Account(Kind kind, BuyerId buyerId) {
 
-  Account {
+  public Account {
     Objects.requireNonNull(kind, "kind");
     if ((kind == Kind.BUYER_RECEIVABLE) != (buyerId != null)) {
       throw new IllegalArgumentException("Only a Buyer Receivable belongs to a Buyer.");
     }
   }
 
-  static Account buyerReceivable(BuyerId buyerId) {
+  public static Account buyerReceivable(BuyerId buyerId) {
     return new Account(Kind.BUYER_RECEIVABLE, buyerId);
   }
 
-  static Account networkSettlementPayable() {
+  public static Account networkSettlementPayable() {
     return new Account(Kind.NETWORK_SETTLEMENT_PAYABLE, null);
   }
 
-  static Account issuerCash() {
+  public static Account issuerCash() {
     return new Account(Kind.ISSUER_CASH, null);
   }
 
-  static Account clearingSuspense() {
+  public static Account clearingSuspense() {
     return new Account(Kind.CLEARING_SUSPENSE, null);
   }
 
-  enum Kind {
+  public enum Kind {
     /** What one Buyer owes the Issuer for its cleared Charges. */
     BUYER_RECEIVABLE,
     /** What the Issuer owes the Network for cleared Charges not yet settled. */

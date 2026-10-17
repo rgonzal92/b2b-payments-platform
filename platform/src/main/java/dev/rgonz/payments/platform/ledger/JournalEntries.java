@@ -18,12 +18,39 @@ import org.springframework.transaction.annotation.Transactional;
  * the Accounts they post to, each created the first time an entry posts to it.
  */
 @Repository
-class JournalEntries implements Journal {
+class JournalEntries implements Journal, Books {
 
   private final JdbcClient jdbc;
 
   JournalEntries(JdbcClient jdbc) {
     this.jdbc = jdbc;
+  }
+
+  // An Account's lines are all in its currency, so the Account's currency is each line's.
+  @Override
+  public List<BooksBalance> balances() {
+    return jdbc.sql(
+            """
+            select a.currency,
+                   coalesce(sum(l.amount_minor) filter (where l.side = 'DEBIT'), 0) as debits,
+                   coalesce(sum(l.amount_minor) filter (where l.side = 'CREDIT'), 0) as credits,
+                   coalesce(sum(case l.side when 'CREDIT' then l.amount_minor
+                                            else -l.amount_minor end)
+                            filter (where a.kind = 'NETWORK_SETTLEMENT_PAYABLE'), 0) as payable
+              from ledger.journal_line l
+              join ledger.account a on a.id = l.account_id
+             group by a.currency
+             order by a.currency
+            """)
+        .query(
+            (row, rowNumber) -> {
+              var currency = Currency.getInstance(row.getString("currency"));
+              return new BooksBalance(
+                  new Money(row.getLong("debits"), currency),
+                  new Money(row.getLong("credits"), currency),
+                  new Money(row.getLong("payable"), currency));
+            })
+        .list();
   }
 
   @Override
@@ -59,6 +86,20 @@ class JournalEntries implements Journal {
             List.of(
                 new Line(Account.networkSettlementPayable(), Side.DEBIT, amount),
                 new Line(Account.issuerCash(), Side.CREDIT, amount))));
+  }
+
+  @Override
+  @Transactional
+  public UUID postCorrection(String key, Account debited, Account credited, Money amount) {
+    if (debited.equals(credited)) {
+      throw new IllegalArgumentException("A Correcting Entry moves money between two Accounts.");
+    }
+    return post(
+        new JournalEntry(
+            JournalEntry.Kind.CORRECTION,
+            key,
+            List.of(
+                new Line(debited, Side.DEBIT, amount), new Line(credited, Side.CREDIT, amount))));
   }
 
   // Posts a Repayment's Journal Entry, debiting Issuer Cash and crediting the Buyer's Receivable,

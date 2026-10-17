@@ -3,11 +3,20 @@ package dev.rgonz.payments.platform.cards;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /** How other modules issue and look up Virtual Cards, by Card Token, never by PAN (ADR-0004). */
 public interface Cards {
+
+  /**
+   * Every card the expiry job expired on this day, by the UTC calendar, because its approved Charge
+   * didn't clear within 7 days, whatever its status since (a late Clearing moves it to {@code
+   * CLEARED}), in the order they expired.
+   */
+  List<SingleUseCard> expiredUnclearedOn(LocalDate day);
 
   /**
    * Issues the Payment's Single-Use Card for the Buyer, locked to the Supplier and amount and valid

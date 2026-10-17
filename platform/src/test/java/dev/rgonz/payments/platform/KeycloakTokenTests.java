@@ -96,6 +96,14 @@ class KeycloakTokenTests {
                 .formatted(claims.getSubject()));
   }
 
+  @Test
+  void theSimulatorsReconcilerGetsATokenWithTheReconcilerRole() throws Exception {
+    var claims = JWTParser.parse(clientCredentialsToken("simulator-reconciler")).getJWTClaimsSet();
+
+    assertThat(claims.getStringListClaim("roles")).contains("reconciler");
+    assertThat(claims.getStringListClaim("roles")).doesNotContain("issuer-admin");
+  }
+
   // Both tests need Acme; whichever runs second finds it already there.
   private void createAcme() {
     var response =
