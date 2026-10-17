@@ -1,11 +1,12 @@
 package dev.rgonz.payments.loadtest;
 
-import static io.gatling.javaapi.core.CoreDsl.constantUsersPerSec;
 import static io.gatling.javaapi.core.CoreDsl.crashLoadGenerator;
 import static io.gatling.javaapi.core.CoreDsl.exec;
 import static io.gatling.javaapi.core.CoreDsl.global;
+import static io.gatling.javaapi.core.CoreDsl.group;
+import static io.gatling.javaapi.core.CoreDsl.pace;
 import static io.gatling.javaapi.core.CoreDsl.percent;
-import static io.gatling.javaapi.core.CoreDsl.rampUsersPerSec;
+import static io.gatling.javaapi.core.CoreDsl.rampUsers;
 import static io.gatling.javaapi.core.CoreDsl.randomSwitch;
 import static io.gatling.javaapi.core.CoreDsl.scenario;
 import static io.gatling.javaapi.grpc.GrpcDsl.grpc;
@@ -17,7 +18,6 @@ import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
 import dev.rgonz.payments.loadtest.CardsFile.Card;
 import io.gatling.javaapi.core.ActionBuilder;
 import io.gatling.javaapi.core.ChainBuilder;
-import io.gatling.javaapi.core.ScenarioBuilder;
 import io.gatling.javaapi.core.Session;
 import io.gatling.javaapi.core.Simulation;
 import io.grpc.Status;
@@ -36,12 +36,18 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
- * The platform's {@code Authorize} under load (M4 design, "The load test"; ADR-0010): an open
- * workload that ramps up to 200 Authorizations a second over a 30-second warm-up, then holds 200 a
- * second for 2 minutes. About 90% charge a fresh card from the simulator's cards file and expect it
- * approved; 5% charge a card this run already charged (a {@code 57}) and 5% send a wrong security
- * code (an {@code N7}). Any other answer, or any gRPC error, fails the call, and one failed call
- * fails the run. The warm-up and the measured window are separate groups in the report.
+ * The platform's {@code Authorize} under load (M4 design, "The load test"; ADR-0010): 200
+ * Authorizations a second for a 30-second warm-up, then for the 2 measured minutes. About 90%
+ * charge a fresh card from the simulator's cards file and expect it approved; 5% charge a card this
+ * run already charged (a {@code 57}) and 5% send a wrong security code (an {@code N7}). Any other
+ * answer, or any gRPC error, fails the call, and one failed call fails the run. Each Charge is in a
+ * group named after its phase, so the report shows the measured window apart from the warm-up.
+ *
+ * <p>The load is a closed one, paced: Gatling's open-source gRPC support ends the run past {@value
+ * #USERS} virtual users (or 5 minutes), so {@value #USERS} users each start a Charge every {@code
+ * USERS / rate} seconds, 25 ms at 200 a second. While each Charge answers within that, the rate
+ * holds; a slower one delays its user's next Charge, so the run's achieved rate shows any slowdown
+ * the measured latency doesn't.
  *
  * <p>Runs by hand against the Docker Compose stack: see the README. {@code NETWORK_CLIENT_SECRET}
  * in the environment signs it in as the Network. System properties override the defaults: {@code
@@ -58,6 +64,8 @@ public class AuthorizeSimulation extends Simulation {
       Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"");
   // Keycloak's tokens last 5 minutes, and the run uses the one it starts with.
   private static final int LONGEST_RUN_SECONDS = 240;
+  // gatling-grpc's open-source limit: a sixth virtual user ends the run.
+  private static final int USERS = 5;
 
   private static final Path CARDS_FILE =
       Path.of(System.getProperty("cardsFile")).toAbsolutePath().normalize();
@@ -92,10 +100,9 @@ public class AuthorizeSimulation extends Simulation {
           "A run longer than %d s would outlive its Network token.".formatted(LONGEST_RUN_SECONDS));
     }
     freshCards = CardsFile.read(CARDS_FILE);
-    // About 90% of users charge a fresh card, plus a margin for the random mix and for the first
-    // declines, which charge a fresh card while none is charged yet.
-    var users = (1 + RATE) * WARM_UP_SECONDS / 2 + RATE * MEASURED_SECONDS;
-    var needed = users * 91 / 100;
+    // About 90% of Charges take a fresh card, plus a margin for the random mix and for the first
+    // declines, which take a fresh card while none is charged yet.
+    var needed = RATE * (WARM_UP_SECONDS + MEASURED_SECONDS) * 91 / 100;
     if (freshCards.size() < needed) {
       throw new IllegalStateException(
           "%s holds %d cards; this run needs about %d. Seed more with POST /demo/load-test-cards."
@@ -112,22 +119,24 @@ public class AuthorizeSimulation extends Simulation {
                 .asciiHeader("authorization")
                 .value("Bearer " + networkToken()));
 
-    setUp(
-            charges("Warm-up")
-                .injectOpen(rampUsersPerSec(1).to(RATE).during(WARM_UP_SECONDS))
-                .andThen(
-                    charges("Measured")
-                        .injectOpen(constantUsersPerSec(RATE).during(MEASURED_SECONDS))))
+    // Each user starts a Charge every pace; they start spread over a second, so their Charges
+    // interleave. (Gatling injects no one over a ramp shorter than a second.)
+    var pace = Duration.ofNanos(1_000_000_000L * USERS / RATE);
+    var charges =
+        scenario("Authorize")
+            .during(Duration.ofSeconds(WARM_UP_SECONDS))
+            .on(pace(pace).exec(charge("Warm-up")))
+            .during(Duration.ofSeconds(MEASURED_SECONDS))
+            .on(pace(pace).exec(charge("Measured")));
+    setUp(charges.injectOpen(rampUsers(USERS).during(Duration.ofSeconds(1))))
         .protocols(protocol)
         .assertions(global().failedRequests().count().is(0L));
   }
 
-  // Each user makes one Charge, inside a group named after the phase, so the report shows the
-  // measured window's numbers apart from the warm-up's.
-  private ScenarioBuilder charges(String phase) {
+  // One Charge, in a group named after the phase.
+  private ChainBuilder charge(String phase) {
     var approved = approvedCharge(phase);
-    return scenario(phase)
-        .group(phase)
+    return group(phase)
         .on(
             randomSwitch()
                 .on(
