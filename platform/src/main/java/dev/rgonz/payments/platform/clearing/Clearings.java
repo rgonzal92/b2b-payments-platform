@@ -2,9 +2,19 @@ package dev.rgonz.payments.platform.clearing;
 
 import dev.rgonz.payments.platform.authorization.ApprovedAuthorizations;
 import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.ledger.Journal;
+import dev.rgonz.payments.platform.shared.BuyerId;
+import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.vault.Vault;
+import java.sql.Date;
+import java.time.LocalDate;
+import java.util.Currency;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -14,7 +24,7 @@ import org.springframework.stereotype.Repository;
  * answers with the Card Token (ADR-0004).
  */
 @Repository
-class Clearings {
+class Clearings implements RecordedClearings {
 
   private final JdbcClient jdbc;
   private final Vault vault;
@@ -111,6 +121,51 @@ class Clearings {
             .param("journalEntryId", journalEntryId)
             .update()
         == 1;
+  }
+
+  @Override
+  public List<RecordedClearing> onBusinessDate(LocalDate businessDate) {
+    // clearing keeps only each card's Card Token: its Buyer comes from cards, once per card.
+    var buyers = new HashMap<String, Optional<BuyerId>>();
+    return jdbc.sql(
+            """
+            select c.network_record_id, c.file_id, f.business_date, c.card_token,
+                   c.authorization_request_id, c.cleared_amount_minor, c.cleared_currency,
+                   c.authorized_amount_minor, c.authorized_currency, c.outcome
+              from clearing.clearing c
+              join clearing.clearing_file f on f.id = c.file_id
+             where f.business_date = :businessDate
+             order by c.network_record_id
+            """)
+        .param("businessDate", Date.valueOf(businessDate))
+        .query(
+            (row, rowNum) -> {
+              var cardToken = row.getString("card_token");
+              var authorizedCurrency = row.getString("authorized_currency");
+              return new RecordedClearing(
+                  row.getString("network_record_id"),
+                  row.getString("file_id"),
+                  row.getObject("business_date", LocalDate.class),
+                  cardToken,
+                  cardToken == null ? null : buyerOf(cardToken, buyers),
+                  row.getString("authorization_request_id"),
+                  new Money(
+                      row.getLong("cleared_amount_minor"),
+                      Currency.getInstance(row.getString("cleared_currency"))),
+                  authorizedCurrency == null
+                      ? null
+                      : new Money(
+                          row.getLong("authorized_amount_minor"),
+                          Currency.getInstance(authorizedCurrency)),
+                  ClearingOutcome.valueOf(row.getString("outcome")));
+            })
+        .list();
+  }
+
+  private BuyerId buyerOf(String cardToken, Map<String, Optional<BuyerId>> buyers) {
+    return buyers
+        .computeIfAbsent(cardToken, token -> cards.find(token).map(SingleUseCard::buyerId))
+        .orElse(null);
   }
 
   // Whether a Clearing of this Authorization is recorded already, in this chunk or before it. The

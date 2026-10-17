@@ -35,7 +35,7 @@ M3 books every Clearing and settles every file, and records how each Clearing ma
 
 ### Reconciliation (Q1, Q9)
 
-- A Spring Batch job in `reconciliation`, sharing M3's job repository: one run per Business Date, just after midnight UTC for the day before, and on demand through `POST /v1/reconciliation-runs` (Issuer staff), which answers the run's summary: Breaks found, new and already known.
+- A Spring Batch job in `reconciliation`, sharing M3's job repository: one run per Business Date, just after midnight UTC for the day before, and on demand through `POST /v1/reconciliation-runs` (Issuer staff), which answers the run's summary: Breaks found, new and already known. (Changed during #69: each run is a job instance of its own, identified by the Business Date and a new run ID, so a date reconciled already can be run again; a failed run is run again rather than restarted, which the natural key makes harmless. The daily run is at 00:05 UTC.)
 - Each Break has a natural key, its kind plus the record it names, so a re-run finds an existing Break instead of adding another, and a resolved Break stays resolved.
 - A Break never closes by itself. An Authorization flagged as never cleared whose Clearing arrives late gets that Clearing's own "after Hold expired" Break; the two link to each other, and a Reconciler closes both.
 
@@ -44,7 +44,7 @@ M3 books every Clearing and settles every file, and records how each Clearing ma
 | Kind | Found from | Names |
 |---|---|---|
 | One per M3 outcome other than matched: above authorized amount, no Authorization, unknown card, other currency, against a reversed Authorization, after Hold expired, Authorization already cleared | the Clearing's outcome | the Clearing (and its Authorization when there is one) |
-| Undercharge | a matched Clearing below its authorized amount | the Clearing, its Authorization and Invoice |
+| Undercharge | a matched Clearing below its authorized amount | the Clearing, its Authorization and Invoice (Changed during #69: the Clearing and its Authorization's request ID; the Invoice isn't named yet, as `payables` has no read API; no ticket covers it so far) |
 | Never cleared | an approved Authorization expired by the 7-day rule | the Authorization and its Invoice |
 | Unpaid Invoice | a Payment that ended `EXPIRED` or `FAILED` | the Payment and its Invoice |
 | Mismatched Settlement | a Settlement whose Network figure differed from the imported total | the Settlement and its Clearing File |
