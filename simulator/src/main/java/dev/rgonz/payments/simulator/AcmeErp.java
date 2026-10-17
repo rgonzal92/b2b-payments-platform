@@ -3,7 +3,6 @@ package dev.rgonz.payments.simulator;
 import dev.rgonz.payments.contracts.client.InvoicesApi;
 import dev.rgonz.payments.contracts.client.model.Invoice;
 import dev.rgonz.payments.contracts.client.model.InvoiceRequest;
-import dev.rgonz.payments.contracts.client.model.InvoiceSupplier;
 import dev.rgonz.payments.contracts.client.model.Money;
 import java.time.LocalDate;
 import java.util.Locale;
@@ -44,13 +43,7 @@ class AcmeErp {
     var number = "INV-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     var request =
         new InvoiceRequest()
-            .supplier(
-                new InvoiceSupplier()
-                    .name("Globex")
-                    .taxId("12-3456789")
-                    .buyerReference("GLOBEX-01")
-                    .remittanceAddress(globexRemittanceAddress)
-                    .acceptorId(globexAcceptorId))
+            .supplier(GlobexSupplier.onInvoices(globexRemittanceAddress, globexAcceptorId))
             .invoiceNumber(number)
             .amount(amount)
             .dueDate(LocalDate.now().plusDays(30));

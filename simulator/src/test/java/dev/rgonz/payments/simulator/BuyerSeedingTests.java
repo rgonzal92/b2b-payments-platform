@@ -16,11 +16,11 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 /**
- * The simulator creates Acme and gives it a Credit Line at startup, signed in as Issuer staff,
- * against a stub Keycloak and platform.
+ * The simulator creates Acme, then Initech, and gives each a Credit Line at startup, signed in as
+ * Issuer staff, against a stub Keycloak and platform.
  */
 @SpringBootTest(properties = "simulator.seed.enabled=true")
-class AcmeSeedingTests {
+class BuyerSeedingTests {
 
   record Recorded(String method, String path, String authorization, String body) {}
 
@@ -53,12 +53,32 @@ class AcmeSeedingTests {
 
   @Test
   void thenGivesAcmeACreditLine() {
-    assertThat(platformRequests).hasSize(2);
     var put = platformRequests.get(1);
     assertThat(put.method()).isEqualTo("PUT");
     assertThat(put.path()).isEqualTo("/v1/buyers/dc9a9857-e40f-4d50-9ee3-879f0c7472c5/credit-line");
     assertThat(put.authorization()).isEqualTo("Bearer stub-token");
     assertThat(put.body()).contains("\"minorUnits\":10000000").contains("\"currency\":\"USD\"");
+  }
+
+  @Test
+  void thenCreatesInitechWithAnApprovalThresholdOf100Dollars() {
+    assertThat(platformRequests).hasSize(4);
+    var put = platformRequests.get(2);
+    assertThat(put.method()).isEqualTo("PUT");
+    assertThat(put.path()).isEqualTo("/v1/buyers/13542409-3211-4b3d-8ba0-3762801cffcd");
+    assertThat(put.authorization()).isEqualTo("Bearer stub-token");
+    assertThat(put.body())
+        .contains("\"name\":\"Initech\"")
+        .contains("\"approvalThreshold\":{\"minorUnits\":10000,\"currency\":\"USD\"}");
+  }
+
+  @Test
+  void andGivesInitechAMillionDollarCreditLine() {
+    var put = platformRequests.get(3);
+    assertThat(put.method()).isEqualTo("PUT");
+    assertThat(put.path()).isEqualTo("/v1/buyers/13542409-3211-4b3d-8ba0-3762801cffcd/credit-line");
+    assertThat(put.authorization()).isEqualTo("Bearer stub-token");
+    assertThat(put.body()).contains("\"minorUnits\":100000000").contains("\"currency\":\"USD\"");
   }
 
   private static HttpServer startStub() {
@@ -91,7 +111,7 @@ class AcmeSeedingTests {
                 path.endsWith("/credit-line")
                     ? body
                     : body.replaceFirst(
-                        "\\{", "{\"id\": \"dc9a9857-e40f-4d50-9ee3-879f0c7472c5\", "));
+                        "\\{", "{\"id\": \"" + path.substring("/v1/buyers/".length()) + "\", "));
           });
       server.start();
       return server;
