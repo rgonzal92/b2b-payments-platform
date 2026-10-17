@@ -34,6 +34,7 @@
 		<module>platform</module>
 		<module>simulator</module>
 		<module>e2e</module>
+		<module>load-test</module>
 	</modules>
 
 	<properties>
