@@ -1,5 +1,7 @@
 package dev.rgonz.payments.platform.payables;
 
+import dev.rgonz.payments.platform.cards.Cards;
+import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import io.micrometer.core.instrument.Counter;
@@ -7,9 +9,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Currency;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -19,7 +23,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /** Payments and their saga state (ADR-0014). */
 @Repository
-class Payments {
+class Payments implements InvoicePayments {
 
   private static final String COLUMNS =
       """
@@ -28,16 +32,59 @@ class Payments {
       """;
 
   private final JdbcClient jdbc;
+  private final Cards cards;
   private final MeterRegistry meters;
 
-  Payments(JdbcClient jdbc, MeterRegistry meters) {
+  Payments(JdbcClient jdbc, Cards cards, MeterRegistry meters) {
     this.jdbc = jdbc;
+    this.cards = cards;
     this.meters = meters;
     // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
     // before the first increment, or they miss it.
     for (var state : Payment.State.values()) {
       reached(state);
     }
+  }
+
+  @Override
+  public List<UnpaidPayment> endedUnpaidOn(LocalDate day) {
+    return jdbc.sql(
+            """
+            select id, invoice_id, buyer_id, amount_minor, currency, state, failure_reason,
+                   ended_at
+              from payables.payment
+             where ended_at >= :from and ended_at < :to
+             order by ended_at, id
+            """)
+        .param("from", day.atStartOfDay().atOffset(ZoneOffset.UTC))
+        .param("to", day.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC))
+        .query(
+            (row, rowNumber) ->
+                new UnpaidPayment(
+                    row.getObject("id", UUID.class),
+                    row.getObject("invoice_id", UUID.class),
+                    new BuyerId(row.getObject("buyer_id", UUID.class)),
+                    new Money(
+                        row.getLong("amount_minor"),
+                        Currency.getInstance(row.getString("currency"))),
+                    row.getString("state"),
+                    row.getString("failure_reason"),
+                    row.getObject("ended_at", OffsetDateTime.class).toInstant()))
+        .list();
+  }
+
+  // A card's Payment ID is the card's own, given at issuance.
+  @Override
+  public Optional<UUID> invoiceForCard(String cardToken) {
+    return cards
+        .find(cardToken)
+        .map(SingleUseCard::paymentId)
+        .flatMap(
+            paymentId ->
+                jdbc.sql("select invoice_id from payables.payment where id = :id")
+                    .param("id", paymentId)
+                    .query(UUID.class)
+                    .optional());
   }
 
   /**
@@ -94,7 +141,8 @@ class Payments {
 
   /**
    * Saves the Payment's new state, unless the row is no longer as it was when read: another worker
-   * has moved the Payment on since, and its state wins. True when it was saved.
+   * has moved the Payment on since, and its state wins. True when it was saved. A Payment that ends
+   * {@code FAILED} or {@code EXPIRED} records when, for Reconciliation.
    */
   boolean update(Payment read, Payment next) {
     var saved =
@@ -104,7 +152,9 @@ class Payments {
                    set state = :state,
                        failure_reason = :failureReason,
                        attempts = :attempts,
-                       next_attempt_at = :nextAttemptAt
+                       next_attempt_at = :nextAttemptAt,
+                       ended_at = case when :state in ('FAILED', 'EXPIRED')
+                                       then coalesce(ended_at, now()) end
                  where id = :id
                    and state = :readState
                    and attempts = :readAttempts

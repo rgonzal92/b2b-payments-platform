@@ -2,6 +2,11 @@ package dev.rgonz.payments.platform.clearing;
 
 import dev.rgonz.payments.platform.ledger.Journal;
 import dev.rgonz.payments.platform.shared.Money;
+import java.sql.Date;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.util.Currency;
+import java.util.List;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -12,7 +17,7 @@ import org.springframework.stereotype.Repository;
  * Business Date.
  */
 @Repository
-class Settlements {
+class Settlements implements RecordedSettlements {
 
   private final JdbcClient jdbc;
   private final Journal journal;
@@ -20,6 +25,45 @@ class Settlements {
   Settlements(JdbcClient jdbc, Journal journal) {
     this.jdbc = jdbc;
     this.journal = journal;
+  }
+
+  // A refused file posted nothing, so it has nothing to settle.
+  @Override
+  public boolean everyFileSettled() {
+    return jdbc.sql(
+            """
+            select not exists (select 1 from clearing.clearing_file f
+                                where f.status <> 'REFUSED'
+                                  and not exists (select 1 from clearing.settlement s
+                                                   where s.file_id = f.id))
+            """)
+        .query(Boolean.class)
+        .single();
+  }
+
+  @Override
+  public List<RecordedSettlement> mismatchedOn(LocalDate businessDate) {
+    return jdbc.sql(
+            """
+            select s.file_id, f.business_date, s.amount_minor, s.imported_total_minor, s.currency,
+                   s.settled_at
+              from clearing.settlement s
+              join clearing.clearing_file f on f.id = s.file_id
+             where f.business_date = :businessDate and not s.matched
+             order by s.file_id
+            """)
+        .param("businessDate", Date.valueOf(businessDate))
+        .query(
+            (row, rowNumber) -> {
+              var currency = Currency.getInstance(row.getString("currency"));
+              return new RecordedSettlement(
+                  row.getString("file_id"),
+                  row.getObject("business_date", LocalDate.class),
+                  new Money(row.getLong("amount_minor"), currency),
+                  new Money(row.getLong("imported_total_minor"), currency),
+                  row.getObject("settled_at", OffsetDateTime.class).toInstant());
+            })
+        .list();
   }
 
   /**
