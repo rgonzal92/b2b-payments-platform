@@ -34,7 +34,7 @@ class OpenBreaksMetric {
         Gauge.builder("reconciliation.breaks.open", count, AtomicLong::get)
             .description("Open Breaks, by kind and by how long ago they were raised")
             .tag("kind", kind.name())
-            .tag("age", tag(age))
+            .tag("age", age.tag)
             .register(meters);
       }
       open.put(kind, byAge);
@@ -50,14 +50,5 @@ class OpenBreaksMetric {
             byAge.forEach(
                 (age, count) ->
                     count.set(counts.getOrDefault(kind, Map.of()).getOrDefault(age, 0L))));
-  }
-
-  // Tag values as the dashboard shows them.
-  private static String tag(OpenAge age) {
-    return switch (age) {
-      case UNDER_1_DAY -> "under_1_day";
-      case ONE_TO_7_DAYS -> "1_to_7_days";
-      case OVER_7_DAYS -> "over_7_days";
-    };
   }
 }

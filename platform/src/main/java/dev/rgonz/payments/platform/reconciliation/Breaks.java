@@ -147,14 +147,20 @@ class Breaks {
     return counts;
   }
 
-  /** How long ago an open Break was raised. */
+  /** How long ago an open Break was raised, and its metric tag, as the dashboard shows it. */
   enum OpenAge {
     /** Raised in the last 24 hours. */
-    UNDER_1_DAY,
+    UNDER_1_DAY("under_1_day"),
     /** Raised 1 to 7 days ago. */
-    ONE_TO_7_DAYS,
+    ONE_TO_7_DAYS("1_to_7_days"),
     /** Raised more than 7 days ago. */
-    OVER_7_DAYS
+    OVER_7_DAYS("over_7_days");
+
+    final String tag;
+
+    OpenAge(String tag) {
+      this.tag = tag;
+    }
   }
 
   private Raised raised(ResultSet row, int rowNumber) throws SQLException {

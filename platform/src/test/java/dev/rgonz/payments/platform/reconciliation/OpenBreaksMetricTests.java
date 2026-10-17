@@ -33,12 +33,12 @@ class OpenBreaksMetricTests {
   @Test
   void everyKindAndAgeIsRegisteredFromStartup() {
     for (var kind : BreakKind.values()) {
-      for (var age : new String[] {"under_1_day", "1_to_7_days", "over_7_days"}) {
+      for (var age : Breaks.OpenAge.values()) {
         assertThat(
                 meters
                     .find("reconciliation.breaks.open")
                     .tag("kind", kind.name())
-                    .tag("age", age)
+                    .tag("age", age.tag)
                     .gauge())
             .as("%s %s", kind, age)
             .isNotNull();
@@ -50,10 +50,10 @@ class OpenBreaksMetricTests {
   void theGaugesCountTheOpenBreaksOfEachKindByAge() {
     var kind = BreakKind.AFTER_HOLD_EXPIRED;
     metric.refresh();
-    var underADay = open(kind, "under_1_day");
-    var upToAWeek = open(kind, "1_to_7_days");
-    var overAWeek = open(kind, "over_7_days");
-    var otherKind = open(BreakKind.NO_AUTHORIZATION, "under_1_day");
+    var underADay = open(kind, Breaks.OpenAge.UNDER_1_DAY);
+    var upToAWeek = open(kind, Breaks.OpenAge.ONE_TO_7_DAYS);
+    var overAWeek = open(kind, Breaks.OpenAge.OVER_7_DAYS);
+    var otherKind = open(BreakKind.NO_AUTHORIZATION, Breaks.OpenAge.UNDER_1_DAY);
 
     raise(kind, Duration.ZERO);
     raise(kind, Duration.ofHours(23));
@@ -61,17 +61,17 @@ class OpenBreaksMetricTests {
     raise(kind, Duration.ofDays(10));
     metric.refresh();
 
-    assertThat(open(kind, "under_1_day")).isEqualTo(underADay + 2);
-    assertThat(open(kind, "1_to_7_days")).isEqualTo(upToAWeek + 1);
-    assertThat(open(kind, "over_7_days")).isEqualTo(overAWeek + 1);
-    assertThat(open(BreakKind.NO_AUTHORIZATION, "under_1_day")).isEqualTo(otherKind);
+    assertThat(open(kind, Breaks.OpenAge.UNDER_1_DAY)).isEqualTo(underADay + 2);
+    assertThat(open(kind, Breaks.OpenAge.ONE_TO_7_DAYS)).isEqualTo(upToAWeek + 1);
+    assertThat(open(kind, Breaks.OpenAge.OVER_7_DAYS)).isEqualTo(overAWeek + 1);
+    assertThat(open(BreakKind.NO_AUTHORIZATION, Breaks.OpenAge.UNDER_1_DAY)).isEqualTo(otherKind);
   }
 
-  private double open(BreakKind kind, String age) {
+  private double open(BreakKind kind, Breaks.OpenAge age) {
     return meters
         .get("reconciliation.breaks.open")
         .tag("kind", kind.name())
-        .tag("age", age)
+        .tag("age", age.tag)
         .gauge()
         .value();
   }
