@@ -58,9 +58,12 @@ class CorePathEndToEndTests {
       new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
           .withRealmImportFile("/keycloak/payments-realm.json")
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)
+          .withEnv("SIMULATOR_RECONCILER_SECRET", CLIENT_SECRET)
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET)
+          .withEnv("INITECH_ERP_SECRET", CLIENT_SECRET)
+          .withEnv("INITECH_APPROVER_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
   // The Issuer's drop folder: the simulator's Network writes its Clearing Files here and the
@@ -99,7 +102,8 @@ class CorePathEndToEndTests {
             "clearing.drop-folder=" + dropFolder,
             // The demo has Issuer staff import its file at once.
             "clearing.drop-folder-check.enabled=false");
-    // Returns once AcmeSeeder has created Acme and its Credit Line through the platform.
+    // Returns once BuyerSeeder has created Acme and Initech and their Credit Lines through the
+    // platform.
     simulator =
         start(
             SimulatorApplication.class,
@@ -117,6 +121,9 @@ class CorePathEndToEndTests {
             "spring.security.oauth2.client.registration.acme-approver-1.client-secret="
                 + CLIENT_SECRET,
             "spring.security.oauth2.client.registration.acme-approver-2.client-secret="
+                + CLIENT_SECRET,
+            "spring.security.oauth2.client.registration.initech-erp.client-secret=" + CLIENT_SECRET,
+            "spring.security.oauth2.client.registration.initech-approver.client-secret="
                 + CLIENT_SECRET,
             "spring.security.oauth2.client.registration.network.client-secret=" + CLIENT_SECRET,
             // The Network writes its Clearing File into the platform's drop folder, only when the

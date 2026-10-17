@@ -18,7 +18,7 @@ class SimulatorSecurity {
   // all without cookies: the simulator signs nobody in, so there is no session for a forged
   // cross-site request to ride on.
   private static final String[] WITHOUT_COOKIES = {
-    ADVICE_PATH, AcmeDemo.DEMO_PATH, ClearingFileDemo.DEMO_PATH
+    ADVICE_PATH, AcmeDemo.DEMO_PATH, ClearingFileDemo.DEMO_PATH, LoadTestCards.DEMO_PATH
   };
 
   // The simulator is a local test driver: it signs in to the platform as a client and serves

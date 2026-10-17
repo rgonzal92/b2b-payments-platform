@@ -9,7 +9,6 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,8 +25,6 @@ class GlobexAcquirer {
 
   // DE 18: the category of Globex's business, made up: industrial supplies.
   private static final String MERCHANT_CATEGORY_CODE = "5085";
-  // DE 14: the card's expiry month, in UTC like the platform's.
-  private static final DateTimeFormatter EXPIRY_MONTH = DateTimeFormatter.ofPattern("yyMM");
   private static final String REFERENCE_CHARACTERS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   private static final Logger log = LoggerFactory.getLogger(GlobexAcquirer.class);
 
@@ -61,8 +58,7 @@ class GlobexAcquirer {
             .setTransmittedAt(
                 Timestamp.newBuilder().setSeconds(now.getEpochSecond()).setNanos(now.getNano()))
             .setSystemTraceAuditNumber(nextTraceNumber())
-            .setExpirationDate(
-                card.expiresAt().withOffsetSameInstant(ZoneOffset.UTC).format(EXPIRY_MONTH))
+            .setExpirationDate(card.expiryMonth())
             .setMerchantCategoryCode(MERCHANT_CATEGORY_CODE)
             .setRetrievalReferenceNumber(newRetrievalReferenceNumber())
             .setCardAcceptorId(acceptorId)

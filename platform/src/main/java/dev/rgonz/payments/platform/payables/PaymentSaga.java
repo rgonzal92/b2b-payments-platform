@@ -5,7 +5,10 @@ import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.suppliers.RemittanceAdvice;
 import dev.rgonz.payments.platform.suppliers.RemittanceAdvices;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +25,10 @@ class PaymentSaga {
 
   private static final Logger log = LoggerFactory.getLogger(PaymentSaga.class);
   private static final int BATCH_SIZE = 10;
+  // The payments.steps timer's steps.
+  private static final String PLACE_HOLD = "place-hold";
+  private static final String ISSUE_CARD = "issue-card";
+  private static final String DELIVER_REMITTANCE_ADVICE = "deliver-remittance-advice";
 
   private final Payments payments;
   private final Invoices invoices;
@@ -29,6 +36,7 @@ class PaymentSaga {
   private final Cards cards;
   private final RemittanceAdvices remittanceAdvices;
   private final TransactionTemplate transaction;
+  private final MeterRegistry meters;
 
   PaymentSaga(
       Payments payments,
@@ -36,13 +44,18 @@ class PaymentSaga {
       Holds holds,
       Cards cards,
       RemittanceAdvices remittanceAdvices,
-      TransactionTemplate transaction) {
+      TransactionTemplate transaction,
+      MeterRegistry meters) {
     this.payments = payments;
     this.invoices = invoices;
     this.holds = holds;
     this.cards = cards;
     this.remittanceAdvices = remittanceAdvices;
     this.transaction = transaction;
+    this.meters = meters;
+    // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
+    // before the first one, or they miss it.
+    List.of(PLACE_HOLD, ISSUE_CARD, DELIVER_REMITTANCE_ADVICE).forEach(this::stepTimer);
   }
 
   /**
@@ -111,9 +124,11 @@ class PaymentSaga {
     claimed.set(payment);
     var next =
         switch (payment.state()) {
-          case STARTED -> placeHold(payment, now);
-          case HOLD_PLACED -> issueCard(payment, now);
-          case CARD_ISSUED -> deliverRemittanceAdvice(payment, now);
+          case STARTED -> stepTimer(PLACE_HOLD).record(() -> placeHold(payment, now));
+          case HOLD_PLACED -> stepTimer(ISSUE_CARD).record(() -> issueCard(payment, now));
+          case CARD_ISSUED ->
+              stepTimer(DELIVER_REMITTANCE_ADVICE)
+                  .record(() -> deliverRemittanceAdvice(payment, now));
           case COMPLETED, FAILED, EXPIRED ->
               throw new IllegalStateException(
                   "Payment %s is %s: no step is left to run."
@@ -122,6 +137,16 @@ class PaymentSaga {
     payments.update(payment, next);
     log.info("Payment {} is {}", payment.id(), next.state());
     return true;
+  }
+
+  // How long the step itself ran, a failed attempt's included; not the time the Payment waited for
+  // the worker or a backoff before it. The Payments dashboard reads it by step.
+  private Timer stepTimer(String step) {
+    return Timer.builder("payments.steps")
+        .description("Time each Payment saga step took to run")
+        .tag("step", step)
+        .publishPercentileHistogram()
+        .register(meters);
   }
 
   // The Payment's ID is the Hold's, so placing it again after a crash finds the same Hold.

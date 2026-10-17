@@ -4,6 +4,8 @@ import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
@@ -16,6 +18,8 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /** Payments and their saga state (ADR-0014). */
 @Repository
@@ -29,10 +33,17 @@ class Payments implements InvoicePayments {
 
   private final JdbcClient jdbc;
   private final Cards cards;
+  private final MeterRegistry meters;
 
-  Payments(JdbcClient jdbc, Cards cards) {
+  Payments(JdbcClient jdbc, Cards cards, MeterRegistry meters) {
     this.jdbc = jdbc;
     this.cards = cards;
+    this.meters = meters;
+    // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
+    // before the first increment, or they miss it.
+    for (var state : Payment.State.values()) {
+      reached(state);
+    }
   }
 
   @Override
@@ -81,8 +92,9 @@ class Payments implements InvoicePayments {
    * no second Payment; true when it was inserted.
    */
   boolean insertUnlessInvoiceHasOne(Payment payment) {
-    return jdbc.sql(
-                """
+    var inserted =
+        jdbc.sql(
+                    """
                 insert into payables.payment
                        (id, invoice_id, buyer_id, supplier_id, amount_minor, currency, state, attempts,
                         next_attempt_at)
@@ -90,17 +102,21 @@ class Payments implements InvoicePayments {
                         :nextAttemptAt)
                 on conflict (invoice_id) do nothing
                 """)
-            .param("id", payment.id())
-            .param("invoiceId", payment.invoiceId())
-            .param("buyerId", payment.buyerId().value())
-            .param("supplierId", payment.supplierId())
-            .param("amount", payment.amount().minorUnits())
-            .param("currency", payment.amount().currency().getCurrencyCode())
-            .param("state", payment.state().name())
-            .param("attempts", payment.attempts())
-            .param("nextAttemptAt", toTimestamp(payment.nextAttemptAt()))
-            .update()
-        == 1;
+                .param("id", payment.id())
+                .param("invoiceId", payment.invoiceId())
+                .param("buyerId", payment.buyerId().value())
+                .param("supplierId", payment.supplierId())
+                .param("amount", payment.amount().minorUnits())
+                .param("currency", payment.amount().currency().getCurrencyCode())
+                .param("state", payment.state().name())
+                .param("attempts", payment.attempts())
+                .param("nextAttemptAt", toTimestamp(payment.nextAttemptAt()))
+                .update()
+            == 1;
+    if (inserted) {
+      countOnCommit(payment.state());
+    }
+    return inserted;
   }
 
   /**
@@ -129,8 +145,9 @@ class Payments implements InvoicePayments {
    * {@code FAILED} or {@code EXPIRED} records when, for Reconciliation.
    */
   boolean update(Payment read, Payment next) {
-    return jdbc.sql(
-                """
+    var saved =
+        jdbc.sql(
+                    """
                 update payables.payment
                    set state = :state,
                        failure_reason = :failureReason,
@@ -142,15 +159,43 @@ class Payments implements InvoicePayments {
                    and state = :readState
                    and attempts = :readAttempts
                 """)
-            .param("state", next.state().name())
-            .param("failureReason", next.failureReason())
-            .param("attempts", next.attempts())
-            .param("nextAttemptAt", toTimestamp(next.nextAttemptAt()))
-            .param("id", read.id())
-            .param("readState", read.state().name())
-            .param("readAttempts", read.attempts())
-            .update()
-        == 1;
+                .param("state", next.state().name())
+                .param("failureReason", next.failureReason())
+                .param("attempts", next.attempts())
+                .param("nextAttemptAt", toTimestamp(next.nextAttemptAt()))
+                .param("id", read.id())
+                .param("readState", read.state().name())
+                .param("readAttempts", read.attempts())
+                .update()
+            == 1;
+    if (saved && next.state() != read.state()) {
+      countOnCommit(next.state());
+    }
+    return saved;
+  }
+
+  // Counts the Payment reaching the state once its transaction commits, so a rolled-back step
+  // counts nothing. The Payments dashboard reads it by state.
+  private void countOnCommit(Payment.State state) {
+    var counter = reached(state);
+    if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+      counter.increment();
+      return;
+    }
+    TransactionSynchronizationManager.registerSynchronization(
+        new TransactionSynchronization() {
+          @Override
+          public void afterCommit() {
+            counter.increment();
+          }
+        });
+  }
+
+  private Counter reached(Payment.State state) {
+    return Counter.builder("payments.state.changes")
+        .description("Payments that reached each saga state")
+        .tag("state", state.name())
+        .register(meters);
   }
 
   /**

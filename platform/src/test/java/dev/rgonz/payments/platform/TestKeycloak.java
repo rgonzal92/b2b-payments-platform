@@ -22,9 +22,12 @@ final class TestKeycloak {
       new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
           .withRealmImportFile("/keycloak/payments-realm.json")
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)
+          .withEnv("SIMULATOR_RECONCILER_SECRET", CLIENT_SECRET)
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET)
+          .withEnv("INITECH_ERP_SECRET", CLIENT_SECRET)
+          .withEnv("INITECH_APPROVER_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
   // Started on first use and never stopped: Ryuk, Testcontainers' clean-up container, removes it
