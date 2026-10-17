@@ -31,6 +31,7 @@ import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.NettyChannelBuilder;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -43,6 +44,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Currency;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -131,6 +133,7 @@ class ClearingFileImportTests {
   @Autowired ClearingFileImports imports;
   @Autowired ApplicationContext context;
   @Autowired CompletedEventPublications completedEvents;
+  @Autowired MeterRegistry meters;
 
   // The real journal and file records, which the restart tests make fail once.
   @MockitoSpyBean Journal journal;
@@ -864,6 +867,47 @@ class ClearingFileImportTests {
     assertThat(totals.get("debits")).isEqualTo(totals.get("credits"));
   }
 
+  // The Clearing dashboard reads these counters (grafana/dashboards/clearing.json).
+  @Test
+  void anImportCountsTheFileItsClearingsByOutcomeAndItsSettlement() throws Exception {
+    var buyerId = buyerWithCreditLine(10_000_000);
+    var clearings =
+        List.of(
+            clearingOf(chargedCard(buyerId), newId("R", 20), CARD_AMOUNT),
+            new Detail(
+                newId("R", 20), UNKNOWN_PAN, 500_000, newId("Q", 12), "ZZZZZZ", ACCEPTOR_ID));
+    // The Network settles 1.00 less than the Clearings total, so the Settlement is mismatched.
+    var imported =
+        TestClearingFiles.write(
+            DROP_FOLDER,
+            List.of(
+                TestClearingFiles.header(newId("F", 16), 31),
+                TestClearingFiles.detail(clearings.get(0)),
+                TestClearingFiles.detail(clearings.get(1)),
+                TestClearingFiles.trailer(clearings, CARD_AMOUNT + 500_000 - 100)));
+    // No detail record behind a trailer that counts one.
+    var refused =
+        TestClearingFiles.write(
+            DROP_FOLDER,
+            List.of(
+                TestClearingFiles.header(newId("F", 16), 32), TestClearingFiles.trailer(1, 0, 0)));
+    var before = countsOfClearingMeters();
+
+    assertThat(importFile(imported, "ROLE_issuer-admin")).hasStatus(201);
+    assertProblem(importFile(refused, "ROLE_issuer-admin"), 422);
+
+    var after = countsOfClearingMeters();
+    assertThat(after.get("files imported")).isEqualTo(before.get("files imported") + 1);
+    assertThat(after.get("files refused")).isEqualTo(before.get("files refused") + 1);
+    assertThat(after.get("clearings MATCHED")).isEqualTo(before.get("clearings MATCHED") + 1);
+    assertThat(after.get("clearings UNKNOWN_CARD"))
+        .isEqualTo(before.get("clearings UNKNOWN_CARD") + 1);
+    assertThat(after.get("clearings NO_AUTHORIZATION"))
+        .isEqualTo(before.get("clearings NO_AUTHORIZATION"));
+    assertThat(after.get("settlements false")).isEqualTo(before.get("settlements false") + 1);
+    assertThat(after.get("settlements true")).isEqualTo(before.get("settlements true"));
+  }
+
   // Each check of the validate step refuses the whole file: nothing is posted, the file waits in
   // failed/, and its summary and the answer say which check failed, never with the PAN.
   @ParameterizedTest(name = "{0}")
@@ -1160,6 +1204,26 @@ class ClearingFileImportTests {
   }
 
   // A refused or repeated file waits in failed/ for a person, out of processing/.
+  // The test context's registry outlives each test, so a test compares counts before and after.
+  private Map<String, Double> countsOfClearingMeters() {
+    var counts = new HashMap<String, Double>();
+    for (var result : List.of("imported", "refused")) {
+      counts.put("files " + result, counted("clearing.files", "result", result));
+    }
+    for (var outcome : List.of("MATCHED", "UNKNOWN_CARD", "NO_AUTHORIZATION")) {
+      counts.put("clearings " + outcome, counted("clearing.clearings", "outcome", outcome));
+    }
+    for (var matched : List.of("true", "false")) {
+      counts.put("settlements " + matched, counted("clearing.settlements", "matched", matched));
+    }
+    return counts;
+  }
+
+  private double counted(String name, String tag, String value) {
+    var counter = meters.find(name).tag(tag, value).counter();
+    return counter == null ? 0 : counter.count();
+  }
+
   private static void assertMovedToFailed(String fileName) {
     assertThat(DROP_FOLDER.resolve("failed").resolve(fileName)).exists();
     assertThat(DROP_FOLDER.resolve("processing").resolve(fileName)).doesNotExist();

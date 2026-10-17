@@ -8,6 +8,8 @@ import dev.rgonz.payments.contracts.network.ReversalResponse;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.Objects;
 import org.springframework.grpc.server.service.GrpcService;
@@ -23,9 +25,16 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
   private static final String ACKNOWLEDGED = "00";
 
   private final Authorizations authorizations;
+  private final MeterRegistry meters;
 
-  IssuerAuthorizationService(Authorizations authorizations) {
+  IssuerAuthorizationService(Authorizations authorizations, MeterRegistry meters) {
     this.authorizations = authorizations;
+    this.meters = meters;
+    // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
+    // before the first increment, or they miss it.
+    for (var responseCode : Authorization.ResponseCode.values()) {
+      answers(responseCode);
+    }
   }
 
   @Override
@@ -47,6 +56,8 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
                 request.getCurrencyCode(),
                 request.getCardAcceptorId()),
             Instant.now());
+    // Every answer the Network gets, a resend's included, by DE 39: never the PAN or Card Token.
+    answers(authorization.responseCode()).increment();
     responseObserver.onNext(
         AuthorizationResponse.newBuilder()
             .setRetrievalReferenceNumber(request.getRetrievalReferenceNumber())
@@ -70,6 +81,13 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
             .setResponseCode(ACKNOWLEDGED)
             .build());
     responseObserver.onCompleted();
+  }
+
+  private Counter answers(Authorization.ResponseCode responseCode) {
+    return Counter.builder("authorization.answers")
+        .description("Authorization answers sent to the Network, by response code (DE 39)")
+        .tag("response.code", responseCode.code())
+        .register(meters);
   }
 
   private static StatusRuntimeException missingRetrievalReferenceNumber() {

@@ -1,6 +1,8 @@
 package dev.rgonz.payments.platform.clearing;
 
 import dev.rgonz.payments.platform.shared.Money;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
@@ -35,6 +37,10 @@ import org.springframework.stereotype.Component;
 class ClearingFileImports {
 
   private static final Logger log = LoggerFactory.getLogger(ClearingFileImports.class);
+  // The clearing.files counter's results.
+  private static final String IMPORTED = "imported";
+  private static final String REFUSED = "refused";
+  private static final String REPEATED = "repeated";
 
   private final Path dropFolder;
   private final Path processingFolder;
@@ -42,6 +48,7 @@ class ClearingFileImports {
   private final JobOperator jobOperator;
   private final Job clearingFileImport;
   private final ClearingFiles files;
+  private final MeterRegistry meters;
 
   // A String, not a Path: Spring converts a Path setting through its resource loader, which
   // resolves a relative path against the classpath, and fails once the platform runs from a jar.
@@ -49,13 +56,23 @@ class ClearingFileImports {
       @Value("${clearing.drop-folder}") String dropFolder,
       JobOperator jobOperator,
       Job clearingFileImport,
-      ClearingFiles files) {
+      ClearingFiles files,
+      MeterRegistry meters) {
     this.dropFolder = Path.of(dropFolder).toAbsolutePath().normalize();
     this.processingFolder = this.dropFolder.resolve("processing");
     this.failedFolder = this.dropFolder.resolve("failed");
     this.jobOperator = jobOperator;
     this.clearingFileImport = clearingFileImport;
     this.files = files;
+    this.meters = meters;
+    // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
+    // before the first increment, or they miss it.
+    List.of(IMPORTED, REFUSED, REPEATED).forEach(this::files);
+    for (var outcome : ClearingOutcome.values()) {
+      clearings(outcome);
+    }
+    settlements(true);
+    settlements(false);
   }
 
   /**
@@ -161,6 +178,7 @@ class ClearingFileImports {
           imported.sequenceNumber(),
           imported.businessDate(),
           imported.recordCount());
+      countImported(imported);
       var settlement = imported.settlement();
       if (!settlement.matched()) {
         log.warn(
@@ -201,14 +219,45 @@ class ClearingFileImports {
         .findFirst();
   }
 
+  // Counted once the import completes, from what it committed: a chunk that rolled back and ran
+  // again counts once. Names and tags, never a PAN or Card Token, are what Grafana reads.
+  private void countImported(ClearingFileSummary imported) {
+    files(IMPORTED).increment();
+    imported.outcomes().forEach((outcome, count) -> clearings(outcome).increment(count));
+    settlements(imported.settlement().matched()).increment();
+  }
+
+  private Counter files(String result) {
+    return Counter.builder("clearing.files")
+        .description("Clearing Files the platform imported, refused, or refused as a repeat")
+        .tag("result", result)
+        .register(meters);
+  }
+
+  private Counter clearings(ClearingOutcome outcome) {
+    return Counter.builder("clearing.clearings")
+        .description("Clearings recorded by imported Clearing Files, by outcome")
+        .tag("outcome", outcome.name())
+        .register(meters);
+  }
+
+  private Counter settlements(boolean matched) {
+    return Counter.builder("clearing.settlements")
+        .description("Clearing File Settlements, by whether they matched the posted Clearings")
+        .tag("matched", String.valueOf(matched))
+        .register(meters);
+  }
+
   private ImportResult refused(Path file, String reason) throws IOException {
     moveToFailed(file);
+    files(REFUSED).increment();
     log.warn("Refused Clearing File {}: {}", file.getFileName(), reason);
     return new ImportResult.Refused(reason);
   }
 
   private ImportResult repeated(Path file, String earlierFileId) throws IOException {
     moveToFailed(file);
+    files(REPEATED).increment();
     log.warn(
         "Refused Clearing File {}: it repeats Clearing File {}", file.getFileName(), earlierFileId);
     return new ImportResult.Repeated(earlierFileId);
