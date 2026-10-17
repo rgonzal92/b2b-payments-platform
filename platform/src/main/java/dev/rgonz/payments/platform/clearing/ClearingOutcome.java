@@ -9,7 +9,7 @@ import java.util.Currency;
  * Clearing is posted, whatever its outcome, because the Issuer pays what clears; M4's
  * Reconciliation turns every outcome but {@link #MATCHED} into a Break.
  */
-enum ClearingOutcome {
+public enum ClearingOutcome {
   /** At or below its approved Authorization's amount; both amounts are kept. */
   MATCHED,
   /** Above its approved Authorization's amount; the full cleared amount is posted. */
