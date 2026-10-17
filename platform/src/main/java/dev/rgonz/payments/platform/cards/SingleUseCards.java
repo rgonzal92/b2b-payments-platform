@@ -8,6 +8,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
@@ -169,7 +170,7 @@ class SingleUseCards implements Cards {
     return jdbc.sql(
             """
             update cards.card
-               set status = 'EXPIRED'
+               set status = 'EXPIRED', expired_at = :now
              where card_token in (select card_token
                                     from cards.card
                                    where status = 'ACTIVE'
@@ -196,7 +197,7 @@ class SingleUseCards implements Cards {
     return jdbc.sql(
             """
             update cards.card
-               set status = 'EXPIRED'
+               set status = 'EXPIRED', expired_at = :now
              where card_token in (select card_token
                                     from cards.card
                                    where status = 'AUTHORIZED'
@@ -207,8 +208,28 @@ class SingleUseCards implements Cards {
             returning
             """
                 + COLUMNS)
+        .param("now", now.atOffset(ZoneOffset.UTC))
         .param("authorizedBy", now.minus(CLEARING_WINDOW).atOffset(ZoneOffset.UTC))
         .param("batchSize", batchSize)
+        .query(SingleUseCards::toCard)
+        .list();
+  }
+
+  // Authorized and expired: only the 7-day rule expires a card with authorized_at set, as a
+  // Reversal clears it on the card's way back to ACTIVE.
+  @Override
+  public List<SingleUseCard> expiredUnclearedOn(LocalDate day) {
+    return jdbc.sql(
+            "select "
+                + COLUMNS
+                + """
+                  from cards.card
+                 where authorized_at is not null
+                   and expired_at >= :from and expired_at < :to
+                 order by expired_at, card_token
+                """)
+        .param("from", day.atStartOfDay().atOffset(ZoneOffset.UTC))
+        .param("to", day.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC))
         .query(SingleUseCards::toCard)
         .list();
   }

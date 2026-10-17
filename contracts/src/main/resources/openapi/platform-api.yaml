@@ -1142,7 +1142,11 @@ components:
       type: string
       description: >-
         What Reconciliation couldn't match (M4 design, "Kinds of Break"). One kind per Clearing outcome other than
-        matched, each naming the Clearing; `UNDERCHARGE`, a matched Clearing below its Authorization's amount.
+        matched, each naming the Clearing; `UNDERCHARGE`, a matched Clearing below its Authorization's amount;
+        `NEVER_CLEARED`, an approved Authorization whose card expired, naming the Authorization; `UNPAID_INVOICE`, a
+        Payment that ended `FAILED` or `EXPIRED`, naming the Payment; `MISMATCHED_SETTLEMENT`, a Settlement whose
+        Network figure isn't the imported total, naming its Clearing File; `BOOKS_OUT_OF_BALANCE`, a failed balance
+        check of the books, naming the Business Date, check and currency.
       enum:
         - ABOVE_AUTHORIZED_AMOUNT
         - NO_AUTHORIZATION
@@ -1152,6 +1156,10 @@ components:
         - AFTER_HOLD_EXPIRED
         - AUTHORIZATION_ALREADY_CLEARED
         - UNDERCHARGE
+        - NEVER_CLEARED
+        - UNPAID_INVOICE
+        - MISMATCHED_SETTLEMENT
+        - BOOKS_OUT_OF_BALANCE
     Break:
       type: object
       description: What a Reconciliation run couldn't match, and the facts of the records it names.
@@ -1167,8 +1175,9 @@ components:
         recordId:
           type: string
           description: >-
-            The ID of the record the Break names, of the type its kind says: a Clearing's Network record ID. With the
-            kind, the Break's natural key: a run that finds it again raises nothing.
+            The ID of the record the Break names, of the type its kind says: a Clearing's Network record ID, an
+            Authorization's request ID, a Payment's ID, a Clearing File's ID, or for the books the Business Date, check
+            and currency. With the kind, the Break's natural key: a run that finds it again raises nothing.
         businessDate:
           type: string
           format: date
@@ -1186,10 +1195,11 @@ components:
           type: object
           additionalProperties: true
           description: >-
-            The named records' facts as the run that raised the Break found them, keyed by record type. A Clearing's
-            (`clearing`): `networkRecordId`, `fileId`, `businessDate`, `cardToken`, `buyerId`,
-            `authorizationRequestId`, `cleared` and `authorized` (each `{minorUnits, currency}`), and `outcome`; a
-            fact the Clearing doesn't have (no card, no Authorization) is null.
+            The named records' facts as the run that raised the Break found them, keyed by record type: `clearing`,
+            `authorization`, `invoice`, `payment`, `settlement` or `journal`, as its kind names them. Each holds the
+            record's IDs, amounts (each `{minorUnits, currency}`), dates and state; a Clearing's, for instance,
+            `networkRecordId`, `fileId`, `businessDate`, `cardToken`, `buyerId`, `authorizationRequestId`,
+            `cleared`, `authorized` and `outcome`. A fact the record doesn't have (no card, no Authorization) is null.
         raisedAt:
           type: string
           format: date-time

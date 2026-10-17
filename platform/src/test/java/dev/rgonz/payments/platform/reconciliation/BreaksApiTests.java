@@ -107,6 +107,18 @@ class BreaksApiTests {
   }
 
   @Test
+  void everyKindCanBeListedAndFilteredOn() {
+    var buyerId = new BuyerId(UUID.randomUUID());
+    for (var kind : BreakKind.values()) {
+      var recordId = raise(kind, buyerId, Duration.ZERO);
+
+      assertThat(recordIds(list("buyerId=%s&kind=%s".formatted(buyerId.value(), kind), RECONCILER)))
+          .as(kind.name())
+          .containsExactly(recordId);
+    }
+  }
+
+  @Test
   void aLimitOutsideOneToAHundredAFilterTheListDoesntKnowOrACursorItDidntGiveIsABadRequest() {
     for (var query :
         List.of(
