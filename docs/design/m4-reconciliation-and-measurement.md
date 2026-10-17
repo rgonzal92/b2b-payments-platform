@@ -60,7 +60,7 @@ Every Break records the amount gap and enough of the records' facts (amounts, da
   - **corrected**: a balanced Correcting Entry between any two Accounts, its reason the note (a Repayment recorded by mistake).
 - Every correction is a new Journal Entry (ADR-0015); nothing is edited or deleted. Disputes and chargebacks stay out of scope.
 - A new realm role **`reconciler`** resolves Breaks; `issuer-admin` reads them. Moving money out of Clearing Suspense or correcting the books shouldn't come with the role that sets Credit Lines and records Repayments.
-- Endpoints: `GET /v1/breaks` (cursor paging, filters by status, kind and Buyer; `reconciler` or `issuer-admin`), `GET /v1/breaks/{id}`, and `POST /v1/breaks/{id}/resolution` (`reconciler` only). A second resolution answers `409`; that once-only rule makes a repeat harmless, so the endpoint takes no `Idempotency-Key` (CLAUDE.md's exception).
+- Endpoints: `GET /v1/breaks` (cursor paging, filters by status, kind and Buyer; `reconciler` or `issuer-admin`), `GET /v1/breaks/{id}`, and `POST /v1/breaks/{id}/resolution` (`reconciler` only). A second resolution answers `409`; that once-only rule makes a repeat harmless, so the endpoint takes no `Idempotency-Key` (CLAUDE.md's exception). (Changed during #71: the Reconciler names the amount of a reassignment too, rather than the platform taking the Break's gap, and Accounts are named by kind, plus the Buyer for a Buyer Receivable; an unknown Buyer is refused with `422`. The Break keeps its Correcting Entry's ID and the Reconciler's user name beside the subject. The list and detail endpoints aren't built yet.)
 
 ### The load test (Q5, Q6, Q10, Q11)
 
