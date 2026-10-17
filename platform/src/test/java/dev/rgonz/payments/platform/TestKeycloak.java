@@ -25,6 +25,8 @@ final class TestKeycloak {
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_1_SECRET", CLIENT_SECRET)
           .withEnv("ACME_APPROVER_2_SECRET", CLIENT_SECRET)
+          .withEnv("INITECH_ERP_SECRET", CLIENT_SECRET)
+          .withEnv("INITECH_APPROVER_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
   // Started on first use and never stopped: Ryuk, Testcontainers' clean-up container, removes it

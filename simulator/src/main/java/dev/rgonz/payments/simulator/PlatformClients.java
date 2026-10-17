@@ -75,6 +75,24 @@ class PlatformClients {
             .createClient(InvoicesApi.class));
   }
 
+  // Initech's ERP and Approver: more clients of the same API, kept inside Initech likewise. Its
+  // Invoices name Globex as Acme's do: the same remittance address and Acceptor ID.
+  @Bean
+  Initech initech(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl,
+      @Value("http://localhost:${server.port}" + GlobexSupplier.ADVICE_PATH)
+          String globexRemittanceAddress,
+      @Value("${simulator.globex.acceptor-id}") String globexAcceptorId) {
+    return new Initech(
+        signedInAs("initech-erp", builder.clone(), clients, platformUrl)
+            .createClient(InvoicesApi.class),
+        signedInAs("initech-approver", builder.clone(), clients, platformUrl)
+            .createClient(InvoicesApi.class),
+        GlobexSupplier.onInvoices(globexRemittanceAddress, globexAcceptorId));
+  }
+
   // The Network link: the channel named platform (spring.grpc.client.channel.platform), every call
   // carrying the network client's token as authorization: Bearer metadata.
   @Bean

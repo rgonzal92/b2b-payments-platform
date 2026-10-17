@@ -1,11 +1,14 @@
 package dev.rgonz.payments.simulator;
 
+import dev.rgonz.payments.contracts.client.model.InvoiceSupplier;
 import dev.rgonz.payments.contracts.client.model.Money;
 import dev.rgonz.payments.contracts.client.model.RemittanceAdvice;
 import dev.rgonz.payments.contracts.client.model.SingleUseCardDetails;
 import dev.rgonz.payments.simulator.GlobexAcquirer.Authorization;
 import io.micrometer.observation.ObservationRegistry;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -63,6 +66,19 @@ class GlobexSupplier {
     }
     openCardLink(advice);
     return ResponseEntity.ok().build();
+  }
+
+  /**
+   * Globex as a Buyer's ERP names it on an Invoice: where it receives Remittance Advice, and the
+   * Acceptor ID the Network will carry on its Charges.
+   */
+  static InvoiceSupplier onInvoices(String remittanceAddress, String acceptorId) {
+    return new InvoiceSupplier()
+        .name("Globex")
+        .taxId("12-3456789")
+        .buyerReference("GLOBEX-01")
+        .remittanceAddress(remittanceAddress)
+        .acceptorId(acceptorId);
   }
 
   /** The card Globex received for the Invoice, if it has one. */
@@ -125,8 +141,17 @@ class GlobexSupplier {
       OffsetDateTime expiresAt,
       Money amount) {
 
+    // The card's expiry month as an Authorization request carries it (DE 14), in UTC like the
+    // platform's.
+    private static final DateTimeFormatter EXPIRY_MONTH = DateTimeFormatter.ofPattern("yyMM");
+
     String lastFour() {
       return pan.substring(pan.length() - 4);
+    }
+
+    /** The card's expiry month, {@code YYMM} in UTC. */
+    String expiryMonth() {
+      return expiresAt.withOffsetSameInstant(ZoneOffset.UTC).format(EXPIRY_MONTH);
     }
 
     @Override
