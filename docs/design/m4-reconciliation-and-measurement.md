@@ -69,6 +69,33 @@ Every Break records the amount gap and enough of the records' facts (amounts, da
 - **The mix:** about 90% approvals on fresh cards and 10% declines (a second Charge on a card, a wrong security code), so the approval path's writes dominate.
 - **The profile:** a 30-second warm-up, then 200 Authorizations a second for 2 minutes.
 - **Pass:** the platform's server-side p99 (Micrometer's gRPC timing, in Grafana) under 100 ms, and no failed call; Gatling's client-side numbers are reported alongside. If it misses, M4 still finishes: this document records the number, the cause found and any fix, and the number goes into M5's case for extracting Authorization.
+- (Changed during #75: **the load is paced, not open.** Gatling's open-source gRPC support (`gatling-grpc` 3.16.0) is a trial that exits the run when it starts a sixth virtual user or passes 5 minutes; an open model at 200 a second starts 200 users a second. So 5 users each start a Charge every 25 ms, 200 a second together while every answer comes within 25 ms; a slower answer delays its user's next Charge, so the report's achieved rate is part of the result. Kept because it is the only shape the chosen tool can run; an open model needs Gatling Enterprise or another tool, an M5 question. The warm-up runs at the full rate, and the report names its requests apart from the measured 2 minutes. Both kinds of decline charge cards the run already approved, 5% each, the security code being checked before the card's status, so only approved Charges use fresh cards: about 27,300 a run. The module sits in the default build, which compiles the simulation and unit-tests how it reads the cards file; only the `load-test` profile runs it. Gatling shares one gRPC channel across users, as the Network keeps one connection.)
+
+### Measured (#75)
+
+**Result: fail, by a hair and not every time.** One run's server-side p99 was 35.6 ms, the other's 104.2 ms. The 100 ms target holds on a median run but not reliably on this machine, and the cause is the database's commit flush on the laptop's disk, not the platform's code.
+
+- **When:** 2026-10-17, 03:07 and 03:36 UTC.
+- **Hardware:** AMD Ryzen 9 5900X (12 cores, 24 threads), 31 GiB RAM, CachyOS Linux (kernel 7.2.9), Docker 29.9.1 with its storage on btrfs, OpenJDK 25.0.4.1, PostgreSQL 18.6 with default settings. The platform, the simulator, Gatling and the Compose stack shared the machine; unrelated home-server containers (Plex and others) ran beside them; no build or test ran.
+- **Profile:** as above: 5 paced users, 200 Authorizations a second for a 30-second warm-up then 2 measured minutes, about 90% approved Charges on fresh cards, 5% second Charges (`57`), 5% wrong security codes (`N7`). The platform ran with `--management.otlp.metrics.export.step=10s` (default 1 minute) so Prometheus could separate the measured window from the warm-up.
+- **Server side** (`grpc.server` for `Authorize`, from Prometheus, cumulative buckets differenced over the window; the window starts at the first export after the warm-up, so it covers about 95% of the measured calls; p50/p95/p99 interpolated within buckets as `histogram_quantile` does, so the share under the exact 100 ms bucket is the precise number):
+
+  | Run | Calls in window | p50 | p95 | p99 | At or under 100 ms | Warm-up p99 |
+  |---|---|---|---|---|---|---|
+  | 1 | 21,679 | 2.4 ms | 3.7 ms | 35.6 ms | 99.705% (pass) | 5.6 ms |
+  | 2 | 21,750 | 2.5 ms | 4.1 ms | 104.2 ms | 98.768% (fail) | 70.9 ms |
+
+- **Gatling, client side** (measured 2 minutes; no failed call in either run):
+
+  | Run | Measured calls | Achieved rate | Approved Charge p50 / p95 / p99 / max | Second Charge p99 | Wrong security code p99 |
+  |---|---|---|---|---|---|
+  | 1 | 22,878 | 190.7/s | 3 / 5 / 77 / 183 ms | 67 ms | 72 ms |
+  | 2 | 22,512 | 187.6/s | 3 / 5 / 106 / 205 ms | 58 ms | 110 ms |
+
+  The achieved rate fell short of 200 a second because each slow answer delayed its user's next Charge (the paced model above).
+- **Seeding:** 25,000 cards in 574 s and 639 s (about 40 a second), plus 3,000 appended in 73 s and 80 s.
+- **Cause of the miss:** the slow calls come in bursts of a few seconds, not as a steady tail. With PostgreSQL logging statements over 50 ms during a shorter run (60 s at 200 a second) that reproduced the miss (p99 108.2 ms), every slow statement was a `COMMIT`: about 290 of them in 13 seconds, each about 108 ms, the concurrent ones finishing at the same instant. They were all waiting for one WAL flush to disk. The bursts came while an autovacuum and a spread checkpoint were writing; Docker's storage here is btrfs, whose fsync can wait on other writes. The same run with `synchronous_commit=off` gave a p99 of 1.4 ms and a p50 of 0.6 ms, with no slow statement: most of `Authorize`'s server time, and all of its tail, is waiting for the commit to reach the disk. GC was ruled out (14 young collections, 15 ms in total over a run), and so was the platform's own code: a declines-only run at the same rate stayed at a p99 of 21 ms.
+- **Fix:** none in this ticket. Turning `synchronous_commit` off would let a crash lose an Authorization the Network was told was approved, which the Issuer can't accept, and the disk is the laptop's, not the platform's. The candidates for M5's case: a PostgreSQL volume on storage with fast, steady fsync (outside btrfs copy-on-write), checkpoint and autovacuum tuning so their writes don't land as bursts, and measuring on hardware that isn't shared with other services.
 
 ### Grafana (Q7)
 
@@ -99,6 +126,6 @@ A Break for a missing Clearing File (the file list already shows sequence gaps);
 ## Risks
 
 - **The measurement is one laptop:** Docker, the JVM's warm-up and other processes move the p99. The run records the hardware and is repeated before the number is written down.
-- **Seeding thousands of cards through the saga is slow:** the worker takes Payments one at a time; seeding may take minutes. Acceptable for a manual run; if it's too slow, the fix is the worker's batch size, recorded here.
+- **Seeding thousands of cards through the saga is slow:** the worker takes Payments one at a time; seeding may take minutes. Acceptable for a manual run; if it's too slow, the fix is the worker's batch size, recorded here. (Changed during #75: at about three Payments a second, the ~25,000 cards a run needs would take two hours. The worker now claims Payments until none is due instead of stopping after ten, and runs `payables.payment-worker.threads` workers at once (4) on virtual threads, still one Payment per transaction under SKIP LOCKED. `POST /demo/load-test-cards` takes up to 25,000, keeps 64 Invoices in flight and can append to the file. In a one-off timing of the saga test with 300 Payments, four workers drained them in under a second, the Supplier stubbed.)
 - **`reconciliation` reads four modules:** its queries go through public APIs, so a slow one shows in the run's duration; the first ticket proves a run over a day's data before the other kinds arrive.
 - **A corrected Break can move money between any two Accounts:** limited to the `reconciler` role, always balanced, always with a note, and never editing what's there.
