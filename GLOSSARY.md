@@ -11,8 +11,12 @@ The bank that issues Virtual Cards to Buyers and pays for their purchases. This 
 _Avoid_: Bank, processor, issuing bank
 
 **Issuer Staff**:
-People at the Issuer who run the platform day to day: they set up Buyers and their Credit Lines and resolve Breaks.
+People at the Issuer who run the platform day to day: they set up Buyers and their Credit Lines and record Repayments.
 _Avoid_: Admin, operator, back office
+
+**Reconciler**:
+Issuer Staff who resolve Breaks, kept apart from those who set Credit Lines and record Repayments.
+_Avoid_: Analyst, ops
 
 **Buyer**:
 A company that holds Virtual Cards from the Issuer and uses them to pay Suppliers.
@@ -117,8 +121,12 @@ Matching each cleared Charge to its Authorization and Invoice, and flagging what
 _Avoid_: Settlement, matching
 
 **Break**:
-A Charge, Authorization or Invoice that Reconciliation could not match, left for a person to resolve.
+A Charge, Authorization, Invoice or Settlement that Reconciliation could not match, left for a Reconciler to resolve.
 _Avoid_: Exception, mismatch, discrepancy
+
+**Undercharge**:
+A Clearing below its Authorization's amount, leaving part of an Invoice unpaid.
+_Avoid_: Short payment, partial capture
 
 ### Credit
 
@@ -155,6 +163,10 @@ _Avoid_: Settlement cash, bank balance, funding account
 **Repayment**:
 A Buyer's payment to the Issuer that reduces its Buyer Receivable.
 _Avoid_: Payment, refund, top-up
+
+**Correcting Entry**:
+A Journal Entry that fixes an earlier mistake by moving money between Accounts, leaving the original entry as it was.
+_Avoid_: Adjustment, reversal, edit
 
 **Clearing Suspense**:
 The Account a Clearing is posted to when its card can't be identified, or it is in another currency than its card's, until a person resolves it.
