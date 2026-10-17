@@ -1,9 +1,11 @@
 package dev.rgonz.payments.simulator;
 
+import dev.rgonz.payments.contracts.client.BreaksApi;
 import dev.rgonz.payments.contracts.client.BuyersApi;
 import dev.rgonz.payments.contracts.client.ClearingFilesApi;
 import dev.rgonz.payments.contracts.client.CreditApi;
 import dev.rgonz.payments.contracts.client.InvoicesApi;
+import dev.rgonz.payments.contracts.client.ReconciliationRunsApi;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc.IssuerAuthorizationBlockingStub;
 import java.util.List;
@@ -52,6 +54,25 @@ class PlatformClients {
       OAuth2AuthorizedClientManager clients,
       @Value("${simulator.platform-url}") String platformUrl) {
     return signedInAs("issuer-admin", builder, clients, platformUrl).createClient(CreditApi.class);
+  }
+
+  @Bean
+  ReconciliationRunsApi reconciliationRunsApi(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl) {
+    return signedInAs("issuer-admin", builder, clients, platformUrl)
+        .createClient(ReconciliationRunsApi.class);
+  }
+
+  // Issuer staff read Breaks; resolving one takes the reconciler role, which the README's curl
+  // signs in with.
+  @Bean
+  BreaksApi breaksApi(
+      RestClient.Builder builder,
+      OAuth2AuthorizedClientManager clients,
+      @Value("${simulator.platform-url}") String platformUrl) {
+    return signedInAs("issuer-admin", builder, clients, platformUrl).createClient(BreaksApi.class);
   }
 
   @Bean
