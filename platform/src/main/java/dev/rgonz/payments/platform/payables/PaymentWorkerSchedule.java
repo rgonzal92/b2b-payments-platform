@@ -1,5 +1,7 @@
 package dev.rgonz.payments.platform.payables;
 
+import io.micrometer.context.ContextExecutorService;
+import io.micrometer.context.ContextSnapshotFactory;
 import java.time.Instant;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -36,11 +38,15 @@ class PaymentWorkerSchedule {
   // A fixed delay counts from the end of the previous pass, which waits for all its workers, so one
   // instance's passes never overlap; its workers, and other instances' passes, run at once, and
   // SKIP LOCKED keeps them on different Payments. Each worker holds one database connection at a
-  // time.
+  // time. Each worker carries the scheduled task's context, so its spans, the Remittance Advice
+  // delivery's included, stay in the task's trace.
   @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
   void runDueSteps() {
     var now = Instant.now();
-    try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+    try (var workers =
+        ContextExecutorService.wrap(
+            Executors.newVirtualThreadPerTaskExecutor(),
+            ContextSnapshotFactory.builder().build())) {
       for (var i = 0; i < threads; i++) {
         workers.execute(() -> runDueSteps(now));
       }

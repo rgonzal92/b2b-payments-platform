@@ -13,11 +13,11 @@ ADR-0010 promises that the platform answers 99% of the Network's Authorizations 
 
 ## Reading the report
 
-The console prints a summary at the end, and `load-test/target/gatling/<run>/index.html` holds the full report. Each row is a request name (`Measured: approval`, `Measured: second charge`, …) or a *group* (`Warm-up`, `Measured`), with counts of OK and KO (failed) calls and response-time percentiles: the defaults are p50, p75, p95 and p99. Read the **Measured** group for the result: the warm-up's first seconds include the JVM compiling the hot path, which is why it is reported apart. The *Response Time Percentiles over Time* chart shows whether latency drifted during the run (a queue building up) or stayed flat.
+The console prints a summary at the end, and `load-test/target/gatling/<run>/index.html` holds the full report. Each row is a request name (`Measured: approved charge`, `Measured: second charge`, …) or a *group* (`Warm-up`, `Measured`), with counts of OK and KO (failed) calls and response-time percentiles: the defaults are p50, p75, p95 and p99. Read the **Measured** group for the result: the warm-up's first seconds include the JVM compiling the hot path, which is why it is reported apart. The *Response Time Percentiles over Time* chart shows whether latency drifted during the run (a queue building up) or stayed flat.
 
 ## Gotchas we hit
 
-- **Gatling's `csv()` works only inside a running simulation.** Called from a unit test, it throws "Simulations can't be instantiated directly". The cards file has no quoting, so `Cards.read` parses it with plain Java, and its unit test runs in CI.
+- **Gatling's `csv()` works only inside a running simulation.** Called from a unit test, it throws "Simulations can't be instantiated directly". The cards file has no quoting, so `CardsFile.read` parses it with plain Java, and its unit test runs in CI.
 - **Cards come from a queue, not a Gatling feeder.** The approval chain appears in three branches and both phases, and a card handed out twice gets a `57` on its second Charge, a failed call. One shared queue of fresh cards, and one of cards the run has charged for the declines, guarantees each fresh card is charged once.
 - **A channel per user is Gatling's default.** At 200 users a second that measures HTTP/2 connection set-up, not Authorizations. `shareChannel()` sends every call over one channel, as the Network keeps one connection to the Issuer.
 - **Spring Boot's dependency management downgrades Gatling.** The module inherits Spring Boot's parent, which pins Netty, grpc-java and protobuf to Spring Boot's versions. The module's pom sets them back to the versions Gatling 3.16.0 was built against; update them with Gatling.

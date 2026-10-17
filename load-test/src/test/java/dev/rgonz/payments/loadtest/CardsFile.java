@@ -7,8 +7,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -18,7 +16,16 @@ import java.util.concurrent.atomic.AtomicInteger;
  * pan,securityCode,expiry,amountMinorUnits,currency,acceptorId}, and the Authorize request that
  * charges one of its cards, as Globex's Acquirer sends it.
  */
-final class Cards {
+final class CardsFile {
+
+  /** One card as Globex received it: its expiry as {@code YYMM}, its amount in minor units. */
+  record Card(
+      String pan,
+      String securityCode,
+      String expiry,
+      long amountMinorUnits,
+      String currency,
+      String acceptorId) {}
 
   // DE 18, as the simulator's Globex Acquirer sends it.
   private static final String MERCHANT_CATEGORY_CODE = "5085";
@@ -26,24 +33,20 @@ final class Cards {
   private static final SecureRandom random = new SecureRandom();
   private static final AtomicInteger traceNumbers = new AtomicInteger();
 
-  private Cards() {}
+  private CardsFile() {}
 
   /**
-   * Every card in the file, one record per line keyed by the header's names. Read here rather than
-   * with Gatling's {@code csv()}, which works only inside a running simulation; no field holds a
-   * comma or a quote.
+   * Every card in the file, in its order. Read here rather than with Gatling's {@code csv()}, which
+   * works only inside a running simulation; no field holds a comma or a quote, and the columns are
+   * in the header's order.
    */
-  static Queue<Map<String, Object>> read(Path file) throws IOException {
+  static Queue<Card> read(Path file) throws IOException {
     var lines = Files.readAllLines(file);
-    var names = lines.getFirst().split(",");
-    var cards = new ConcurrentLinkedQueue<Map<String, Object>>();
+    var cards = new ConcurrentLinkedQueue<Card>();
     for (var line : lines.subList(1, lines.size())) {
-      var values = line.split(",");
-      var card = new HashMap<String, Object>();
-      for (var i = 0; i < names.length; i++) {
-        card.put(names[i], values[i]);
-      }
-      cards.add(card);
+      var field = line.split(",");
+      cards.add(
+          new Card(field[0], field[1], field[2], Long.parseLong(field[3]), field[4], field[5]));
     }
     return cards;
   }
@@ -52,23 +55,22 @@ final class Cards {
    * A Charge for the card's whole amount, under a new retrieval reference number; with a security
    * code that differs from the card's in every digit if {@code wrongSecurityCode}.
    */
-  static AuthorizationRequest charge(Map<String, Object> card, boolean wrongSecurityCode) {
-    var securityCode = (String) card.get("securityCode");
+  static AuthorizationRequest charge(Card card, boolean wrongSecurityCode) {
     var now = Instant.now();
     return AuthorizationRequest.newBuilder()
-        .setPrimaryAccountNumber((String) card.get("pan"))
-        .setAmountMinor(Long.parseLong((String) card.get("amountMinorUnits")))
-        .setCurrencyCode((String) card.get("currency"))
+        .setPrimaryAccountNumber(card.pan())
+        .setAmountMinor(card.amountMinorUnits())
+        .setCurrencyCode(card.currency())
         .setTransmittedAt(
             Timestamp.newBuilder().setSeconds(now.getEpochSecond()).setNanos(now.getNano()))
         .setSystemTraceAuditNumber(
             "%06d".formatted(Math.floorMod(traceNumbers.getAndIncrement(), 999_999) + 1))
-        .setExpirationDate((String) card.get("expiry"))
+        .setExpirationDate(card.expiry())
         .setMerchantCategoryCode(MERCHANT_CATEGORY_CODE)
         .setRetrievalReferenceNumber(newRetrievalReferenceNumber())
-        .setCardAcceptorId((String) card.get("acceptorId"))
+        .setCardAcceptorId(card.acceptorId())
         .setCardAcceptorName("Globex")
-        .setSecurityCode(wrongSecurityCode ? wrong(securityCode) : securityCode)
+        .setSecurityCode(wrongSecurityCode ? wrong(card.securityCode()) : card.securityCode())
         .build();
   }
 

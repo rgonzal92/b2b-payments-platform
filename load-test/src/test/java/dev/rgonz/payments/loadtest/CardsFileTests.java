@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /** The simulation reads the cards file the simulator writes and charges each card through it. */
-class CardsTests {
+class CardsFileTests {
 
   @TempDir Path folder;
 
@@ -17,8 +17,8 @@ class CardsTests {
   void eachLineOfTheCardsFileBecomesAnAuthorizeRequestForTheWholeAmount() throws IOException {
     var file = cardsFile("9900001234567890,321,2611,1000,USD,GLOBEX000000001");
 
-    var cards = Cards.read(file);
-    var request = Cards.charge(cards.poll(), false);
+    var cards = CardsFile.read(file);
+    var request = CardsFile.charge(cards.poll(), false);
 
     assertThat(cards).isEmpty();
     assertThat(request.getPrimaryAccountNumber()).isEqualTo("9900001234567890");
@@ -36,19 +36,21 @@ class CardsTests {
   void aWrongSecurityCodeDiffersInEveryDigit() throws IOException {
     var file = cardsFile("9900001234567890,309,2611,1000,USD,GLOBEX000000001");
 
-    var request = Cards.charge(Cards.read(file).poll(), true);
+    var request = CardsFile.charge(CardsFile.read(file).poll(), true);
 
     assertThat(request.getSecurityCode()).isEqualTo("410");
   }
 
   @Test
   void eachChargeHasItsOwnRetrievalReferenceNumber() throws IOException {
-    var card = Cards.read(cardsFile("9900001234567890,321,2611,1000,USD,GLOBEX000000001")).poll();
+    var card =
+        CardsFile.read(cardsFile("9900001234567890,321,2611,1000,USD,GLOBEX000000001")).poll();
 
-    assertThat(Cards.charge(card, false).getRetrievalReferenceNumber())
-        .isNotEqualTo(Cards.charge(card, false).getRetrievalReferenceNumber());
+    assertThat(CardsFile.charge(card, false).getRetrievalReferenceNumber())
+        .isNotEqualTo(CardsFile.charge(card, false).getRetrievalReferenceNumber());
   }
 
+  // The header LoadTestCards.HEADER writes in the simulator.
   private Path cardsFile(String line) throws IOException {
     return Files.writeString(
         folder.resolve("cards.csv"),

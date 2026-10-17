@@ -423,7 +423,7 @@ class PaymentSagaTests {
 
   @Test
   void severalWorkersDrainEveryDuePaymentAndRunEachOfItsStepsOnce() throws Exception {
-    // More than one pass of the old worker took (10 steps), so draining shows.
+    // More than ten, so a pass that stopped after ten steps would leave some due.
     var count = 40;
     var buyer = newBuyerWithCreditLine(100_000_000);
     var invoiceIds = new ArrayList<String>();
