@@ -27,6 +27,20 @@ class Settlements implements RecordedSettlements {
     this.journal = journal;
   }
 
+  // A refused file posted nothing, so it has nothing to settle.
+  @Override
+  public boolean everyFileSettled() {
+    return jdbc.sql(
+            """
+            select not exists (select 1 from clearing.clearing_file f
+                                where f.status <> 'REFUSED'
+                                  and not exists (select 1 from clearing.settlement s
+                                                   where s.file_id = f.id))
+            """)
+        .query(Boolean.class)
+        .single();
+  }
+
   @Override
   public List<RecordedSettlement> mismatchedOn(LocalDate businessDate) {
     return jdbc.sql(

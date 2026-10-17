@@ -36,9 +36,13 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Issuer staff run a Reconciliation for a Business Date over HTTP, on PostgreSQL: every Clearing of
- * that day that didn't match, and every Undercharge, becomes one {@code OPEN} Break, and a re-run
- * finds them instead of adding more. The Clearings are written straight into {@code clearing}'s
- * tables, as an import would have recorded them, so each outcome needs no Network to produce it.
+ * that day that didn't match, every Undercharge, every Authorization that never cleared, every
+ * Payment that ended unpaid and every mismatched Settlement becomes one {@code OPEN} Break, and a
+ * re-run finds them instead of adding more. Clearings, Settlements, Invoices and Payments are
+ * written straight into their modules' tables, as those modules would have recorded them, so each
+ * needs no Network to produce it; a never-cleared Charge expires through the real expiry job. Runs
+ * for today share it with other tests, so those assert only the Breaks naming their own records.
+ * The books' checks are {@link BooksOutOfBalanceTests}'.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -180,11 +184,14 @@ class ReconciliationRunTests {
     settlement(above, 1_000_000, 940_000);
     var below = clearingFile(date);
     settlement(below, 500_000, 525_000);
-    settlement(clearingFile(date), 700_000, 700_000);
+    var matched = clearingFile(date);
+    settlement(matched, 700_000, 700_000);
 
     assertThat(run(date, ISSUER_ADMIN)).hasStatus(201);
 
-    assertThat(breaksOn(date))
+    // Only the Breaks naming these files: with every file settled, other tests' journal entries
+    // may raise a books Break on this date too.
+    assertThat(breaksNaming(above, below, matched))
         .containsExactlyInAnyOrder(
             tuple("MISMATCHED_SETTLEMENT", above, "OPEN", null, 60_000L, "USD"),
             tuple("MISMATCHED_SETTLEMENT", below, "OPEN", null, 25_000L, "USD"));
@@ -202,6 +209,8 @@ class ReconciliationRunTests {
     clearing(fileId, null, 700_000, "USD", null, "UNKNOWN_CARD");
     clearing(
         fileId, card(new BuyerId(UUID.randomUUID())), 500_000, "USD", null, "NO_AUTHORIZATION");
+    settlement(clearingFile(date), 1_000_000, 940_000);
+    payment(new BuyerId(UUID.randomUUID()), "FAILED", 300_000, date);
     assertThat(run(date, ISSUER_ADMIN)).hasStatus(201);
 
     var again = run(date, ISSUER_ADMIN);
@@ -211,10 +220,10 @@ class ReconciliationRunTests {
         .bodyJson()
         .isLenientlyEqualTo(
             """
-            {"businessDate": "%s", "breaksFound": 2, "newBreaks": 0, "knownBreaks": 2}
+            {"businessDate": "%s", "breaksFound": 4, "newBreaks": 0, "knownBreaks": 4}
             """
                 .formatted(date));
-    assertThat(breaksOn(date)).hasSize(2);
+    assertThat(breaksOn(date)).hasSize(4);
   }
 
   @Test

@@ -44,11 +44,11 @@ M3 books every Clearing and settles every file, and records how each Clearing ma
 | Kind | Found from | Names |
 |---|---|---|
 | One per M3 outcome other than matched: above authorized amount, no Authorization, unknown card, other currency, against a reversed Authorization, after Hold expired, Authorization already cleared | the Clearing's outcome | the Clearing (and its Authorization when there is one) |
-| Undercharge | a matched Clearing below its authorized amount | the Clearing, its Authorization and Invoice (Changed during #69: the Clearing and its Authorization's request ID; the Invoice isn't named yet, as `payables` has no read API; no ticket covers it so far) |
-| Never cleared | an approved Authorization expired by the 7-day rule | the Authorization and its Invoice |
-| Unpaid Invoice | a Payment that ended `EXPIRED` or `FAILED` | the Payment and its Invoice |
-| Mismatched Settlement | a Settlement whose Network figure differed from the imported total | the Settlement and its Clearing File |
-| Books out of balance | total debits ≠ total credits, or the Network Settlement Payable not zero once every file is settled | the journal (an alarm, never routine) |
+| Undercharge | a matched Clearing below its authorized amount | the Clearing, its Authorization and Invoice (Changed during #69: the Clearing and its Authorization's request ID; the Invoice isn't named yet, as `payables` has no read API; no ticket covers it so far. Changed during #70: `payables.InvoicePayments` now names the Invoice too) |
+| Never cleared | an approved Authorization expired by the 7-day rule | the Authorization and its Invoice (Changed during #70: found on the day the card expired, which `cards` now records as `expired_at`; one the Network reversed since is left out, and one whose Clearing came late still counts) |
+| Unpaid Invoice | a Payment that ended `EXPIRED` or `FAILED` | the Payment and its Invoice (Changed during #70: found on the day it ended, which `payables` now records as `ended_at`) |
+| Mismatched Settlement | a Settlement whose Network figure differed from the imported total | the Settlement and its Clearing File (Changed during #70: both by the file ID, a Settlement's own; the gap is the distance between the two figures, never negative like every gap, with both figures in the facts to show the direction) |
+| Books out of balance | total debits ≠ total credits, or the Network Settlement Payable not zero once every file is settled | the journal (an alarm, never routine) (Changed during #70: one Break per Business Date, check and currency; "every file" leaves refused files out; a mismatched Settlement keeps the Payable off zero, so it raises one of these daily too, until it is corrected) |
 
 Every Break records the amount gap and enough of the records' facts (amounts, dates, outcome, Buyer) for M8's assistant to draft a likely cause from `GET /v1/breaks/{id}` alone.
 

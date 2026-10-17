@@ -2,10 +2,13 @@ package dev.rgonz.payments.platform.reconciliation;
 
 import dev.rgonz.payments.platform.authorization.NeverClearedAuthorization;
 import dev.rgonz.payments.platform.clearing.RecordedSettlement;
+import dev.rgonz.payments.platform.ledger.BooksBalance;
 import dev.rgonz.payments.platform.payables.UnpaidPayment;
 import dev.rgonz.payments.platform.shared.Money;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -79,6 +82,61 @@ final class RecordBreaks {
             Map.of(
                 "id", settlement.fileId(),
                 "businessDate", settlement.businessDate().toString())));
+  }
+
+  /**
+   * A Break for each balance check the books fail, in each currency: total debits against total
+   * credits always, and the Network Settlement Payable only once every Clearing File is settled, as
+   * until then it rightly holds what is owed for the rest. The gap is how far each is off, either
+   * way. An alarm, never routine: it names the Business Date, check and currency, so each day's run
+   * raises its own while the books stay out, and a re-run of the day none.
+   */
+  static List<Break> booksOutOfBalance(
+      LocalDate businessDate, List<BooksBalance> balances, boolean everyFileSettled) {
+    var found = new ArrayList<Break>();
+    for (var books : balances) {
+      if (!books.debitsEqualCredits()) {
+        found.add(
+            booksBreak(
+                businessDate,
+                "DEBITS_AGAINST_CREDITS",
+                books.debits().subtract(books.credits()),
+                books,
+                everyFileSettled));
+      }
+      if (everyFileSettled && !books.networkSettlementPayableIsZero()) {
+        found.add(
+            booksBreak(
+                businessDate,
+                "NETWORK_SETTLEMENT_PAYABLE",
+                books.networkSettlementPayable(),
+                books,
+                everyFileSettled));
+      }
+    }
+    return found;
+  }
+
+  private static Break booksBreak(
+      LocalDate businessDate,
+      String check,
+      Money off,
+      BooksBalance books,
+      boolean everyFileSettled) {
+    var currency = off.currency().getCurrencyCode();
+    var facts = new LinkedHashMap<String, Object>();
+    facts.put("check", check);
+    facts.put("debits", money(books.debits()));
+    facts.put("credits", money(books.credits()));
+    facts.put("networkSettlementPayable", money(books.networkSettlementPayable()));
+    facts.put("everyFileSettled", everyFileSettled);
+    return new Break(
+        BreakKind.BOOKS_OUT_OF_BALANCE,
+        businessDate + "/" + check + "/" + currency,
+        businessDate,
+        null,
+        new Money(Math.absExact(off.minorUnits()), off.currency()),
+        Map.of("journal", facts));
   }
 
   // A LinkedHashMap, which keeps the null Map.of refuses: an unknown Invoice shows.
