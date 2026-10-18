@@ -1273,7 +1273,8 @@ class ClearingFileImportTests {
     var paymentId = UUID.randomUUID();
     var amount = new Money(CARD_AMOUNT, USD);
     assertThat(holds.place(paymentId, buyerId, amount)).isEqualTo(Holds.Outcome.PLACED);
-    return cards.issueSingleUse(paymentId, buyerId, supplier.id(), amount, Instant.now());
+    return cards.issueSingleUse(
+        paymentId, buyerId, supplier.id(), ACCEPTOR_ID, amount, Instant.now());
   }
 
   // The Network cancels the Charge's Authorization: the card is ACTIVE again.

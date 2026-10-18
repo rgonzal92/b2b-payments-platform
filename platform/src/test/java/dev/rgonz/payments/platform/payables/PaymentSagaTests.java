@@ -24,6 +24,7 @@ import com.jayway.jsonpath.Option;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
 import dev.rgonz.payments.platform.cards.CardExpired;
 import dev.rgonz.payments.platform.cards.CardExpiryJob;
+import dev.rgonz.payments.platform.cards.CardIssued;
 import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.ledger.Holds;
@@ -47,6 +48,7 @@ import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
+import java.util.stream.StreamSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -207,7 +209,12 @@ class PaymentSagaTests {
     var card = cards.findForPayment(paymentId).orElseThrow();
     var again =
         cards.issueSingleUse(
-            paymentId, new BuyerId(acme), supplierId, amount, Instant.now().plusSeconds(3_600));
+            paymentId,
+            new BuyerId(acme),
+            supplierId,
+            null,
+            amount,
+            Instant.now().plusSeconds(3_600));
 
     assertThat(card.cardToken()).isEqualTo(JsonPath.read(body, "$.payment.card.cardToken"));
     assertThat(card.buyerId()).isEqualTo(new BuyerId(acme));
@@ -234,6 +241,24 @@ class PaymentSagaTests {
         .until(() -> "EXPIRED".equals(paymentState(acme, invoiceId)));
     assertThat(creditWhilePaid).isEqualTo(8_760_000);
     assertThat(availableCredit(acme)).isEqualTo(10_000_000);
+  }
+
+  // The saga passes the Acceptor ID into issuance, because cards can't call suppliers (ADR-0016).
+  @Test
+  @ExtendWith(PublishedEventsExtension.class)
+  void theIssuedCardEventCarriesTheSuppliersAcceptorId(PublishedEvents events) throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000, "ACCEPTOR-1");
+    supplierAnswers(withSuccess());
+
+    saga.runDueSteps(Instant.now());
+
+    var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
+    var issued =
+        StreamSupport.stream(events.ofType(CardIssued.class).spliterator(), false)
+            .filter(event -> event.cardToken().equals(card.cardToken()))
+            .findFirst();
+    assertThat(issued).get().extracting(CardIssued::acceptorId).isEqualTo("ACCEPTOR-1");
   }
 
   @Test
@@ -447,7 +472,7 @@ class PaymentSagaTests {
     }
     var buyerId = new BuyerId(buyer);
     verify(holds, times(count)).place(any(), eq(buyerId), any());
-    verify(cards, times(count)).issueSingleUse(any(), eq(buyerId), any(), any(), any());
+    verify(cards, times(count)).issueSingleUse(any(), eq(buyerId), any(), any(), any(), any());
     assertThat(deliveries).hasSize(count);
     assertThat(availableCredit(buyer)).isEqualTo(100_000_000 - count * 1_000L);
   }
@@ -520,7 +545,7 @@ class PaymentSagaTests {
     var invoiceId = approvedInvoice(acme, 1_240_000);
     doThrow(new TransientDataAccessResourceException("Connection lost"))
         .when(cards)
-        .issueSingleUse(any(), eq(new BuyerId(acme)), any(), any(), any());
+        .issueSingleUse(any(), eq(new BuyerId(acme)), any(), any(), any(), any());
     // The first pass places the Hold, then fails to issue the card; each later pass comes after the
     // longest backoff, so every pass retries.
     var now = Instant.now();
@@ -710,7 +735,9 @@ class PaymentSagaTests {
     switch (state) {
       case STARTED -> stopAfterTheRealCall.when(holds).place(any(), eq(buyer), any());
       case HOLD_PLACED ->
-          stopAfterTheRealCall.when(cards).issueSingleUse(any(), eq(buyer), any(), any(), any());
+          stopAfterTheRealCall
+              .when(cards)
+              .issueSingleUse(any(), eq(buyer), any(), any(), any(), any());
       case CARD_ISSUED ->
           stopAfterTheRealCall
               .when(remittanceAdvices)
@@ -822,6 +849,11 @@ class PaymentSagaTests {
   // Submitted, approved, and its Payment started by InvoiceApproved, which arrives asynchronously.
   private String approvedInvoice(UUID buyerId, long minorUnits)
       throws UnsupportedEncodingException {
+    return approvedInvoice(buyerId, minorUnits, null);
+  }
+
+  private String approvedInvoice(UUID buyerId, long minorUnits, String acceptorId)
+      throws UnsupportedEncodingException {
     var submitted =
         mvc.post()
             .uri("/v1/invoices")
@@ -834,6 +866,7 @@ class PaymentSagaTests {
                   "supplier": {
                     "name": "Globex",
                     "taxId": "TAX-%s",
+                    %s
                     "buyerReference": "GLOBEX-01",
                     "remittanceAddress": "https://globex.example/remittance-advice"
                   },
@@ -842,7 +875,10 @@ class PaymentSagaTests {
                   "dueDate": "2026-11-30"
                 }
                 """
-                    .formatted(UUID.randomUUID(), minorUnits))
+                    .formatted(
+                        UUID.randomUUID(),
+                        acceptorId == null ? "" : "\"acceptorId\": \"%s\",".formatted(acceptorId),
+                        minorUnits))
             .exchange();
     assertThat(submitted).hasStatus(201);
     String invoiceId = JsonPath.read(submitted.getResponse().getContentAsString(), "$.id");

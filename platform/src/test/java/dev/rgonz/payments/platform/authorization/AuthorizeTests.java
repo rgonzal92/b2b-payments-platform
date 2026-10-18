@@ -687,7 +687,8 @@ class AuthorizeTests {
     var paymentId = UUID.randomUUID();
     var amount = new Money(AMOUNT, USD);
     assertThat(holds.place(paymentId, buyerId, amount)).isEqualTo(Holds.Outcome.PLACED);
-    return cards.issueSingleUse(paymentId, buyerId, supplier.id(), amount, Instant.now());
+    return cards.issueSingleUse(
+        paymentId, buyerId, supplier.id(), acceptorId, amount, Instant.now());
   }
 
   private SingleUseCard.Status statusOf(SingleUseCard card) {

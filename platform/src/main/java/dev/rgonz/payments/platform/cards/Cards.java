@@ -19,13 +19,21 @@ public interface Cards {
   List<SingleUseCard> expiredUnclearedOn(LocalDate day);
 
   /**
-   * Issues the Payment's Single-Use Card for the Buyer, locked to the Supplier and amount and valid
-   * for 30 days from {@code now}; its PAN goes into the vault. Issuing again for the same Payment
-   * returns the card it already has, and the first issuance's details stand. Joins the caller's
-   * transaction, so the card commits or rolls back with whatever the caller records about it.
+   * Issues the Payment's Single-Use Card for the Buyer, locked to the Supplier, its Acceptor ID and
+   * the amount and valid for 30 days from {@code now}; its PAN goes into the vault. The caller
+   * passes the Supplier's Acceptor ID because {@code cards} can't call {@code suppliers} (Spring
+   * Modulith forbids the cycle), and it is copied now for {@link CardIssued}. Issuing again for the
+   * same Payment returns the card it already has, and the first issuance's details stand. Joins the
+   * caller's transaction, so the card and its event commit or roll back with whatever the caller
+   * records about it.
    */
   SingleUseCard issueSingleUse(
-      UUID paymentId, BuyerId buyerId, UUID supplierId, Money amount, Instant now);
+      UUID paymentId,
+      BuyerId buyerId,
+      UUID supplierId,
+      String acceptorId,
+      Money amount,
+      Instant now);
 
   /** The Payment's Single-Use Card; empty until one is issued. */
   Optional<SingleUseCard> findForPayment(UUID paymentId);
