@@ -1,3 +1,5 @@
 # In-process events with Spring Modulith; Kafka only when a module leaves the monolith
 
 Modules react to each other through events that Spring Modulith stores in the same database transaction as the change that raised them and redelivers until handled. That gives us an outbox without running a broker. Kafka arrives with the first extracted service, the first time events must cross a process boundary; before then it would add a cluster to operate and no capability we need.
+
+**Amended 2026-10-18 (M5 grilling):** Kafka arrives with `authorization-service` (ADR-0016). The platform publishes the events the service needs through Spring Modulith's externalization, which sends them from the same event publication registry, so the registry stays the platform's outbox; the service, which has no Modulith, writes its events to an outbox table in the same transaction as the change and relays them to Kafka. Events between the two are JSON, each side keeps its own classes, and Pact message pacts check that what one side publishes is what the other expects. Events that stay inside the platform remain in-process.
