@@ -60,6 +60,14 @@ services:
       - ./grafana/provisioning/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/b2b-payments.yaml:ro
       - ./grafana/provisioning/alerting.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/b2b-payments.yaml:ro
 
+  # The Gateway's rate limiter (M6). The Gateway connects by Spring Boot's default address, localhost:6379; the
+  # platform's Docker Compose support starts it with the stack and ignores it, having no Redis client.
+  redis:
+    # Same image as the Gateway's GatewayTests and the chart's infra values: change all three.
+    image: redis:8.10.2-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+
   keycloak:
     # Same image as the platform's TestKeycloak and e2e's CorePathEndToEndTests: change all three.
     image: quay.io/keycloak/keycloak:26.8.1

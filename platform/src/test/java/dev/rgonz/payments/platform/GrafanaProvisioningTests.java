@@ -20,9 +20,9 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The dashboards and the alert rule that compose.yaml mounts into the otel-lgtm container parse,
- * and query only metrics the platform or authorization-service exports, under the names Prometheus
- * gives them over OTLP (a counter gains {@code _total}, a timer {@code _milliseconds_bucket},
- * {@code _count} and {@code _sum}).
+ * and query only metrics the platform, authorization-service or the Gateway exports, under the
+ * names Prometheus gives them over OTLP (a counter gains {@code _total}, a timer {@code
+ * _milliseconds_bucket}, {@code _count} and {@code _sum}).
  */
 class GrafanaProvisioningTests {
 
@@ -56,7 +56,9 @@ class GrafanaProvisioningTests {
           "clearing_clearings_total",
           "clearing_settlements_total",
           // reconciliation: OpenBreaksMetric, a gauge, so no suffix.
-          "reconciliation_breaks_open");
+          "reconciliation_breaks_open",
+          // The Gateway's RateLimits: requests let through unlimited because Redis failed.
+          "gateway_rate_limiter_failed_open_total");
 
   // A metric name in PromQL is followed by its label matchers or its range: name{…} or name[…].
   private static final Pattern METRIC = Pattern.compile("([a-zA-Z_:][a-zA-Z0-9_:]*)\\s*[{\\[]");
@@ -174,6 +176,22 @@ class GrafanaProvisioningTests {
     assertThat(queryOf(rule)).isEqualTo("absent_over_time(target_info{job=\"" + app + "\"}[5m])");
     assertThat(thresholdOf(rule)).containsEntry("type", "gt").containsEntry("params", List.of(0));
     assertThat(rule.get("noDataState")).as("present: nothing absent").isEqualTo("OK");
+  }
+
+  // ADR-0017: with Redis down the Gateway lets requests through unlimited and Grafana alerts once
+  // that has gone on for 2 minutes, so one slow answer from Redis doesn't page anyone.
+  @Test
+  void theAlertRuleFiresWhenTheGatewayLetsRequestsThroughUnlimitedFor2Minutes() throws IOException {
+    var rule = rule("rate-limiter-redis-down");
+
+    assertThat(queryOf(rule))
+        .contains("gateway_rate_limiter_failed_open_total")
+        .contains("job=\"gateway\"");
+    assertThat(rule.get("for")).isEqualTo("2m");
+    assertThat(thresholdOf(rule)).containsEntry("type", "gt").containsEntry("params", List.of(0));
+    assertThat(map(rule.get("annotations")).get("summary"))
+        .asString()
+        .contains("docs/runbooks/rate-limiter-redis-down.md");
   }
 
   // The provisioned rule with this uid, from any group.

@@ -7,29 +7,38 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.util.TestSocketUtils;
+import org.springframework.test.web.reactive.server.EntityExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.client.RestClient;
+import org.testcontainers.containers.GenericContainer;
 
 /**
  * The Gateway between a real Keycloak (the repository's realm file) and a stub platform that
@@ -55,6 +64,13 @@ class GatewayTests {
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
+  // The rate limiter's store, for this class's tests and WithRedisStopped's own. Same image as
+  // compose.yaml and the chart's infra values: change all three together.
+  private static final String REDIS_IMAGE = "redis:8.10.2-alpine";
+
+  private static final GenericContainer<?> redis =
+      new GenericContainer<>(REDIS_IMAGE).withExposedPorts(6379);
+
   /** The Authorization header of every request that reached the stub platform, null for none. */
   static final List<String> platformSaw = new CopyOnWriteArrayList<>();
 
@@ -65,6 +81,7 @@ class GatewayTests {
 
   static {
     keycloak.start();
+    redis.start();
   }
 
   @DynamicPropertySource
@@ -72,6 +89,8 @@ class GatewayTests {
     registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", GatewayTests::issuerUri);
     registry.add(
         "gateway.platform-uri", () -> "http://localhost:" + platform.getAddress().getPort());
+    registry.add("spring.data.redis.host", redis::getHost);
+    registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
   }
 
   @AfterAll
@@ -81,9 +100,11 @@ class GatewayTests {
 
   @Autowired WebTestClient http;
 
+  // Every test starts with full buckets.
   @BeforeEach
-  void forgetRequests() {
+  void forgetRequests() throws Exception {
     platformSaw.clear();
+    redis.execInContainer("redis-cli", "FLUSHALL");
   }
 
   @Test
@@ -235,9 +256,88 @@ class GatewayTests {
     assertThat(platformSaw).isEmpty();
   }
 
+  // M6 design, Rate limiting: each Keycloak client (the token's azp) gets bursts to 40 and 20 a
+  // second after that. The bucket refills while the requests go out, so send until one is refused.
+  @Test
+  void aClientPastItsBurstGetsAProblemDetails429WithRetryAfterAndAnotherClientIsUnaffected() {
+    var acme = "Bearer " + clientCredentialsToken("acme-erp");
+
+    var refused = firstRefused(() -> get("/v1/invoices", acme), 200);
+
+    assertThat(refused.passedBefore()).isGreaterThanOrEqualTo(40);
+    // One token short at 20 a second: retry in a second.
+    assertTooManyRequests(refused.result(), "1");
+    http.get()
+        .uri("/v1/invoices")
+        .header(HttpHeaders.AUTHORIZATION, "Bearer " + clientCredentialsToken("network"))
+        .exchange()
+        .expectStatus()
+        .isOk();
+  }
+
+  // The remittance link has no token, so it is limited by the address the connection came from: 10
+  // a minute. A forwarding header names no other client, since anyone can send one.
+  @Test
+  void theRemittanceLinkGets10AMinutePerClientIp() {
+    var link = "/v1/remittance-links/" + LINK_TOKEN;
+    for (var i = 0; i < 10; i++) {
+      http.get().uri(link).exchange().expectStatus().isOk();
+    }
+
+    var eleventh =
+        http.get()
+            .uri(link)
+            .header("X-Forwarded-For", "203.0.113.9")
+            .exchange()
+            .expectBody()
+            .returnResult();
+
+    // 6 tokens short at 1 a second. Redis's clock in the bucket's script counts whole seconds, so
+    // if
+    // one ticked during the ten requests a token came back, and the wait is 5.
+    assertTooManyRequests(eleventh, "6", "5");
+    assertThat(platformSaw).hasSize(10);
+    // A client's own limit is apart from the link's.
+    assertThat(get("/v1/invoices", "Bearer " + clientCredentialsToken("acme-erp")).getStatus())
+        .isEqualTo(HttpStatus.OK);
+  }
+
   @Test
   void theGatewaysHealthIsOpen() {
     http.get().uri("/actuator/health").exchange().expectStatus().isOk();
+  }
+
+  // On Kubernetes Spring Boot would read the client's address from forwarding headers unless told
+  // not to, and each forged X-Forwarded-For would get a fresh bucket.
+  @Nested
+  class OnKubernetes {
+
+    @DynamicPropertySource
+    static void kubernetes(DynamicPropertyRegistry registry) {
+      registry.add("spring.main.cloud-platform", () -> "kubernetes");
+    }
+
+    @Autowired WebTestClient http;
+
+    @Test
+    void aForgedForwardingHeaderGetsNoFreshRemittanceLinkBucket() {
+      var link = "/v1/remittance-links/" + LINK_TOKEN;
+      for (var i = 1; i <= 10; i++) {
+        http.get()
+            .uri(link)
+            .header("X-Forwarded-For", "203.0.113." + i)
+            .exchange()
+            .expectStatus()
+            .isOk();
+      }
+
+      http.get()
+          .uri(link)
+          .header("X-Forwarded-For", "203.0.113.11")
+          .exchange()
+          .expectStatus()
+          .isEqualTo(429);
+    }
   }
 
   // The route points at a port nothing listens on, as when every platform pod is down.
@@ -267,6 +367,81 @@ class GatewayTests {
               """
               {"title": "Bad Gateway", "status": 502,
                "detail": "The platform can't be reached."}""");
+    }
+  }
+
+  private EntityExchangeResult<byte[]> get(String path, String authorization) {
+    return http.get()
+        .uri(path)
+        .header(HttpHeaders.AUTHORIZATION, authorization)
+        .exchange()
+        .expectBody()
+        .returnResult();
+  }
+
+  record Refused(int passedBefore, EntityExchangeResult<byte[]> result) {}
+
+  // Sends the request until the Gateway refuses one, at most max times.
+  private static Refused firstRefused(Supplier<EntityExchangeResult<byte[]>> request, int max) {
+    for (var passed = 0; passed < max; passed++) {
+      var result = request.get();
+      if (result.getStatus().value() != 200) {
+        return new Refused(passed, result);
+      }
+    }
+    throw new AssertionError("No request of " + max + " was refused");
+  }
+
+  private static void assertTooManyRequests(
+      EntityExchangeResult<byte[]> result, String... retryAfterSeconds) {
+    assertThat(result.getStatus().value()).isEqualTo(429);
+    assertThat(result.getResponseHeaders().getContentType())
+        .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+    assertThat(result.getResponseHeaders().getFirst(HttpHeaders.RETRY_AFTER))
+        .as("Retry-After in whole seconds")
+        .isIn((Object[]) retryAfterSeconds);
+    assertThat(new String(result.getResponseBody(), StandardCharsets.UTF_8))
+        .contains("\"title\":\"Too Many Requests\"")
+        .contains("\"status\":429");
+  }
+
+  // ADR-0017: the limiter fails open. This Redis is the nested context's own, so stopping it leaves
+  // the other tests theirs; the Gateway has connected to it before it stops, as in production.
+  @Nested
+  @ExtendWith(OutputCaptureExtension.class)
+  class WithRedisStopped {
+
+    private static final GenericContainer<?> doomedRedis =
+        new GenericContainer<>(REDIS_IMAGE).withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void ownRedis(DynamicPropertyRegistry registry) {
+      doomedRedis.start();
+      registry.add("spring.data.redis.port", () -> doomedRedis.getMappedPort(6379));
+    }
+
+    @Autowired WebTestClient http;
+
+    @Autowired MeterRegistry meters;
+
+    @Test
+    void requestsStillReachThePlatformAndTheGatewayCountsThem(CapturedOutput output) {
+      var acme = "Bearer " + clientCredentialsToken("acme-erp");
+      assertThat(get("/v1/invoices", acme).getStatus()).isEqualTo(HttpStatus.OK);
+
+      doomedRedis.stop();
+
+      var started = System.nanoTime();
+      for (var i = 0; i < 3; i++) {
+        assertThat(get("/v1/invoices", acme).getStatus()).isEqualTo(HttpStatus.OK);
+        http.get().uri("/v1/remittance-links/{token}", LINK_TOKEN).exchange().expectStatus().isOk();
+      }
+      assertThat(Duration.ofNanos(System.nanoTime() - started))
+          .as("six requests without Redis")
+          .isLessThan(Duration.ofSeconds(1));
+      assertThat(meters.get("gateway.rate.limiter.failed.open").counter().count()).isEqualTo(6);
+      // The counter carries the signal; a stack trace per request would flood the log.
+      assertThat(output).doesNotContain("Error calling rate limiter lua");
     }
   }
 

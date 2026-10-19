@@ -11,3 +11,7 @@ env:
   GATEWAY_PLATFORM_URI: http://platform:8080
   # Tokens name http://localhost:8180 as their issuer, which pods can't reach: the keys come from Keycloak's Service.
   SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8180/realms/payments/protocol/openid-connect/certs
+  # The rate limiter's token buckets.
+  SPRING_DATA_REDIS_HOST: redis
+  # Its metrics, the rate limiter's Redis-down counter among them.
+  MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://lgtm:4318/v1/metrics

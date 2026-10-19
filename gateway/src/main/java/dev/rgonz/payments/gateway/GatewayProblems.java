@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.webflux.error.ErrorWebExceptionHandler;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
@@ -13,6 +14,7 @@ import org.springframework.http.codec.HttpMessageWriter;
 import org.springframework.http.codec.ServerCodecConfigurer;
 import org.springframework.stereotype.Component;
 import org.springframework.web.ErrorResponse;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.reactive.function.server.ServerResponse;
 import org.springframework.web.reactive.result.view.ViewResolver;
 import org.springframework.web.server.ServerWebExchange;
@@ -20,8 +22,9 @@ import reactor.core.publisher.Mono;
 
 /**
  * Renders the errors the Gateway makes itself (no route for the path, the platform unreachable or
- * too slow) as RFC 9457 problem details, like every platform error. Runs before Spring Boot's
- * handler, which would answer its own JSON. The platform's own errors pass through untouched.
+ * too slow, a client over its rate) as RFC 9457 problem details, like every platform error. Runs
+ * before Spring Boot's handler, which would answer its own JSON. The platform's own errors pass
+ * through untouched.
  */
 @Component
 @Order(-2)
@@ -52,7 +55,17 @@ class GatewayProblems implements ErrorWebExceptionHandler {
     if (exchange.getResponse().isCommitted()) {
       return Mono.error(error);
     }
-    var problem = problemFor(error);
+    ProblemDetail problem;
+    if (error instanceof HttpClientErrorException.TooManyRequests) {
+      // RequestRateLimiter refused it (throwOnLimit) and left the bucket's headers on the response.
+      var headers = exchange.getResponse().getHeaders();
+      headers.set(HttpHeaders.RETRY_AFTER, RateLimits.retryAfterSeconds(headers));
+      problem =
+          ProblemDetail.forStatusAndDetail(
+              HttpStatus.TOO_MANY_REQUESTS, "Too many requests from this client; retry later.");
+    } else {
+      problem = problemFor(error);
+    }
     if (problem.getStatus() >= 500) {
       log.warn(
           "{} {} answered {}",
