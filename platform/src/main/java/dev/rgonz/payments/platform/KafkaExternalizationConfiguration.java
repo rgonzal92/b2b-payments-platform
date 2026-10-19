@@ -10,8 +10,9 @@ import org.springframework.modulith.events.EventExternalizationConfiguration;
 /**
  * Spring Modulith's Kafka externalization (ADR-0008, ADR-0016): every event annotated
  * {@code @Externalized} is sent from the event publication registry, the platform's outbox, with
- * its event type in a header. Externalization runs one event at a time, so the broker receives
- * events in the order they were published. Tests that don't use Kafka keep it off with {@code
+ * its event type in a header. Externalization runs one event at a time, but each from its own
+ * thread after its commit, so one card's events may reach the broker out of the order they were
+ * published; consumers must not depend on it. Tests that don't use Kafka keep it off with {@code
  * spring.modulith.events.externalization.enabled=false}.
  */
 @Configuration(proxyBeanMethods = false)
@@ -31,7 +32,7 @@ class KafkaExternalizationConfiguration {
         .build();
   }
 
-  // Three partitions, as the M5 design sets for both topics: one card's events stay in order
+  // Three partitions, as the M5 design sets for both topics: one card's events share a partition
   // through their key, and three consumers can share the topic.
   @Bean
   NewTopic cardsTopic() {

@@ -32,8 +32,10 @@ import org.testcontainers.kafka.KafkaContainer;
 
 /**
  * The card events on the {@code cards} topic, read back from a real Kafka: each issued, cancelled
- * or expired card is published in order, keyed by its Card Token, names its event type in a header,
- * and carries no PAN or security code. Externalization is off in every other test context.
+ * or expired card is published, keyed by its Card Token, names its event type in a header, and
+ * carries no PAN or security code. The platform doesn't promise to send one card's events in the
+ * order they were published (docs/learning/kafka.md), so the tests don't check it. Externalization
+ * is off in every other test context.
  */
 @Import({TestcontainersConfiguration.class, TestKafka.class})
 @SpringBootTest(
@@ -110,7 +112,7 @@ class CardEventsTests {
   }
 
   @Test
-  void cancellingACardPublishesCardCancelledOnceInOrderAfterCardIssued() {
+  void cancellingACardPublishesCardCancelledOnce() {
     var card = issue();
     cards.cancel(card.cardToken());
     // A card already CANCELLED changes nothing, so it publishes nothing.
@@ -120,9 +122,9 @@ class CardEventsTests {
 
     assertThat(records)
         .extracting(record -> header(record, EVENT_TYPE))
-        .containsExactly("CardIssued", "CardCancelled");
+        .containsExactlyInAnyOrder("CardIssued", "CardCancelled");
     assertThat(records).allMatch(record -> record.key().equals(card.cardToken()));
-    assertThat(JsonPath.<String>read(records.get(1).value(), "$.cardToken"))
+    assertThat(JsonPath.<String>read(ofType(records, "CardCancelled").value(), "$.cardToken"))
         .isEqualTo(card.cardToken());
   }
 
@@ -136,8 +138,8 @@ class CardEventsTests {
 
     assertThat(records)
         .extracting(record -> header(record, EVENT_TYPE))
-        .containsExactly("CardIssued", "CardExpired");
-    assertThat(JsonPath.<String>read(records.get(1).value(), "$.cardToken"))
+        .containsExactlyInAnyOrder("CardIssued", "CardExpired");
+    assertThat(JsonPath.<String>read(ofType(records, "CardExpired").value(), "$.cardToken"))
         .isEqualTo(card.cardToken());
   }
 
@@ -193,6 +195,14 @@ class CardEventsTests {
                 StringDeserializer.class));
     consumer.subscribe(List.of(TOPIC));
     return consumer;
+  }
+
+  private static ConsumerRecord<String, String> ofType(
+      List<ConsumerRecord<String, String>> records, String eventType) {
+    return records.stream()
+        .filter(record -> eventType.equals(header(record, EVENT_TYPE)))
+        .findFirst()
+        .orElseThrow();
   }
 
   private static String header(ConsumerRecord<String, String> record, String name) {

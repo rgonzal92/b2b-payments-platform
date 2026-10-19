@@ -11,8 +11,11 @@ import reactor.core.publisher.Mono;
 /**
  * The service's copy of the cards, in its own PostgreSQL through R2DBC. Kafka delivers each event
  * at least once, so every write is keyed on the event's natural ID, the Card Token and the event
- * type, and does nothing the second time: a repeated {@code CardIssued} finds the card already
- * there, and a repeated {@code CardCancelled} or {@code CardExpired} finds it already final.
+ * type, and does nothing the second time. The platform may also send one card's events out of
+ * order, so they apply in any order to the same result: a status only moves forward, from {@code
+ * ACTIVE} to {@code CANCELLED} or {@code EXPIRED}, both final. A card that ends before its {@code
+ * CardIssued} arrives is kept with its final status, and the {@code CardIssued} then fills in its
+ * details without making it {@code ACTIVE}.
  */
 @Repository
 public class CardCopies {
@@ -23,7 +26,7 @@ public class CardCopies {
     this.db = db;
   }
 
-  /** The copy of the card, or empty if no {@code CardIssued} for it has arrived. */
+  /** The copy of the card, or empty if no event for it has arrived. */
   public Mono<CardCopy> find(String cardToken) {
     return db.sql(
             """
@@ -39,9 +42,9 @@ public class CardCopies {
                     row.get("card_token", String.class),
                     row.get("pan_hash", String.class),
                     row.get("security_code_hash", String.class),
-                    row.get("expires_at", OffsetDateTime.class).toInstant(),
+                    instant(row.get("expires_at", OffsetDateTime.class)),
                     row.get("amount_minor", Long.class),
-                    Currency.getInstance(row.get("currency", String.class)),
+                    currency(row.get("currency", String.class)),
                     row.get("acceptor_id", String.class),
                     CardStatus.valueOf(row.get("status", String.class))))
         .one();
@@ -66,7 +69,14 @@ public class CardCopies {
                         currency, acceptor_id, status)
                 values (:cardToken, :panHash, :securityCodeHash, :expiresAt, :amountMinor,
                         :currency, :acceptorId, 'ACTIVE')
-                on conflict (card_token) do nothing
+                on conflict (card_token) do update
+                   set pan_hash = excluded.pan_hash,
+                       security_code_hash = excluded.security_code_hash,
+                       expires_at = excluded.expires_at,
+                       amount_minor = excluded.amount_minor,
+                       currency = excluded.currency,
+                       acceptor_id = excluded.acceptor_id
+                 where card_copy.pan_hash is null
                 """)
             .bind("cardToken", issued.cardToken())
             .bind("panHash", issued.panHash())
@@ -81,17 +91,28 @@ public class CardCopies {
     return spec.then();
   }
 
-  // CANCELLED and EXPIRED are final, so the first to arrive stays.
+  // CANCELLED and EXPIRED are final, so the first to arrive stays. A card not seen yet is kept
+  // with only its token and final status, for its CardIssued to fill in.
   private Mono<Void> endUnlessFinal(String cardToken, CardStatus status) {
     return db.sql(
             """
-            update card_copy
-               set status = :status
-             where card_token = :cardToken and status not in ('CANCELLED', 'EXPIRED')
+            insert into card_copy (card_token, status)
+            values (:cardToken, :status)
+            on conflict (card_token) do update
+               set status = excluded.status
+             where card_copy.status not in ('CANCELLED', 'EXPIRED')
             """)
         .bind("status", status.name())
         .bind("cardToken", cardToken)
         .then();
+  }
+
+  private static Instant instant(OffsetDateTime timestamp) {
+    return timestamp == null ? null : timestamp.toInstant();
+  }
+
+  private static Currency currency(String code) {
+    return code == null ? null : Currency.getInstance(code);
   }
 
   private static OffsetDateTime utc(Instant instant) {

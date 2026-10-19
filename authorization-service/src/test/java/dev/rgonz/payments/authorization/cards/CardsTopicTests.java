@@ -135,6 +135,46 @@ class CardsTopicTests {
     assertThat(copies.find(cardToken).block()).isEqualTo(cancelled);
   }
 
+  // The platform may send one card's events out of order (see docs/learning/kafka.md), so a card
+  // that ended before its CardIssued arrived must stay ended.
+  @Test
+  void aCardCancelledBeforeItsCardIssuedStaysCancelledWithItsDetails() {
+    var cardToken = newCardToken();
+    send(cardToken, "CardCancelled", "{\"cardToken\":\"" + cardToken + "\"}");
+    awaitCopy(cardToken, CardStatus.CANCELLED);
+
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    awaitAllConsumed();
+
+    assertThat(copies.find(cardToken).block())
+        .isEqualTo(
+            new CardCopy(
+                cardToken,
+                "pan-hash-of-" + cardToken,
+                "Y29kZS1oYXNoLTAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+                Instant.parse("2026-11-17T09:30:00.123456Z"),
+                1_240_000L,
+                Currency.getInstance("USD"),
+                "ACCEPTOR-1",
+                CardStatus.CANCELLED));
+  }
+
+  @Test
+  void aCardExpiredBeforeItsCardIssuedNeverBecomesActive() {
+    var cardToken = newCardToken();
+    send(cardToken, "CardExpired", "{\"cardToken\":\"" + cardToken + "\"}");
+    send(cardToken, "CardExpired", "{\"cardToken\":\"" + cardToken + "\"}");
+    awaitCopy(cardToken, CardStatus.EXPIRED);
+
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    awaitAllConsumed();
+
+    var copy = copies.find(cardToken).block();
+    assertThat(copy.status()).isEqualTo(CardStatus.EXPIRED);
+    assertThat(copy.panHash()).isEqualTo("pan-hash-of-" + cardToken);
+  }
+
   @Test
   void aCardIssuedThatArrivesWhileTheDatabaseIsDownIsStoredOnceItIsBack() throws SQLException {
     // The consumer is up and reading before the database goes down.

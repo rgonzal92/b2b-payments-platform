@@ -26,7 +26,7 @@ The platform keeps working: issuing, cancelling and expiring cards commit as usu
 
 ## Repeated sends
 
-Kafka delivers at least once, and the registry may resend an event whose completion wasn't recorded. A consumer keys its write on the Card Token and event type, so a duplicate changes nothing; `authorization-service` does so for every card event.
+Kafka delivers at least once, and the registry may resend an event whose completion wasn't recorded. A consumer keys its write on the Card Token and event type, so a duplicate changes nothing; `authorization-service` does so for every card event. The resends after a restart can also reach the topic out of the order the events were published; `authorization-service` applies a card's events in any order to the same result.
 
 ## The service's database is down
 
