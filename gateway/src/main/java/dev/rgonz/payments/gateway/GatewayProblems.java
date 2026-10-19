@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.webflux.error.ErrorWebExceptionHandler;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
@@ -13,6 +14,7 @@ import org.springframework.http.codec.HttpMessageWriter;
 import org.springframework.http.codec.ServerCodecConfigurer;
 import org.springframework.stereotype.Component;
 import org.springframework.web.ErrorResponse;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.reactive.function.server.ServerResponse;
 import org.springframework.web.reactive.result.view.ViewResolver;
 import org.springframework.web.server.ServerWebExchange;
@@ -20,8 +22,9 @@ import reactor.core.publisher.Mono;
 
 /**
  * Renders the errors the Gateway makes itself (no route for the path, the platform unreachable or
- * too slow) as RFC 9457 problem details, like every platform error. Runs before Spring Boot's
- * handler, which would answer its own JSON. The platform's own errors pass through untouched.
+ * too slow, a client over its rate) as RFC 9457 problem details, like every platform error. Runs
+ * before Spring Boot's handler, which would answer its own JSON. The platform's own errors pass
+ * through untouched.
  */
 @Component
 @Order(-2)
@@ -52,6 +55,12 @@ class GatewayProblems implements ErrorWebExceptionHandler {
     if (exchange.getResponse().isCommitted()) {
       return Mono.error(error);
     }
+    if (error instanceof HttpClientErrorException.TooManyRequests) {
+      exchange
+          .getResponse()
+          .getHeaders()
+          .set(HttpHeaders.RETRY_AFTER, retryAfterSeconds(exchange.getResponse().getHeaders()));
+    }
     var problem = problemFor(error);
     if (problem.getStatus() >= 500) {
       log.warn(
@@ -73,10 +82,24 @@ class GatewayProblems implements ErrorWebExceptionHandler {
       return ProblemDetail.forStatusAndDetail(
           HttpStatus.BAD_GATEWAY, "The platform can't be reached.");
     }
+    if (error instanceof HttpClientErrorException.TooManyRequests) {
+      return ProblemDetail.forStatusAndDetail(
+          HttpStatus.TOO_MANY_REQUESTS, "Too many requests from this client; retry later.");
+    }
     if (error instanceof ErrorResponse response) {
       return ProblemDetail.forStatus(response.getStatusCode());
     }
     return ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
+  }
+
+  // RequestRateLimiter refused the request and RedisRateLimiter's headers are on the response: the
+  // bucket holds `remaining` tokens, the request needed `requested`, and it gains `replenish` a
+  // second, so the wait is the shortfall over the rate, in whole seconds.
+  private static String retryAfterSeconds(HttpHeaders headers) {
+    long remaining = Long.parseLong(headers.getFirst("X-RateLimit-Remaining"));
+    long requested = Long.parseLong(headers.getFirst("X-RateLimit-Requested-Tokens"));
+    long replenish = Long.parseLong(headers.getFirst("X-RateLimit-Replenish-Rate"));
+    return String.valueOf(Math.max(1, Math.ceilDiv(requested - remaining, replenish)));
   }
 
   private static boolean refusedConnection(Throwable error) {

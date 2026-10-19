@@ -27,9 +27,11 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.util.TestSocketUtils;
+import org.springframework.test.web.reactive.server.EntityExchangeResult;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.client.RestClient;
+import org.testcontainers.containers.GenericContainer;
 
 /**
  * The Gateway between a real Keycloak (the repository's realm file) and a stub platform that
@@ -55,6 +57,11 @@ class GatewayTests {
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
+  // The rate limiter's store. Same image as compose.yaml and the chart's infra values: change all
+  // three together.
+  static final GenericContainer<?> redis =
+      new GenericContainer<>("redis:8.10.2-alpine").withExposedPorts(6379);
+
   /** The Authorization header of every request that reached the stub platform, null for none. */
   static final List<String> platformSaw = new CopyOnWriteArrayList<>();
 
@@ -65,6 +72,7 @@ class GatewayTests {
 
   static {
     keycloak.start();
+    redis.start();
   }
 
   @DynamicPropertySource
@@ -72,6 +80,8 @@ class GatewayTests {
     registry.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", GatewayTests::issuerUri);
     registry.add(
         "gateway.platform-uri", () -> "http://localhost:" + platform.getAddress().getPort());
+    registry.add("spring.data.redis.host", redis::getHost);
+    registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
   }
 
   @AfterAll
@@ -81,9 +91,11 @@ class GatewayTests {
 
   @Autowired WebTestClient http;
 
+  // Every test starts with full buckets.
   @BeforeEach
-  void forgetRequests() {
+  void forgetRequests() throws Exception {
     platformSaw.clear();
+    redis.execInContainer("redis-cli", "FLUSHALL");
   }
 
   @Test
@@ -235,6 +247,24 @@ class GatewayTests {
     assertThat(platformSaw).isEmpty();
   }
 
+  // M6 design, Rate limiting: each Keycloak client (the token's azp) gets bursts to 40 and 20 a
+  // second after that. The bucket refills while the requests go out, so send until one is refused.
+  @Test
+  void aClientPastItsBurstGetsAProblemDetails429WithRetryAfterAndAnotherClientIsUnaffected() {
+    var acme = "Bearer " + clientCredentialsToken("acme-erp");
+
+    var refused = firstRefused(() -> get("/v1/invoices", acme), 200);
+
+    assertThat(refused.passedBefore()).isGreaterThanOrEqualTo(40);
+    assertTooManyRequests(refused.result());
+    http.get()
+        .uri("/v1/invoices")
+        .header(HttpHeaders.AUTHORIZATION, "Bearer " + clientCredentialsToken("network"))
+        .exchange()
+        .expectStatus()
+        .isOk();
+  }
+
   @Test
   void theGatewaysHealthIsOpen() {
     http.get().uri("/actuator/health").exchange().expectStatus().isOk();
@@ -268,6 +298,40 @@ class GatewayTests {
               {"title": "Bad Gateway", "status": 502,
                "detail": "The platform can't be reached."}""");
     }
+  }
+
+  private EntityExchangeResult<byte[]> get(String path, String authorization) {
+    var request = http.get().uri(path);
+    if (authorization != null) {
+      request.header(HttpHeaders.AUTHORIZATION, authorization);
+    }
+    return request.exchange().expectBody().returnResult();
+  }
+
+  record Refused(int passedBefore, EntityExchangeResult<byte[]> result) {}
+
+  // Sends the request until the Gateway refuses one, at most max times.
+  private static Refused firstRefused(
+      java.util.function.Supplier<EntityExchangeResult<byte[]>> request, int max) {
+    for (var passed = 0; passed < max; passed++) {
+      var result = request.get();
+      if (result.getStatus().value() != 200) {
+        return new Refused(passed, result);
+      }
+    }
+    throw new AssertionError("No request of " + max + " was refused");
+  }
+
+  private static void assertTooManyRequests(EntityExchangeResult<byte[]> result) {
+    assertThat(result.getStatus().value()).isEqualTo(429);
+    assertThat(result.getResponseHeaders().getContentType())
+        .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
+    assertThat(result.getResponseHeaders().getFirst(HttpHeaders.RETRY_AFTER))
+        .as("Retry-After in whole seconds")
+        .matches("[1-9][0-9]*");
+    assertThat(new String(result.getResponseBody(), StandardCharsets.UTF_8))
+        .contains("\"title\":\"Too Many Requests\"")
+        .contains("\"status\":429");
   }
 
   private static String issuerUri() {
