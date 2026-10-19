@@ -34,7 +34,7 @@ Kafka delivers at least once, and the registry may resend an event whose complet
 
 ## The service's outbox
 
-`authorization-service` keeps answering while Kafka is down: each approval, Reversal and new card writes its event to the service's `outbox` table and commits. Only the relay stops; it logs `Outbox row … wasn't sent` once a pass, and every 100 ms starts again from the oldest unsent row. Once Kafka is back the next pass sends the backlog in order, with no restart. A relay that logs `Outbox relay pass failed` can't reach the service's database instead: see the section above.
+`authorization-service` keeps answering while Kafka is down: each approved Authorization, Reversal and new card writes its event to the service's `outbox` table and commits. Only the relay stops. Each pass's first send fails within about 5 seconds (the producer's `max.block.ms` and `delivery.timeout.ms`) and logs `Outbox row … wasn't sent`. The pass then ends and frees its database connection, and the next pass starts 100 ms later from the oldest unsent row. Once Kafka is back, the next pass sends the backlog in order, with no restart. If the service was stopped or crashed in the middle of a pass, the rows that pass had sent are sent again. That is harmless: the platform keys each event on its natural ID. A relay that logs `Outbox relay pass failed` can't reach the service's database instead: see the section above.
 
 The platform's Clearing lag check can't see these rows, so drain the outbox before importing a Clearing File. Count what waits, in the service's database (`docker compose exec authorization-postgres psql -U authorization`):
 
@@ -46,3 +46,5 @@ select event_type, count(*), min(created_at)
 ```
 
 If the count doesn't fall while Kafka is up, the oldest unsent row is failing to send: its id is in the log line. The rows behind it wait for it on purpose, so a card's events are never sent out of order. Never delete a row to unblock the relay: the platform would then never hear of that Authorization.
+
+A row that can never be sent blocks every row behind it for good. Today's events are a few hundred bytes, but a message over the producer's `max.request.size` (1 MB) would be one. You can tell it from a broker outage: Kafka is up and other producers' messages arrive, yet every pass logs `wasn't sent` for the same row id, with a non-retriable error such as `RecordTooLargeException`. Fix the cause, for example by raising the producer's and the topic's size limits, and restart the service. Don't skip or delete the row.

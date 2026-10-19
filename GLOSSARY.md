@@ -64,6 +64,10 @@ _Avoid_: Alias, masked PAN
 The authorization service's own record of a card it may authorize, kept from the platform's card events: its Card Token, the keyed hashes of its PAN and security code, expiry, amount, Acceptor ID and status.
 _Avoid_: Replica, cache, card mirror
 
+**Card on File**:
+A card the authorization service now holds with its issue details in its Card Copy, so it can authorize the card's Charges. The service announces it to the platform once per card. Not the card industry's stored-credential meaning.
+_Avoid_: Card stored, card ready
+
 ### Payables
 
 **Invoice**:
