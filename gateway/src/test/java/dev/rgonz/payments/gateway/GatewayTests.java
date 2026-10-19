@@ -64,10 +64,12 @@ class GatewayTests {
           .withEnv("ACME_ERP_SECRET", CLIENT_SECRET)
           .withEnv("NETWORK_CLIENT_SECRET", CLIENT_SECRET);
 
-  // The rate limiter's store. Same image as compose.yaml and the chart's infra values: change all
-  // three together.
-  static final GenericContainer<?> redis =
-      new GenericContainer<>("redis:8.10.2-alpine").withExposedPorts(6379);
+  // The rate limiter's store, for this class's tests and WithRedisStopped's own. Same image as
+  // compose.yaml and the chart's infra values: change all three together.
+  private static final String REDIS_IMAGE = "redis:8.10.2-alpine";
+
+  private static final GenericContainer<?> redis =
+      new GenericContainer<>(REDIS_IMAGE).withExposedPorts(6379);
 
   /** The Authorization header of every request that reached the stub platform, null for none. */
   static final List<String> platformSaw = new CopyOnWriteArrayList<>();
@@ -369,11 +371,12 @@ class GatewayTests {
   }
 
   private EntityExchangeResult<byte[]> get(String path, String authorization) {
-    var request = http.get().uri(path);
-    if (authorization != null) {
-      request.header(HttpHeaders.AUTHORIZATION, authorization);
-    }
-    return request.exchange().expectBody().returnResult();
+    return http.get()
+        .uri(path)
+        .header(HttpHeaders.AUTHORIZATION, authorization)
+        .exchange()
+        .expectBody()
+        .returnResult();
   }
 
   record Refused(int passedBefore, EntityExchangeResult<byte[]> result) {}
@@ -408,8 +411,8 @@ class GatewayTests {
   @ExtendWith(OutputCaptureExtension.class)
   class WithRedisStopped {
 
-    static final GenericContainer<?> doomedRedis =
-        new GenericContainer<>("redis:8.10.2-alpine").withExposedPorts(6379);
+    private static final GenericContainer<?> doomedRedis =
+        new GenericContainer<>(REDIS_IMAGE).withExposedPorts(6379);
 
     @DynamicPropertySource
     static void ownRedis(DynamicPropertyRegistry registry) {
@@ -424,23 +427,13 @@ class GatewayTests {
     @Test
     void requestsStillReachThePlatformAndTheGatewayCountsThem(CapturedOutput output) {
       var acme = "Bearer " + clientCredentialsToken("acme-erp");
-      http.get()
-          .uri("/v1/invoices")
-          .header(HttpHeaders.AUTHORIZATION, acme)
-          .exchange()
-          .expectStatus()
-          .isOk();
+      assertThat(get("/v1/invoices", acme).getStatus()).isEqualTo(HttpStatus.OK);
 
       doomedRedis.stop();
 
       var started = System.nanoTime();
       for (var i = 0; i < 3; i++) {
-        http.get()
-            .uri("/v1/invoices")
-            .header(HttpHeaders.AUTHORIZATION, acme)
-            .exchange()
-            .expectStatus()
-            .isOk();
+        assertThat(get("/v1/invoices", acme).getStatus()).isEqualTo(HttpStatus.OK);
         http.get().uri("/v1/remittance-links/{token}", LINK_TOKEN).exchange().expectStatus().isOk();
       }
       assertThat(Duration.ofNanos(System.nanoTime() - started))
