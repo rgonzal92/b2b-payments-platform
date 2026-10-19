@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Predicate;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -57,19 +57,25 @@ class CorePathEndToEndTests extends EndToEndHarness {
   @Timeout(value = 90, unit = TimeUnit.SECONDS)
   void theDemoInvoiceIsPaidItsChargeApprovedClearedFromTheNetworksFileAndReconciledWithoutABreak()
       throws IOException {
+    // Each span as "<what> <trace ID>": the Network's Authorize call, and each of the platform's
+    // consumers of an approved Authorization by its group.
     var authorizeCalls =
-        traceIdsOf(
+        spansOf(
             simulator,
             context ->
                 context instanceof GrpcClientObservationContext call
-                    && "Authorize".equals(call.getMethodName()));
+                        && "Authorize".equals(call.getMethodName())
+                    ? "Authorize"
+                    : null);
     var approvedAuthorizationsReceived =
-        traceIdsOf(
+        spansOf(
             platform,
             context ->
                 context instanceof KafkaRecordReceiverContext received
-                    && "authorizations".equals(received.getRecord().topic())
-                    && "AuthorizationApproved".equals(eventType(received)));
+                        && "authorizations".equals(received.getRecord().topic())
+                        && "AuthorizationApproved".equals(eventType(received))
+                    ? received.getGroupId()
+                    : null);
 
     var summary =
         RestClient.create()
@@ -108,10 +114,13 @@ class CorePathEndToEndTests extends EndToEndHarness {
                     && platform.getBean(AuthorizationCopyFreshness.class).caughtUp());
     // One trace: the simulator's Network's call, and both of the platform's consumers of the
     // service's approved Authorization (the copy's and payables'). The trace ID reaches the
-    // platform
-    // only through the service's gRPC server, its outbox row and its relay's message.
-    assertThat(authorizeCalls).hasSize(1).doesNotContain("no span");
-    assertThat(approvedAuthorizationsReceived).hasSize(2).containsOnly(authorizeCalls.peek());
+    // platform only through the service's gRPC server, its outbox row and its relay's message. A
+    // message delivered again would add a span, so the test asks only that these are there.
+    assertThat(authorizeCalls).isNotEmpty();
+    var chargeTrace = authorizeCalls.peek().substring("Authorize ".length());
+    assertThat(chargeTrace).isNotEqualTo("no span");
+    assertThat(approvedAuthorizationsReceived)
+        .contains("platform-authorization " + chargeTrace, "platform-payables " + chargeTrace);
     // Until the Charge clears, its Hold reserves Acme's credit.
     assertThat(acmesCredit())
         .isLenientlyEqualTo(
@@ -229,31 +238,33 @@ class CorePathEndToEndTests extends EndToEndHarness {
     assertThat(Files.readAllLines(loadTestFolder.resolve("cards.csv"))).hasSize(6);
   }
 
-  // The trace ID of every observation in the app that matches, as its span starts. Tracing runs in
-  // the test, though nothing is exported.
-  private static Queue<String> traceIdsOf(
-      ConfigurableApplicationContext app, Predicate<Observation.Context> matching) {
-    var traceIds = new ConcurrentLinkedQueue<String>();
+  // Every observation in the app that the function names, as "<name> <trace ID>" when its span
+  // starts. Tracing runs in the test, though nothing is exported.
+  private static Queue<String> spansOf(
+      ConfigurableApplicationContext app, Function<Observation.Context, String> naming) {
+    var spans = new ConcurrentLinkedQueue<String>();
     app.getBean(ObservationRegistry.class)
         .observationConfig()
         .observationHandler(
             new ObservationHandler<>() {
               @Override
               public boolean supportsContext(Observation.Context context) {
-                return matching.test(context);
+                return naming.apply(context) != null;
               }
 
               @Override
               public void onStart(Observation.Context context) {
                 TracingObservationHandler.TracingContext tracing =
                     context.get(TracingObservationHandler.TracingContext.class);
-                traceIds.add(
-                    tracing == null || tracing.getSpan() == null
-                        ? "no span"
-                        : tracing.getSpan().context().traceId());
+                spans.add(
+                    naming.apply(context)
+                        + " "
+                        + (tracing == null || tracing.getSpan() == null
+                            ? "no span"
+                            : tracing.getSpan().context().traceId()));
               }
             });
-    return traceIds;
+    return spans;
   }
 
   private static String eventType(KafkaRecordReceiverContext received) {
