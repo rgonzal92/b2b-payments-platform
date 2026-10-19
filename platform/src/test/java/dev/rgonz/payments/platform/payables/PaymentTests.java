@@ -34,17 +34,45 @@ class PaymentTests {
   }
 
   @Test
-  void issuingTheCardMakesDeliveringTheRemittanceAdviceDueAtOnce() {
+  void issuingTheCardLeavesThePaymentWaitingSinceThenForTheCardToBeOnFileWithNoStepDue() {
     var issued = started().holdPlaced(NOW).stepFailed(NOW).cardIssued(NOW);
 
     assertThat(issued.state()).isEqualTo(Payment.State.CARD_ISSUED);
     assertThat(issued.attempts()).isZero();
-    assertThat(issued.nextAttemptAt()).isEqualTo(NOW);
+    assertThat(issued.nextAttemptAt()).isNull();
+    assertThat(issued.cardIssuedAt()).isEqualTo(NOW);
+  }
+
+  @Test
+  void theCardOnFileMakesDeliveringTheRemittanceAdviceDueAtOnce() {
+    var onFile = started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW);
+
+    assertThat(onFile.state()).isEqualTo(Payment.State.CARD_ON_FILE);
+    assertThat(onFile.attempts()).isZero();
+    assertThat(onFile.nextAttemptAt()).isEqualTo(NOW);
+  }
+
+  @Test
+  void theCardOnFileLeavesAPaymentInAnyOtherStateAsItIs() {
+    var later = NOW.plusSeconds(60);
+    var others =
+        List.of(
+            started(),
+            started().holdPlaced(NOW),
+            started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW),
+            started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW).stepFailed(NOW),
+            started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW).completed(),
+            started().holdPlaced(NOW).cardIssued(NOW).cardExpired(),
+            started().refused("Not enough Available Credit to place the Hold."));
+
+    assertThat(others)
+        .allSatisfy(payment -> assertThat(payment.cardOnFile(later)).isEqualTo(payment));
   }
 
   @Test
   void aDeliveredRemittanceAdviceCompletesThePaymentWithNoStepLeft() {
-    var completed = started().holdPlaced(NOW).cardIssued(NOW).stepFailed(NOW).completed();
+    var completed =
+        started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW).stepFailed(NOW).completed();
 
     assertThat(completed.state()).isEqualTo(Payment.State.COMPLETED);
     assertThat(completed.attempts()).isZero();
@@ -54,7 +82,7 @@ class PaymentTests {
 
   @Test
   void theFifthFailedDeliveryFailsThePaymentNamingTheStep() {
-    var payment = started().holdPlaced(NOW).cardIssued(NOW);
+    var payment = started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW);
     for (var attempt = 1; attempt <= 5; attempt++) {
       payment = payment.stepFailed(NOW);
     }
@@ -108,7 +136,8 @@ class PaymentTests {
 
   @Test
   void aCardThatExpiresUnchargedEndsACompletedPaymentExpired() {
-    var expired = started().holdPlaced(NOW).cardIssued(NOW).completed().cardExpired();
+    var expired =
+        started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW).completed().cardExpired();
 
     assertThat(expired.state()).isEqualTo(Payment.State.EXPIRED);
     assertThat(expired.nextAttemptAt()).isNull();
@@ -116,7 +145,7 @@ class PaymentTests {
 
   @Test
   void aCardThatExpiresWhileItsAdviceIsStillRetriedEndsThePaymentExpiredWithNoRetryLeft() {
-    var retrying = started().holdPlaced(NOW).cardIssued(NOW).stepFailed(NOW);
+    var retrying = started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW).stepFailed(NOW);
 
     var expired = retrying.cardExpired();
 
@@ -127,13 +156,21 @@ class PaymentTests {
   }
 
   @Test
+  void aCardThatExpiresWhileItsPaymentWaitsForItToBeOnFileEndsThePaymentExpired() {
+    var expired = started().holdPlaced(NOW).cardIssued(NOW).cardExpired();
+
+    assertThat(expired.state()).isEqualTo(Payment.State.EXPIRED);
+    assertThat(expired.nextAttemptAt()).isNull();
+  }
+
+  @Test
   void aCardExpiryLeavesAPaymentInAnyOtherStateAsItIs() {
     var others =
         List.of(
             started(),
             started().holdPlaced(NOW),
             started().refused("Not enough Available Credit to place the Hold."),
-            started().holdPlaced(NOW).cardIssued(NOW).completed().cardExpired());
+            started().holdPlaced(NOW).cardIssued(NOW).cardOnFile(NOW).completed().cardExpired());
 
     assertThat(others).allSatisfy(payment -> assertThat(payment.cardExpired()).isEqualTo(payment));
   }

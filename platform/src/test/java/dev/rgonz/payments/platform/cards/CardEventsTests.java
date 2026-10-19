@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import com.jayway.jsonpath.JsonPath;
+import dev.rgonz.payments.platform.EventResubmission;
 import dev.rgonz.payments.platform.TestHashes;
 import dev.rgonz.payments.platform.TestKafka;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
@@ -26,6 +27,7 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.testcontainers.kafka.KafkaContainer;
@@ -42,7 +44,14 @@ import org.testcontainers.kafka.KafkaContainer;
     properties = {
       "cards.expiry-job.enabled=false",
       "payables.payment-worker.enabled=false",
-      "spring.modulith.events.externalization.enabled=true"
+      "spring.modulith.events.externalization.enabled=true",
+      // The schedule's pass is run by hand, resubmitting what failed more than a second ago.
+      "platform.event-resubmission.enabled=true",
+      "platform.event-resubmission.older-than=PT1S",
+      // A send to a paused broker fails within seconds, not the producer's default 2 minutes.
+      "spring.kafka.producer.properties.max.block.ms=2000",
+      "spring.kafka.producer.properties.request.timeout.ms=2000",
+      "spring.kafka.producer.properties.delivery.timeout.ms=4000"
     })
 class CardEventsTests {
 
@@ -55,6 +64,7 @@ class CardEventsTests {
   @Autowired Vault vault;
   @Autowired JdbcClient jdbc;
   @Autowired KafkaContainer kafka;
+  @Autowired ApplicationContext context;
 
   @Test
   void theCardsTopicHasThreePartitions() {
@@ -109,6 +119,28 @@ class CardEventsTests {
         .contains(card.cardToken())
         .doesNotContain("\"" + details.pan() + "\"")
         .doesNotContain("\"" + details.securityCode() + "\"");
+  }
+
+  // Without the resubmission, the event would wait in the registry until the platform restarted,
+  // and its Payment for the card to be on file until the card expired.
+  @Test
+  void aCardIssuedWhileKafkaIsDownReachesTheTopicOnceKafkaIsBackWithoutARestart() {
+    var docker = kafka.getDockerClient();
+    docker.pauseContainerCmd(kafka.getContainerId()).exec();
+    String cardToken;
+    try {
+      cardToken = issue().cardToken();
+      await()
+          .atMost(Duration.ofSeconds(30))
+          .until(() -> "FAILED".equals(publicationStatus("CardIssued", cardToken)));
+    } finally {
+      docker.unpauseContainerCmd(kafka.getContainerId()).exec();
+    }
+
+    EventResubmission.runNow(context);
+
+    assertThat(header(awaitRecords(cardToken, 1).getFirst(), EVENT_TYPE)).isEqualTo("CardIssued");
+    awaitCompletedEvent("CardIssued", cardToken);
   }
 
   @Test
@@ -209,6 +241,19 @@ class CardEventsTests {
     var header = record.headers().lastHeader(name);
     assertThat(header).as("header %s", name).isNotNull();
     return new String(header.value(), UTF_8);
+  }
+
+  private String publicationStatus(String type, String cardToken) {
+    return jdbc.sql(
+            """
+            select status from modulith.event_publication
+             where event_type like :type and serialized_event like :cardToken
+            """)
+        .param("type", "%." + type)
+        .param("cardToken", "%" + cardToken + "%")
+        .query(String.class)
+        .optional()
+        .orElse(null);
   }
 
   // The event as Spring Modulith stored it in its publication registry, the platform's outbox,

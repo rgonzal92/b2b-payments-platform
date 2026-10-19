@@ -7,8 +7,14 @@ import dasniko.testcontainers.keycloak.KeycloakContainer;
 import dev.rgonz.payments.platform.PlatformApplication;
 import dev.rgonz.payments.simulator.SimulatorApplication;
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Arrays;
@@ -31,18 +37,24 @@ import org.springframework.test.util.TestSocketUtils;
 import org.springframework.web.client.RestClient;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
  * The core path the way the demo runs it: the platform and the simulator both running in this JVM,
- * against real PostgreSQL and Keycloak (the repository's realm file). The simulator's demo endpoint
- * has Acme's ERP submit an Invoice from Globex, two of Acme's Approvers approve it, the platform's
- * worker pays it with a Single-Use Card, Globex opens the card through its Remittance Advice link,
- * and Globex charges it: the simulator's Acquirer and Network ask the platform over gRPC, signed in
- * as the network client, and the platform approves the Charge. Then the demo's second call has the
- * Network write its Clearing File into the platform's drop folder and Issuer staff import it, and
- * its third has Issuer staff run today's Reconciliation, which finds no Break.
+ * against real PostgreSQL, Kafka and Keycloak (the repository's realm file), with
+ * authorization-service running beside them from its executable jar, against its own PostgreSQL.
+ * The service copies each card the platform issues from the {@code cards} topic and confirms it on
+ * {@code authorizations}, which the platform's Payment waits for before sending the Remittance
+ * Advice. The simulator's demo endpoint has Acme's ERP submit an Invoice from Globex, two of Acme's
+ * Approvers approve it, the platform's worker pays it with a Single-Use Card, Globex opens the card
+ * through its Remittance Advice link, and Globex charges it: the simulator's Acquirer and Network
+ * ask the platform over gRPC, signed in as the network client, and the platform approves the
+ * Charge. Then the demo's second call has the Network write its Clearing File into the platform's
+ * drop folder and Issuer staff import it, and its third has Issuer staff run today's
+ * Reconciliation, which finds no Break. Last, the simulator seeds a few load-test cards through the
+ * same path.
  */
 @Testcontainers
 class CorePathEndToEndTests {
@@ -54,6 +66,15 @@ class CorePathEndToEndTests {
   static final PostgreSQLContainer postgres =
       // Same tag as compose.yaml and the platform's TestcontainersConfiguration: change all three.
       new PostgreSQLContainer(DockerImageName.parse("postgres:18.6"));
+
+  @Container
+  static final PostgreSQLContainer authorizationPostgres =
+      new PostgreSQLContainer(DockerImageName.parse("postgres:18.6"));
+
+  @Container
+  static final KafkaContainer kafka =
+      // Same image as compose.yaml and the platform's TestKafka: change all three together.
+      new KafkaContainer(DockerImageName.parse("apache/kafka:4.2.1"));
 
   @Container
   static final KeycloakContainer keycloak =
@@ -73,10 +94,22 @@ class CorePathEndToEndTests {
   // platform imports them from here.
   @TempDir static Path dropFolder;
 
+  // The service's working directory: away from the repository, so it reads no developer's .env.
+  @TempDir static Path serviceDirectory;
+
+  // Where the load-test seeding writes its cards: not the repository's var/load-test.
+  @TempDir static Path loadTestFolder;
+
+  // TEST-ONLY hash key, not a secret: the same all-0x02 bytes as the platform's own tests. The
+  // platform and the service must share it (ADR-0016).
+  private static final String HASH_KEY = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+
+  private static Process authorizationService;
   private static ConfigurableApplicationContext platform;
   private static ConfigurableApplicationContext simulator;
   private static int platformPort;
   private static int simulatorPort;
+  private static int servicePort;
 
   @BeforeAll
   static void startBothApps() {
@@ -85,6 +118,8 @@ class CorePathEndToEndTests {
     var platformGrpcPort = TestSocketUtils.findAvailableTcpPort();
     simulatorPort = TestSocketUtils.findAvailableTcpPort();
     var issuerUri = keycloak.getAuthServerUrl() + "/realms/payments";
+    // Before the platform: either may start first, as each declares both topics.
+    authorizationService = startAuthorizationService(issuerUri);
 
     platform =
         start(
@@ -99,14 +134,14 @@ class CorePathEndToEndTests {
             // TEST-ONLY keys, not secrets: the same all-0x01, 0x02 and 0x03 bytes as the
             // platform's own tests.
             "vault.encryption-key=AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-            "vault.hash-key=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+            "vault.hash-key=" + HASH_KEY,
             "remittance.link-key=AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
             // Not the repository's var/clearing, where a developer's own Clearing Files may wait.
             "clearing.drop-folder=" + dropFolder,
             // The demo has Issuer staff import its file at once.
             "clearing.drop-folder-check.enabled=false",
-            // No Kafka runs here, and the demo doesn't read the cards topic (M5's Kafka tests do).
-            "spring.modulith.events.externalization.enabled=false");
+            // The cards topic out to the service, and its authorizations topic back.
+            "spring.kafka.bootstrap-servers=" + kafka.getBootstrapServers());
     // Returns once BuyerSeeder has created Acme and Initech and their Credit Lines through the
     // platform.
     simulator =
@@ -135,6 +170,7 @@ class CorePathEndToEndTests {
             // demo asks: not at midnight.
             "simulator.network.drop-folder=" + dropFolder,
             "simulator.network.clearing-file-cron=-",
+            "simulator.load-test.cards-file=" + loadTestFolder.resolve("cards.csv"),
             // The platform's dependencies are on this classpath too: the simulator has no database.
             "spring.autoconfigure.exclude="
                 + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
@@ -166,6 +202,74 @@ class CorePathEndToEndTests {
     return new SpringApplicationBuilder(application).main(application).run(args);
   }
 
+  // The service's executable jar, as built before this module (authorizationServiceJar in the pom),
+  // in its own JVM: its reactive stack and Flyway setup can't share this classpath with the
+  // platform's. Returns once its health answers; its log goes to target/authorization-service.log.
+  private static Process startAuthorizationService(String issuerUri) {
+    servicePort = TestSocketUtils.findAvailableTcpPort();
+    var jdbcUrl = authorizationPostgres.getJdbcUrl();
+    var command =
+        Stream.concat(
+                Stream.of(
+                    ProcessHandle.current().info().command().orElse("java"),
+                    "-jar",
+                    Path.of(System.getProperty("authorizationServiceJar"))
+                        .toAbsolutePath()
+                        .toString()),
+                Stream.of(
+                        "server.port=" + servicePort,
+                        "spring.grpc.server.port=" + TestSocketUtils.findAvailableTcpPort(),
+                        "spring.r2dbc.url=" + jdbcUrl.replaceFirst("^jdbc:", "r2dbc:"),
+                        "spring.r2dbc.username=" + authorizationPostgres.getUsername(),
+                        "spring.r2dbc.password=" + authorizationPostgres.getPassword(),
+                        "spring.flyway.url=" + jdbcUrl,
+                        "spring.flyway.user=" + authorizationPostgres.getUsername(),
+                        "spring.flyway.password=" + authorizationPostgres.getPassword(),
+                        "spring.kafka.bootstrap-servers=" + kafka.getBootstrapServers(),
+                        "spring.security.oauth2.resourceserver.jwt.issuer-uri=" + issuerUri,
+                        "vault.hash-key=" + HASH_KEY)
+                    .map(property -> "--" + property))
+            .toList();
+    try {
+      var log = Path.of("target", "authorization-service.log").toAbsolutePath();
+      var process =
+          new ProcessBuilder(command)
+              .directory(serviceDirectory.toFile())
+              .redirectErrorStream(true)
+              .redirectOutput(log.toFile())
+              .start();
+      awaitHealthy(process, log);
+      return process;
+    } catch (IOException e) {
+      throw new IllegalStateException("authorization-service didn't start", e);
+    }
+  }
+
+  private static void awaitHealthy(Process process, Path log) throws IOException {
+    var health =
+        HttpRequest.newBuilder(URI.create("http://localhost:" + servicePort + "/actuator/health"))
+            .build();
+    var deadline = Instant.now().plus(Duration.ofSeconds(60));
+    try (var http = HttpClient.newHttpClient()) {
+      while (Instant.now().isBefore(deadline)) {
+        if (!process.isAlive()) {
+          throw new IllegalStateException("authorization-service stopped; see " + log);
+        }
+        try {
+          if (http.send(health, HttpResponse.BodyHandlers.discarding()).statusCode() == 200) {
+            return;
+          }
+        } catch (IOException notListeningYet) {
+          // Not listening yet: try again.
+        }
+        Thread.sleep(500);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    throw new IllegalStateException("authorization-service wasn't healthy in time; see " + log);
+  }
+
   // Both apps' jars hold an application.properties, and classpath:application.properties finds
   // only the first one on the classpath, for both apps: each gets the one beside its own classes.
   private static String ownApplicationProperties(Class<?> application) {
@@ -183,11 +287,15 @@ class CorePathEndToEndTests {
     if (platform != null) {
       platform.close();
     }
+    if (authorizationService != null) {
+      authorizationService.destroy();
+    }
   }
 
   @Test
-  // The demo itself waits up to 30 seconds for the worker to pay the Invoice.
-  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  // The demo itself waits up to 30 seconds for the worker to pay the Invoice, and the seeding up
+  // to two minutes for each of its Payments, though they take seconds.
+  @Timeout(value = 90, unit = TimeUnit.SECONDS)
   void theDemoInvoiceIsPaidItsChargeApprovedClearedFromTheNetworksFileAndReconciledWithoutABreak()
       throws IOException {
     var summary =
@@ -311,6 +419,23 @@ class CorePathEndToEndTests {
                 .formatted(
                     JsonPath.<String>read(reconciled, "$.run.runId"),
                     LocalDate.now(ZoneOffset.UTC)));
+
+    // Last, after the Reconciliation it would change: the load test's cards, Initech's Invoices
+    // paid through the same path, a card written for each.
+    var seeded =
+        RestClient.create()
+            .post()
+            .uri("http://localhost:{port}/demo/load-test-cards?count=5", simulatorPort)
+            .retrieve()
+            .body(String.class);
+
+    assertThat(new JsonContent(seeded))
+        .isLenientlyEqualTo(
+            """
+            {"requested": 5, "written": 5}
+            """);
+    // The header, then one line per card.
+    assertThat(Files.readAllLines(loadTestFolder.resolve("cards.csv"))).hasSize(6);
   }
 
   // Each kind of Account's balance in the platform's journal, its debits less its credits.

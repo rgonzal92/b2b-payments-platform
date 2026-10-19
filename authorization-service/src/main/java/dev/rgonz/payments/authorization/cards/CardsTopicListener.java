@@ -28,7 +28,7 @@ class CardsTopicListener {
 
   // The consumer's own thread may block: it isn't on the hot path where the Network waits (M5
   // design), and blocking keeps one partition's events applied in order.
-  @KafkaListener(topics = "cards")
+  @KafkaListener(topics = CardsTopicConfiguration.NAME)
   void onCardEvent(ConsumerRecord<String, String> record) {
     var header = record.headers().lastHeader(CardEventReader.EVENT_TYPE_HEADER);
     var eventType = header == null ? null : new String(header.value(), StandardCharsets.UTF_8);

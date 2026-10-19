@@ -825,11 +825,12 @@ components:
           type: string
           description: >-
             `STARTED` until the Hold for the Invoice amount is placed (`HOLD_PLACED`), then `CARD_ISSUED` once the
-            Single-Use Card is issued, then `COMPLETED` once the Supplier has received the Remittance Advice. `FAILED`
-            when a step fails for good: the Invoice stays approved and unpaid, a card already issued is cancelled and a
-            Hold already placed is released. `EXPIRED` when nobody charged the card before its expiry: its Hold is
-            released and the Invoice stays approved and unpaid.
-          enum: [STARTED, HOLD_PLACED, CARD_ISSUED, COMPLETED, FAILED, EXPIRED]
+            Single-Use Card is issued, waiting with no time limit until the card can be authorized, then `CARD_ON_FILE`
+            while the Remittance Advice is delivered, then `COMPLETED` once the Supplier has received it. `FAILED` when a
+            step fails for good: the Invoice stays approved and unpaid, a card already issued is cancelled and a Hold
+            already placed is released. `EXPIRED` when nobody charged the card before its expiry, a Payment still
+            waiting at `CARD_ISSUED` included: its Hold is released and the Invoice stays approved and unpaid.
+          enum: [STARTED, HOLD_PLACED, CARD_ISSUED, CARD_ON_FILE, COMPLETED, FAILED, EXPIRED]
         failureReason:
           type: string
           description: Why the Payment failed; present only when `state` is `FAILED`.

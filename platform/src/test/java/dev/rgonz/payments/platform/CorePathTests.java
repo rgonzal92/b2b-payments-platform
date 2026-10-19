@@ -15,6 +15,7 @@ import dev.rgonz.payments.contracts.network.AuthorizationRequest;
 import dev.rgonz.payments.contracts.network.AuthorizationResponse;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
 import dev.rgonz.payments.platform.clearing.TestClearingFiles;
+import dev.rgonz.payments.platform.payables.CardOnFile;
 import io.grpc.netty.NettyChannelBuilder;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -41,6 +42,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.grpc.client.interceptor.security.BearerTokenAuthenticationInterceptor;
 import org.springframework.http.HttpMethod;
@@ -84,6 +86,7 @@ class CorePathTests {
   @Autowired MockMvcTester mvc;
   @Autowired MockRestServiceServer supplier;
   @Autowired JdbcClient jdbc;
+  @Autowired ApplicationContext context;
 
   @LocalGrpcServerPort int grpcPort;
 
@@ -98,9 +101,7 @@ class CorePathTests {
     var invoiceId = submitInvoice(erpToken);
     var firstApproval = approve(invoiceId, "acme-approver-1");
     var secondApproval = approve(invoiceId, "acme-approver-2");
-    await()
-        .atMost(Duration.ofSeconds(30))
-        .until(() -> "COMPLETED".equals(paymentState(erpToken, invoiceId)));
+    awaitPaid(erpToken, invoiceId);
 
     assertThat(firstApproval).bodyJson().extractingPath("$.status").isEqualTo("RECEIVED");
     assertThat(secondApproval).bodyJson().extractingPath("$.status").isEqualTo("APPROVED");
@@ -138,9 +139,7 @@ class CorePathTests {
     var invoiceId = submitInvoice(erpToken);
     approve(invoiceId, "acme-approver-1");
     approve(invoiceId, "acme-approver-2");
-    await()
-        .atMost(Duration.ofSeconds(30))
-        .until(() -> "COMPLETED".equals(paymentState(erpToken, invoiceId)));
+    awaitPaid(erpToken, invoiceId);
     var opened =
         mvc.get()
             .uri(JsonPath.<String>read(deliveries.getFirst(), "$.cardLink"))
@@ -307,6 +306,22 @@ class CorePathTests {
             .exchange();
     assertThat(response).hasStatus(200);
     return response;
+  }
+
+  // The worker on its schedule issues the card, authorization-service (played here, with no Kafka)
+  // has it on file, and the worker delivers the Remittance Advice.
+  private void awaitPaid(String erpToken, String invoiceId) throws UnsupportedEncodingException {
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .until(() -> "CARD_ISSUED".equals(paymentState(erpToken, invoiceId)));
+    CardOnFile.confirm(
+        context,
+        JsonPath.read(
+            invoice(erpToken, invoiceId).getResponse().getContentAsString(),
+            "$.payment.card.cardToken"));
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .until(() -> "COMPLETED".equals(paymentState(erpToken, invoiceId)));
   }
 
   // Null while the Invoice shows no Payment.

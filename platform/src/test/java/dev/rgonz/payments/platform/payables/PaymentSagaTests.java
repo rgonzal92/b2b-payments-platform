@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform.payables;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
@@ -21,6 +22,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
+import dev.rgonz.payments.platform.TestKafka;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
 import dev.rgonz.payments.platform.cards.CardExpired;
 import dev.rgonz.payments.platform.cards.CardExpiryJob;
@@ -47,8 +49,17 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.StreamSupport;
+import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.OffsetSpec;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -75,19 +86,27 @@ import org.springframework.modulith.test.PublishedEventsExtension;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.JwtRequestPostProcessor;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.test.web.client.ExpectedCount;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.test.web.client.ResponseCreator;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.kafka.KafkaContainer;
 
 /**
  * An approved Invoice's Payment runs through the saga: over HTTP with mocked tokens, with the
- * worker and the card expiry job driven by hand instead of on their schedules.
+ * worker and the card expiry job driven by hand instead of on their schedules. authorization-
+ * service's "card on file" arrives on a real Kafka's {@code authorizations} topic in the tests of
+ * the wait; the others confirm each card by hand as soon as it is issued.
  */
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestKafka.class})
 @SpringBootTest(
-    properties = {"payables.payment-worker.enabled=false", "cards.expiry-job.enabled=false"})
+    properties = {
+      "payables.payment-worker.enabled=false",
+      "cards.expiry-job.enabled=false",
+      "spring.kafka.listener.auto-startup=true"
+    })
 @AutoConfigureMockMvc
 @AutoConfigureMockRestServiceServer
 class PaymentSagaTests {
@@ -106,6 +125,9 @@ class PaymentSagaTests {
   @Autowired MockRestServiceServer supplier;
   @Autowired ApplicationContext context;
   @Autowired MeterRegistry meters;
+  @Autowired KafkaContainer kafka;
+  @Autowired Payments payments;
+  @Autowired WaitingPaymentsMetric waitingMetric;
   @MockitoSpyBean Holds holds;
   @MockitoSpyBean Cards cards;
   @MockitoSpyBean RemittanceAdvices remittanceAdvices;
@@ -118,7 +140,7 @@ class PaymentSagaTests {
     supplierAnswers(withSuccess());
     var now = Instant.now();
 
-    saga.runDueSteps(now);
+    runDueStepsWithCardsOnFile(acme, now);
 
     var body = invoice(acme, invoiceId).getResponse().getContentAsString();
     assertThat(JsonPath.<String>read(body, "$.payment.state")).isEqualTo("COMPLETED");
@@ -143,7 +165,7 @@ class PaymentSagaTests {
     var deliveries = supplierAnswers(withSuccess());
     var now = Instant.now();
 
-    saga.runDueSteps(now);
+    runDueStepsWithCardsOnFile(acme, now);
 
     var paymentId = paymentIdOf(invoiceId).toString();
     assertThat(deliveries).hasSize(1);
@@ -173,14 +195,15 @@ class PaymentSagaTests {
   @Test
   void eachStateAPaymentReachesIsCountedAndEachStepTimed() throws Exception {
     var acme = newBuyerWithCreditLine(10_000_000);
-    var states = List.of("STARTED", "HOLD_PLACED", "CARD_ISSUED", "COMPLETED", "FAILED");
+    var states =
+        List.of("STARTED", "HOLD_PLACED", "CARD_ISSUED", "CARD_ON_FILE", "COMPLETED", "FAILED");
     var steps = List.of("place-hold", "issue-card", "deliver-remittance-advice");
     var reachedBefore = states.stream().map(this::paymentsReached).toList();
     var timedBefore = steps.stream().map(this::stepsTimed).toList();
     approvedInvoice(acme, 1_240_000);
     supplierAnswers(withSuccess());
 
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     assertThat(states.stream().map(this::paymentsReached).toList())
         .isEqualTo(
@@ -189,9 +212,143 @@ class PaymentSagaTests {
                 reachedBefore.get(1) + 1,
                 reachedBefore.get(2) + 1,
                 reachedBefore.get(3) + 1,
-                reachedBefore.get(4)));
+                reachedBefore.get(4) + 1,
+                reachedBefore.get(5)));
     assertThat(steps.stream().map(this::stepsTimed).toList())
         .isEqualTo(List.of(timedBefore.get(0) + 1, timedBefore.get(1) + 1, timedBefore.get(2) + 1));
+  }
+
+  @Test
+  void aPaymentWaitsWithItsCardIssuedUntilTheServiceHasTheCardOnFileThenDeliversTheAdvice()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    var deliveries = supplierAnswers(withSuccess());
+
+    saga.runDueSteps(Instant.now());
+    var stateWhileWaiting = paymentState(acme, invoiceId);
+    var creditWhileWaiting = availableCredit(acme);
+    var deliveriesWhileWaiting = deliveries.size();
+    sendCardOnFile(cardTokenOf(invoiceId));
+
+    awaitCompleted(acme, invoiceId);
+    assertThat(stateWhileWaiting).isEqualTo("CARD_ISSUED");
+    assertThat(creditWhileWaiting).isEqualTo(8_760_000);
+    assertThat(deliveriesWhileWaiting).isZero();
+    assertThat(deliveries).hasSize(1);
+  }
+
+  @Test
+  void theWaitHasNoTimeLimitAndCountsNoAttempts() throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    // By a day later, other tests' Payments are due to retry their delivery: each fails its
+    // attempt harmlessly. This one must not be delivered at all.
+    supplier.expect(ExpectedCount.manyTimes(), requestTo(GLOBEX)).andRespond(withServerError());
+    var issuedAt = Instant.now();
+
+    saga.runDueSteps(issuedAt);
+    saga.runDueSteps(issuedAt.plus(Duration.ofDays(1)));
+
+    var payment = payments.findForInvoice(UUID.fromString(invoiceId)).orElseThrow();
+    assertThat(payment.state()).isEqualTo(Payment.State.CARD_ISSUED);
+    assertThat(payment.attempts()).isZero();
+    assertThat(payment.nextAttemptAt()).isNull();
+    assertThat(advicesFor(invoiceId)).isZero();
+  }
+
+  @Test
+  void theSameCardOnFileTwiceDeliversTheAdviceOnce() throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    // A second delivery would fail the test.
+    var deliveries = supplierAnswers(withSuccess());
+    saga.runDueSteps(Instant.now());
+    sendCardOnFile(cardTokenOf(invoiceId));
+    awaitCompleted(acme, invoiceId);
+
+    // The same event again, as Kafka redelivers one whose offset wasn't committed.
+    sendCardOnFile(cardTokenOf(invoiceId));
+    awaitAuthorizationsTopicConsumed();
+    saga.runDueSteps(Instant.now());
+
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
+    assertThat(deliveries).hasSize(1);
+  }
+
+  @Test
+  void aCardThatExpiresWhileItsPaymentWaitsEndsThePaymentExpiredAndALateCardOnFileChangesNothing()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    saga.runDueSteps(Instant.now());
+    var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
+
+    CardExpiryJob.runAt(context, card.expiresAt().plusSeconds(1));
+    await()
+        .atMost(Duration.ofSeconds(10))
+        .until(() -> "EXPIRED".equals(paymentState(acme, invoiceId)));
+    sendCardOnFile(card.cardToken());
+    awaitAuthorizationsTopicConsumed();
+    // No Remittance Advice is expected: a delivery would fail the test.
+    saga.runDueSteps(Instant.now());
+
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("EXPIRED");
+    assertThat(availableCredit(acme)).isEqualTo(10_000_000);
+  }
+
+  @Test
+  @ExtendWith(OutputCaptureExtension.class)
+  void anUnreadableMessageOrAnUnknownCardIsSkippedAndTheNextCardOnFileStillArrives(
+      CapturedOutput output) throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
+    saga.runDueSteps(Instant.now());
+    var cardToken = cardTokenOf(invoiceId);
+
+    // Same key, so the same partition: a stuck message would hold back the good one behind it.
+    send(cardToken, "CardOnFile", "{not json");
+    send(cardToken, "CardOnFile", "{}");
+    send(cardToken, "CardOnFile", null);
+    send(cardToken, null, "{\"cardToken\": \"%s\"}".formatted(cardToken));
+    send(cardToken, "CardOnFile", "{\"cardToken\": \"card-token-nobody-issued\"}");
+    send(cardToken, "AuthorizationApproved", "{\"requestId\": \"request-1\"}");
+    sendCardOnFile(cardToken);
+
+    awaitCompleted(acme, invoiceId);
+    assertThat(output)
+        .contains("Skipped a CardOnFile message with no value")
+        .contains("Skipped a message with no event-type header")
+        .contains("Skipped CardOnFile for card card-token-nobody-issued");
+  }
+
+  // Grafana reads them to count, and alert on, Payments waiting for their card to be on file.
+  @Test
+  void theMetricsCountPaymentsWaitingForTheirCardToBeOnFileAndHowLongTheOldestHasWaited()
+      throws Exception {
+    var acme = newBuyerWithCreditLine(10_000_000);
+    var invoiceId = approvedInvoice(acme, 1_240_000);
+    supplierAnswers(withSuccess());
+    // As PostgreSQL stores it, which would otherwise round it up by a fraction of a microsecond.
+    var issuedAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
+    waitingMetric.refreshAt(issuedAt);
+    var waitingBefore = paymentsWaiting();
+
+    saga.runDueSteps(issuedAt);
+    waitingMetric.refreshAt(issuedAt.plus(Duration.ofMinutes(10)));
+    var waitingAfterIssue = paymentsWaiting();
+    var oldestWaitAfterIssue = oldestWaitSeconds();
+    saga.cardOnFile(cardTokenOf(invoiceId), issuedAt);
+    waitingMetric.refreshAt(issuedAt.plus(Duration.ofMinutes(10)));
+    var waitingOnceOnFile = paymentsWaiting();
+    saga.runDueSteps(issuedAt);
+
+    assertThat(waitingAfterIssue).isEqualTo(waitingBefore + 1);
+    // Another test's Payment may have waited longer.
+    assertThat(oldestWaitAfterIssue).isGreaterThanOrEqualTo(600);
+    assertThat(waitingOnceOnFile).isEqualTo(waitingBefore);
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("COMPLETED");
   }
 
   @Test
@@ -200,7 +357,7 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
     supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
     var body = invoice(acme, invoiceId).getResponse().getContentAsString();
     var paymentId = paymentIdOf(invoiceId);
     var supplierId = UUID.fromString(JsonPath.read(body, "$.supplierId"));
@@ -230,7 +387,7 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
     supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
     var creditWhilePaid = availableCredit(acme);
     var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
 
@@ -251,7 +408,7 @@ class PaymentSagaTests {
     var invoiceId = approvedInvoice(acme, 1_240_000, "ACCEPTOR-1");
     supplierAnswers(withSuccess());
 
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
     var issued =
@@ -267,7 +424,7 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
     supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
     // Another of the Buyer's Holds, which no release of this card's Hold may touch.
     holds.place(
         UUID.randomUUID(), new BuyerId(acme), new Money(1_000_000, Currency.getInstance("USD")));
@@ -296,7 +453,7 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
     supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
     var card = cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow();
     var authorizedAt = Instant.now();
     cards.authorize(card.cardToken(), authorizedAt);
@@ -318,7 +475,7 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
     supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
     // Another of the Buyer's Holds, which no release of this card's Hold may touch.
     holds.place(
         UUID.randomUUID(), new BuyerId(acme), new Money(1_000_000, Currency.getInstance("USD")));
@@ -344,7 +501,7 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(1_000_000);
     var invoiceId = approvedInvoice(acme, 1_000_001);
 
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     assertThat(invoice(acme, invoiceId))
         .bodyJson()
@@ -362,7 +519,7 @@ class PaymentSagaTests {
     var acme = newBuyer();
     var invoiceId = approvedInvoice(acme, 1);
 
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     assertThat(invoice(acme, invoiceId))
         .bodyJson()
@@ -380,11 +537,11 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(1_000_000);
     approvedInvoice(acme, 800_000);
     supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     setCreditLine(acme, 500_000, 200);
     var invoiceId = approvedInvoice(acme, 1);
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     assertThat(availableCredit(acme)).isEqualTo(-300_000);
     assertThat(paymentState(acme, invoiceId)).isEqualTo("FAILED");
@@ -408,7 +565,7 @@ class PaymentSagaTests {
     transactions.executeWithoutResult(status -> events.publishEvent(event));
     await().atMost(Duration.ofSeconds(10)).until(() -> completedDeliveriesOf(invoiceId) == 2);
     supplierAnswers(withSuccess());
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     assertThat(paymentState(acme, invoiceId.toString())).isEqualTo("COMPLETED");
     assertThat(availableCredit(acme)).isEqualTo(8_760_000);
@@ -440,6 +597,7 @@ class PaymentSagaTests {
         pass.get(30, TimeUnit.SECONDS);
       }
     }
+    runDueStepsWithCardsOnFile(acme, now);
 
     assertThat(List.of(paymentState(acme, first), paymentState(acme, second)))
         .containsExactlyInAnyOrder("COMPLETED", "FAILED");
@@ -466,6 +624,7 @@ class PaymentSagaTests {
         pass.get(60, TimeUnit.SECONDS);
       }
     }
+    runDueStepsWithCardsOnFile(buyer, now);
 
     for (var invoiceId : invoiceIds) {
       assertThat(paymentState(buyer, invoiceId)).isEqualTo("COMPLETED");
@@ -495,12 +654,12 @@ class PaymentSagaTests {
     supplierAnswers(withSuccess());
     var failedAt = Instant.now();
 
-    saga.runDueSteps(failedAt);
+    runDueStepsWithCardsOnFile(acme, failedAt);
     var stateAfterFailure = paymentState(acme, invoiceId);
     var creditAfterFailure = availableCredit(acme);
-    saga.runDueSteps(failedAt.plusSeconds(9));
+    runDueStepsWithCardsOnFile(acme, failedAt.plusSeconds(9));
     var stateBeforeBackoffEnds = paymentState(acme, invoiceId);
-    saga.runDueSteps(failedAt.plusSeconds(10));
+    runDueStepsWithCardsOnFile(acme, failedAt.plusSeconds(10));
 
     assertThat(stateAfterFailure).isEqualTo("STARTED");
     assertThat(creditAfterFailure).isEqualTo(10_000_000);
@@ -520,11 +679,11 @@ class PaymentSagaTests {
     var now = Instant.now();
 
     for (var attempt = 1; attempt <= 4; attempt++) {
-      saga.runDueSteps(now);
+      runDueStepsWithCardsOnFile(acme, now);
       now = now.plus(Duration.ofMinutes(5));
     }
     var stateAfterFourAttempts = paymentState(acme, invoiceId);
-    saga.runDueSteps(now);
+    runDueStepsWithCardsOnFile(acme, now);
 
     assertThat(stateAfterFourAttempts).isEqualTo("STARTED");
     assertThat(invoice(acme, invoiceId))
@@ -551,12 +710,12 @@ class PaymentSagaTests {
     var now = Instant.now();
 
     for (var attempt = 1; attempt <= 4; attempt++) {
-      saga.runDueSteps(now);
+      runDueStepsWithCardsOnFile(acme, now);
       now = now.plus(Duration.ofMinutes(5));
     }
     var stateAfterFourAttempts = paymentState(acme, invoiceId);
     var creditAfterFourAttempts = availableCredit(acme);
-    saga.runDueSteps(now);
+    runDueStepsWithCardsOnFile(acme, now);
 
     assertThat(stateAfterFourAttempts).isEqualTo("HOLD_PLACED");
     assertThat(creditAfterFourAttempts).isEqualTo(8_760_000);
@@ -580,12 +739,12 @@ class PaymentSagaTests {
     var deliveries = supplierAnswers(withServerError(), withSuccess());
     var failedAt = Instant.now();
 
-    saga.runDueSteps(failedAt);
+    runDueStepsWithCardsOnFile(acme, failedAt);
     var stateAfterFailure = paymentState(acme, invoiceId);
-    saga.runDueSteps(failedAt.plusSeconds(10));
-    saga.runDueSteps(failedAt.plus(Duration.ofMinutes(5)));
+    runDueStepsWithCardsOnFile(acme, failedAt.plusSeconds(10));
+    runDueStepsWithCardsOnFile(acme, failedAt.plus(Duration.ofMinutes(5)));
 
-    assertThat(stateAfterFailure).isEqualTo("CARD_ISSUED");
+    assertThat(stateAfterFailure).isEqualTo("CARD_ON_FILE");
     // The same Idempotency-Key, link and expiry: the Supplier can keep either and drop the other.
     assertThat(deliveries).hasSize(2);
     assertThat(deliveries.get(1)).isEqualTo(deliveries.getFirst());
@@ -608,12 +767,12 @@ class PaymentSagaTests {
                     .createResponse(request));
     var now = Instant.now();
 
-    saga.runDueSteps(now);
+    runDueStepsWithCardsOnFile(acme, now);
     var stateAfterRedirect = paymentState(acme, invoiceId);
-    saga.runDueSteps(now.plusSeconds(10));
+    runDueStepsWithCardsOnFile(acme, now.plusSeconds(10));
 
-    assertThat(stateAfterRedirect).isEqualTo("CARD_ISSUED");
-    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ISSUED");
+    assertThat(stateAfterRedirect).isEqualTo("CARD_ON_FILE");
+    assertThat(paymentState(acme, invoiceId)).isEqualTo("CARD_ON_FILE");
     assertThat(deliveries).hasSize(2);
     String link = JsonPath.read(deliveries.getFirst().body(), "$.cardLink");
     assertThat(output)
@@ -639,13 +798,13 @@ class PaymentSagaTests {
     var now = Instant.now();
 
     for (var attempt = 1; attempt <= 4; attempt++) {
-      saga.runDueSteps(now);
+      runDueStepsWithCardsOnFile(acme, now);
       now = now.plus(Duration.ofMinutes(5));
     }
     var stateAfterFourAttempts = paymentState(acme, invoiceId);
-    saga.runDueSteps(now);
+    runDueStepsWithCardsOnFile(acme, now);
 
-    assertThat(stateAfterFourAttempts).isEqualTo("CARD_ISSUED");
+    assertThat(stateAfterFourAttempts).isEqualTo("CARD_ON_FILE");
     assertThat(invoice(acme, invoiceId))
         .bodyJson()
         .isLenientlyEqualTo(
@@ -681,10 +840,10 @@ class PaymentSagaTests {
       delimiter = '|',
       textBlock =
           """
-          # State | left after the stop: Holds | cards | advice records | advice the Supplier has
-          STARTED     | 0 | 0 | 0 | 0
-          HOLD_PLACED | 1 | 0 | 0 | 0
-          CARD_ISSUED | 1 | 1 | 1 | 1
+          # State  | left after the stop: Holds | cards | advice records | advice the Supplier has
+          STARTED      | 0 | 0 | 0 | 0
+          HOLD_PLACED  | 1 | 0 | 0 | 0
+          CARD_ON_FILE | 1 | 1 | 1 | 1
           """)
   void aPlatformStoppedMidStepAndStartedAgainCompletesThePaymentWithOneHoldAndOneCard(
       Payment.State stoppedAt, int holdsLeft, int cardsLeft, int advicesLeft, int deliveriesLeft)
@@ -694,12 +853,13 @@ class PaymentSagaTests {
     stopOnceDuringTheStepAfter(stoppedAt, acme, UUID.fromString(invoiceId));
     var deliveries = supplierAnswers(withSuccess(), withSuccess());
 
-    assertThatThrownBy(() -> saga.runDueSteps(Instant.now())).isInstanceOf(PlatformStopped.class);
+    assertThatThrownBy(() -> runDueStepsWithCardsOnFile(acme, Instant.now()))
+        .isInstanceOf(PlatformStopped.class);
     var stateAfterStop = paymentState(acme, invoiceId);
     var leftAfterStop =
         List.of(holdsOf(acme), cardsOf(acme), advicesFor(invoiceId), deliveries.size());
     // Started again: the worker's next pass.
-    saga.runDueSteps(Instant.now());
+    runDueStepsWithCardsOnFile(acme, Instant.now());
 
     assertThat(stateAfterStop).isEqualTo(stoppedAt.name());
     assertThat(leftAfterStop).containsExactly(holdsLeft, cardsLeft, advicesLeft, deliveriesLeft);
@@ -738,13 +898,120 @@ class PaymentSagaTests {
           stopAfterTheRealCall
               .when(cards)
               .issueSingleUse(any(), eq(buyer), any(), any(), any(), any());
-      case CARD_ISSUED ->
+      case CARD_ON_FILE ->
           stopAfterTheRealCall
               .when(remittanceAdvices)
               .deliver(argThat(advice -> advice.invoiceId().equals(invoiceId)), any());
-      case COMPLETED, FAILED, EXPIRED ->
+      case CARD_ISSUED, COMPLETED, FAILED, EXPIRED ->
           throw new IllegalArgumentException("No step follows " + state);
     }
+  }
+
+  // A worker's pass, with authorization-service's "card on file" arriving for each of the Buyer's
+  // cards as soon as it is issued, as it does when the service and Kafka are up; the tests of the
+  // wait send it over
+  // Kafka instead.
+  private void runDueStepsWithCardsOnFile(UUID buyerId, Instant now) {
+    saga.runDueSteps(now);
+    // One module's schema at a time (ADR-0009): the Buyer's waiting Payments, then their cards.
+    jdbc.sql("select id from payables.payment where state = 'CARD_ISSUED' and buyer_id = :buyerId")
+        .param("buyerId", buyerId)
+        .query(UUID.class)
+        .list()
+        .forEach(
+            paymentId ->
+                saga.cardOnFile(cards.findForPayment(paymentId).orElseThrow().cardToken(), now));
+    saga.runDueSteps(now);
+  }
+
+  // authorization-service's CardOnFile as its outbox relay sends it: keyed by the Card Token, its
+  // event type in a header.
+  private void sendCardOnFile(String cardToken) throws Exception {
+    send(cardToken, "CardOnFile", "{\"cardToken\": \"%s\"}".formatted(cardToken));
+  }
+
+  private void send(String key, String eventType, String json) throws Exception {
+    var record = new ProducerRecord<>("authorizations", key, json);
+    if (eventType != null) {
+      record.headers().add("event-type", eventType.getBytes(UTF_8));
+    }
+    try (var producer =
+        new KafkaProducer<String, String>(
+            Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG,
+                kafka.getBootstrapServers(),
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+                StringSerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+                StringSerializer.class))) {
+      producer.send(record).get(10, TimeUnit.SECONDS);
+    }
+  }
+
+  // Waits until the platform's consumer group has committed every message on the topic, so a test
+  // can check that one changed nothing.
+  private void awaitAuthorizationsTopicConsumed() {
+    try (var admin =
+        Admin.create(
+            Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers()))) {
+      await()
+          .atMost(Duration.ofSeconds(30))
+          .untilAsserted(
+              () -> {
+                var partitions =
+                    admin
+                        .describeTopics(List.of("authorizations"))
+                        .allTopicNames()
+                        .get()
+                        .get("authorizations")
+                        .partitions()
+                        .stream()
+                        .map(info -> new TopicPartition("authorizations", info.partition()))
+                        .toList();
+                var ends =
+                    admin
+                        .listOffsets(
+                            partitions.stream()
+                                .collect(
+                                    Collectors.toMap(
+                                        partition -> partition, partition -> OffsetSpec.latest())))
+                        .all()
+                        .get();
+                var committed =
+                    admin
+                        .listConsumerGroupOffsets(CardOnFileListener.GROUP_ID)
+                        .partitionsToOffsetAndMetadata()
+                        .get();
+                for (var partition : partitions) {
+                  var end = ends.get(partition).offset();
+                  var read = committed.get(partition);
+                  assertThat(read == null ? 0 : read.offset()).as("%s", partition).isEqualTo(end);
+                }
+              });
+    }
+  }
+
+  private double paymentsWaiting() {
+    return meters.get("payments.waiting.card.on.file").gauge().value();
+  }
+
+  private double oldestWaitSeconds() {
+    return meters.get("payments.waiting.card.on.file.oldest").gauge().value();
+  }
+
+  private String cardTokenOf(String invoiceId) {
+    return cards.findForPayment(paymentIdOf(invoiceId)).orElseThrow().cardToken();
+  }
+
+  // Runs the worker until the Payment completes, as the card on file arrives over Kafka.
+  private void awaitCompleted(UUID buyerId, String invoiceId) {
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .until(
+            () -> {
+              saga.runDueSteps(Instant.now());
+              return "COMPLETED".equals(paymentState(buyerId, invoiceId));
+            });
   }
 
   private int holdsOf(UUID buyerId) {

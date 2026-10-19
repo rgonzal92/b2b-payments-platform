@@ -8,7 +8,9 @@ import java.util.UUID;
 
 /**
  * The Issuer's attempt to pay one approved Invoice, and where its saga stands (ADR-0013, ADR-0014).
- * {@code nextAttemptAt} is when the worker should run the next step; null while no step is left.
+ * {@code nextAttemptAt} is when the worker should run the next step; null while no step is due.
+ * {@code cardIssuedAt} is when it reached {@code CARD_ISSUED}, to tell how long it has waited for
+ * its card to be on file; null before.
  */
 record Payment(
     UUID id,
@@ -19,7 +21,8 @@ record Payment(
     State state,
     String failureReason,
     int attempts,
-    Instant nextAttemptAt) {
+    Instant nextAttemptAt,
+    Instant cardIssuedAt) {
 
   static final int MAX_ATTEMPTS = 5;
   private static final Duration FIRST_BACKOFF = Duration.ofSeconds(10);
@@ -35,7 +38,8 @@ record Payment(
         State.STARTED,
         null,
         0,
-        now);
+        now,
+        null);
   }
 
   /** The Hold is placed, so issuing the card is due at once. */
@@ -43,9 +47,23 @@ record Payment(
     return moved(State.HOLD_PLACED, null, 0, now);
   }
 
-  /** The card is issued, so delivering the Remittance Advice is due at once. */
+  /**
+   * The card is issued: no step is due until authorization-service confirms the card is on file (M5
+   * design, "The gaps"). The wait has no time limit and counts no attempts; the card's expiry ends
+   * it if the confirmation never comes.
+   */
   Payment cardIssued(Instant now) {
-    return moved(State.CARD_ISSUED, null, 0, now);
+    return new Payment(
+        id, invoiceId, buyerId, supplierId, amount, State.CARD_ISSUED, null, 0, null, now);
+  }
+
+  /**
+   * authorization-service holds the card and can authorize it, so delivering the Remittance Advice
+   * is due at once. Only a Payment waiting at {@code CARD_ISSUED} moves: the same confirmation
+   * again, or one for a Payment that has ended, leaves it as it is.
+   */
+  Payment cardOnFile(Instant now) {
+    return state == State.CARD_ISSUED ? moved(State.CARD_ON_FILE, null, 0, now) : this;
   }
 
   /** The Supplier has the Remittance Advice: no step is left. */
@@ -55,12 +73,12 @@ record Payment(
 
   /**
    * Its Single-Use Card expired, uncharged or uncleared: the Payment ends {@code EXPIRED} with no
-   * step left, a delivery still being retried included. In any other state there is no live card to
-   * expire, so the Payment stays as it is.
+   * step left, one still waiting for its card to be on file or still retrying its delivery
+   * included. In any other state there is no live card to expire, so the Payment stays as it is.
    */
   Payment cardExpired() {
     return switch (state) {
-      case CARD_ISSUED, COMPLETED -> moved(State.EXPIRED, null, 0, null);
+      case CARD_ISSUED, CARD_ON_FILE, COMPLETED -> moved(State.EXPIRED, null, 0, null);
       case STARTED, HOLD_PLACED, FAILED, EXPIRED -> this;
     };
   }
@@ -94,21 +112,31 @@ record Payment(
     return switch (state) {
       case STARTED -> "Placing the Hold";
       case HOLD_PLACED -> "Issuing the Single-Use Card";
-      case CARD_ISSUED -> "Delivering the Remittance Advice";
-      case COMPLETED, FAILED, EXPIRED ->
+      case CARD_ON_FILE -> "Delivering the Remittance Advice";
+      case CARD_ISSUED, COMPLETED, FAILED, EXPIRED ->
           throw new IllegalStateException("A " + state + " Payment has no step to fail.");
     };
   }
 
   private Payment moved(State state, String failureReason, int attempts, Instant nextAttemptAt) {
     return new Payment(
-        id, invoiceId, buyerId, supplierId, amount, state, failureReason, attempts, nextAttemptAt);
+        id,
+        invoiceId,
+        buyerId,
+        supplierId,
+        amount,
+        state,
+        failureReason,
+        attempts,
+        nextAttemptAt,
+        cardIssuedAt);
   }
 
   enum State {
     STARTED,
     HOLD_PLACED,
     CARD_ISSUED,
+    CARD_ON_FILE,
     COMPLETED,
     FAILED,
     EXPIRED

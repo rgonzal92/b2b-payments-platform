@@ -72,6 +72,16 @@ class CardsTopicTests {
     producer.close();
   }
 
+  // The platform declares it the same way, so whichever app starts first creates it with all three
+  // before any consumer subscribes and the broker creates it with one.
+  @Test
+  void theServiceCreatesTheCardsTopicWithThreePartitions() throws Exception {
+    try (var admin = Admin.create(Map.of("bootstrap.servers", kafka.getBootstrapServers()))) {
+      assertThat(admin.describeTopics(List.of(TOPIC)).allTopicNames().get().get(TOPIC).partitions())
+          .hasSize(3);
+    }
+  }
+
   @Test
   void cardIssuedStoresTheCardActiveWithItsHashesExpiryAmountAndAcceptorId() {
     var cardToken = newCardToken();
