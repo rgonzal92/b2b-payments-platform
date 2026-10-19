@@ -15,6 +15,7 @@ import java.text.ParseException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -23,6 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -265,6 +267,30 @@ class GatewayTests {
         .isOk();
   }
 
+  // The remittance link has no token, so it is limited by the address the connection came from: 10
+  // a minute. A forwarding header names no other client, since anyone can send one.
+  @Test
+  void theRemittanceLinkGets10AMinutePerClientIp() {
+    var link = "/v1/remittance-links/" + LINK_TOKEN;
+    for (var i = 0; i < 10; i++) {
+      http.get().uri(link).exchange().expectStatus().isOk();
+    }
+
+    var eleventh =
+        http.get()
+            .uri(link)
+            .header("X-Forwarded-For", "203.0.113.9")
+            .exchange()
+            .expectBody()
+            .returnResult();
+
+    assertTooManyRequests(eleventh);
+    assertThat(platformSaw).hasSize(10);
+    // A client's own limit is apart from the link's.
+    assertThat(get("/v1/invoices", "Bearer " + clientCredentialsToken("acme-erp")).getStatus())
+        .isEqualTo(HttpStatus.OK);
+  }
+
   @Test
   void theGatewaysHealthIsOpen() {
     http.get().uri("/actuator/health").exchange().expectStatus().isOk();
@@ -311,8 +337,7 @@ class GatewayTests {
   record Refused(int passedBefore, EntityExchangeResult<byte[]> result) {}
 
   // Sends the request until the Gateway refuses one, at most max times.
-  private static Refused firstRefused(
-      java.util.function.Supplier<EntityExchangeResult<byte[]>> request, int max) {
+  private static Refused firstRefused(Supplier<EntityExchangeResult<byte[]>> request, int max) {
     for (var passed = 0; passed < max; passed++) {
       var result = request.get();
       if (result.getStatus().value() != 200) {
