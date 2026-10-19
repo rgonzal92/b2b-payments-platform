@@ -1,6 +1,6 @@
 # M6: Everything runs on Kubernetes
 
-**Status:** awaiting approval. Decisions from the M6 grilling (Rounds 1–4, Q1–Q27, 2026-10-19).
+**Status:** approved 2026-10-19. Decisions from the M6 grilling (Rounds 1–4, Q1–Q27, 2026-10-19).
 
 ## Problem
 
