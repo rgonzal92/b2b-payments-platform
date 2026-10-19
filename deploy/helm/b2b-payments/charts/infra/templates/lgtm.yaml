@@ -5,16 +5,18 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: lgtm
+  labels:
+    {{- include "b2b-payments.labels" (dict "name" "lgtm" "context" $) | nindent 4 }}
 spec:
   serviceName: lgtm
   replicas: 1
   selector:
     matchLabels:
-      app: lgtm
+      {{- include "b2b-payments.selectorLabels" (dict "name" "lgtm" "context" $) | nindent 6 }}
   template:
     metadata:
       labels:
-        app: lgtm
+        {{- include "b2b-payments.labels" (dict "name" "lgtm" "context" $) | nindent 8 }}
     spec:
       enableServiceLinks: false
       containers:
@@ -60,9 +62,11 @@ apiVersion: v1
 kind: Service
 metadata:
   name: lgtm
+  labels:
+    {{- include "b2b-payments.labels" (dict "name" "lgtm" "context" $) | nindent 4 }}
 spec:
   selector:
-    app: lgtm
+    {{- include "b2b-payments.selectorLabels" (dict "name" "lgtm" "context" $) | nindent 4 }}
   ports:
     - name: grafana
       port: 3000

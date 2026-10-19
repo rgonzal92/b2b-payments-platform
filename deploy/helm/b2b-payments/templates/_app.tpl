@@ -5,19 +5,21 @@ so the subcharts render only inside this chart (docs/learning/helm.md).
 */}}
 {{- define "b2b-payments.app" -}}
 {{- $name := .Chart.Name -}}
+{{- $labels := dict "name" $name "context" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $name }}
+  labels:
+    {{- include "b2b-payments.labels" $labels | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicas | default 1 }}
   selector:
     matchLabels:
-      app: {{ $name }}
+      {{- include "b2b-payments.selectorLabels" $labels | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ $name }}
+        {{- include "b2b-payments.labels" $labels | nindent 8 }}
     spec:
       # Kubernetes would add PLATFORM_PORT and the like for every Service, which Spring would bind to properties.
       enableServiceLinks: false
@@ -88,10 +90,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ $name }}
+  labels:
+    {{- include "b2b-payments.labels" $labels | nindent 4 }}
 spec:
   type: {{ .Values.service.type | default "ClusterIP" }}
   selector:
-    app: {{ $name }}
+    {{- include "b2b-payments.selectorLabels" $labels | nindent 4 }}
   ports:
     {{- toYaml .Values.service.ports | nindent 4 }}
 {{- end -}}

@@ -6,16 +6,18 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: keycloak
+  labels:
+    {{- include "b2b-payments.labels" (dict "name" "keycloak" "context" $) | nindent 4 }}
 spec:
   serviceName: keycloak
   replicas: 1
   selector:
     matchLabels:
-      app: keycloak
+      {{- include "b2b-payments.selectorLabels" (dict "name" "keycloak" "context" $) | nindent 6 }}
   template:
     metadata:
       labels:
-        app: keycloak
+        {{- include "b2b-payments.labels" (dict "name" "keycloak" "context" $) | nindent 8 }}
     spec:
       enableServiceLinks: false
       containers:
@@ -64,10 +66,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: keycloak
+  labels:
+    {{- include "b2b-payments.labels" (dict "name" "keycloak" "context" $) | nindent 4 }}
 spec:
   type: LoadBalancer
   selector:
-    app: keycloak
+    {{- include "b2b-payments.selectorLabels" (dict "name" "keycloak" "context" $) | nindent 4 }}
   ports:
     - name: http
       port: 8180
