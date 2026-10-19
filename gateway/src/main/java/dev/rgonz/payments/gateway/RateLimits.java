@@ -27,7 +27,9 @@ class RateLimits {
 
   /**
    * The Keycloak client the token was issued to (its {@code azp}), so every user of one client
-   * shares its limit. The default: every route without its own resolver uses it.
+   * shares its limit. The default: every route without its own resolver uses it. A token without
+   * {@code azp} takes its subject's bucket, and one without either a single shared bucket: an empty
+   * key would get a bare 403 from RequestRateLimiter.
    */
   @Bean
   @Primary
@@ -37,7 +39,14 @@ class RateLimits {
             .getPrincipal()
             .filter(JwtAuthenticationToken.class::isInstance)
             .map(principal -> ((JwtAuthenticationToken) principal).getToken())
-            .mapNotNull(token -> token.getClaimAsString("azp"));
+            .map(token -> clientOf(token.getClaimAsString("azp"), token.getSubject()));
+  }
+
+  private static String clientOf(String azp, String subject) {
+    if (azp != null) {
+      return azp;
+    }
+    return subject != null ? "sub:" + subject : "unidentified";
   }
 
   /**
