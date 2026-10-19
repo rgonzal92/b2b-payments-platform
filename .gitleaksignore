@@ -11,3 +11,11 @@ fffe9e8706a8bfb35d7f6709fa6cb26b98ecd16b:simulator/src/test/java/dev/rgonz/payme
 # A runbook's curl command that reads the network client's secret from .env at run time (`-u "network:$(grep …)"`),
 # not a credential. A later commit sends it as a form field instead.
 8c27149994ffca18e56542e6237e30193b7a5cb3:docs/runbooks/network-cant-reach-platform.md:curl-auth-user:62
+
+# A made-up Card Token in authorization-service's Pact consumer test and the pact file it writes, not a credential.
+# A later commit replaced it with a low-entropy value.
+3f0419c7c4de4ca8c772a3e5ffb64f6b02d27e6e:pacts/authorization-service-platform.json:generic-api-key:69
+cbe556b889d554b0eda477773f48a862cb4a0953:authorization-service/src/test/java/dev/rgonz/payments/authorization/cards/CardEventsPactTests.java:generic-api-key:30
+cbe556b889d554b0eda477773f48a862cb4a0953:pacts/authorization-service-platform.json:generic-api-key:38
+cbe556b889d554b0eda477773f48a862cb4a0953:pacts/authorization-service-platform.json:generic-api-key:69
+cbe556b889d554b0eda477773f48a862cb4a0953:pacts/authorization-service-platform.json:generic-api-key:9

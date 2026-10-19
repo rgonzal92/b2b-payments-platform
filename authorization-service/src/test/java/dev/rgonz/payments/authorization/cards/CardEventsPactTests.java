@@ -27,7 +27,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 class CardEventsPactTests {
 
   private static final String CONSUMER = "authorization-service";
-  private static final String CARD_TOKEN = "q2yJ0p8bX7mN4vL1sT6wZ3";
+  private static final String CARD_TOKEN = "card-token-1";
   // Instant.toString's form, as Jackson writes an Instant: seconds, then any fraction, then Z.
   private static final String INSTANT = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$";
 
