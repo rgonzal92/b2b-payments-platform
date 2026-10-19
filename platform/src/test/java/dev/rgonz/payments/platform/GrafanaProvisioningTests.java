@@ -29,15 +29,21 @@ class GrafanaProvisioningTests {
   private static final Set<String> EXPORTED_METRICS =
       Set.of(
           // authorization-service's since the cutover, under the platform's old names: Spring
-          // gRPC's
-          // grpc.server observation, as a histogram, and its IssuerAuthorizationService's answers.
-          // The dashboard reads them once the service exports to Grafana (#96).
+          // gRPC's grpc.server observation, as a histogram, and its IssuerAuthorizationService's
+          // answers.
           "grpc_server_milliseconds_bucket",
           "grpc_server_milliseconds_count",
           "grpc_server_milliseconds_sum",
           "authorization_answers_total",
-          // payables: Payments and PaymentSaga.
+          // Both apps' Kafka consumers, through Spring Boot's Kafka client metrics: each
+          // partition's
+          // lag behind the topic's end, labelled by topic and client_id.
+          "kafka_consumer_fetch_manager_records_lag",
+          // payables: Payments and PaymentSaga, and WaitingPaymentsMetric's gauges (the oldest
+          // wait has the base unit seconds, so it gains _seconds).
           "payments_state_changes_total",
+          "payments_waiting_card_on_file",
+          "payments_waiting_card_on_file_oldest_seconds",
           "payments_steps_milliseconds_bucket",
           "payments_steps_milliseconds_count",
           "payments_steps_milliseconds_sum",
@@ -84,6 +90,39 @@ class GrafanaProvisioningTests {
     }
   }
 
+  // Since the cutover only authorization-service answers the Network (#96).
+  @Test
+  void theAuthorizationDashboardReadsAuthorizationService() throws IOException {
+    var authorizationQueries =
+        expressions("authorization").stream()
+            .filter(expr -> expr.contains("grpc_server") || expr.contains("authorization_answers"))
+            .toList();
+
+    assertThat(authorizationQueries)
+        .isNotEmpty()
+        .allSatisfy(expr -> assertThat(expr).contains("job=\"authorization-service\""));
+  }
+
+  @Test
+  void theAuthorizationDashboardShowsConsumerLagOnBothTopics() throws IOException {
+    assertThat(expressions("authorization"))
+        .anySatisfy(
+            expr ->
+                assertThat(expr)
+                    .contains("kafka_consumer_fetch_manager_records_lag{topic=\"cards\"}"))
+        .anySatisfy(
+            expr ->
+                assertThat(expr)
+                    .contains(
+                        "kafka_consumer_fetch_manager_records_lag{topic=\"authorizations\"}"));
+  }
+
+  @Test
+  void thePaymentsDashboardShowsPaymentsWaitingForTheirCardToBeOnFile() throws IOException {
+    assertThat(expressions("payments").stream().flatMap(GrafanaProvisioningTests::metricsIn))
+        .contains("payments_waiting_card_on_file", "payments_waiting_card_on_file_oldest_seconds");
+  }
+
   @Test
   void theDashboardProviderReadsEveryDashboardFromTheFolderComposeMounts() throws IOException {
     Map<String, Object> provider = yaml(GRAFANA.resolve("provisioning/dashboards.yaml"));
@@ -100,28 +139,70 @@ class GrafanaProvisioningTests {
   // above 100 ms for 5 minutes.
   @Test
   void theAlertRuleFiresWhenAuthorizationsP99StaysAbove100MsFor5Minutes() throws IOException {
-    Map<String, Object> alerting = yaml(GRAFANA.resolve("provisioning/alerting.yaml"));
+    var rule = rule("authorization-p99");
 
-    var rules = list(map(list(alerting.get("groups")).getFirst()).get("rules"));
-    assertThat(rules).hasSize(1);
-    var rule = map(rules.getFirst());
     assertThat(rule.get("for")).isEqualTo("5m");
-    var data = list(rule.get("data")).stream().map(GrafanaProvisioningTests::map).toList();
-    assertThat(data.getFirst()).containsEntry("datasourceUid", "prometheus");
-    var query = map(data.getFirst().get("model"));
-    assertThat((String) query.get("expr"))
+    assertThat(queryOf(rule))
         .contains("histogram_quantile(0.99")
-        .contains("rpc_method=\"Authorize\"");
-    assertThat(metricsIn((String) query.get("expr"))).isNotEmpty().isSubsetOf(EXPORTED_METRICS);
+        .contains("rpc_method=\"Authorize\"")
+        .contains("job=\"authorization-service\"");
+    assertThat(thresholdOf(rule)).containsEntry("type", "gt").containsEntry("params", List.of(100));
+  }
+
+  // M5 design, "The gaps": a Payment waits for its card to be on file without a limit, and Grafana
+  // alerts once one has waited more than 5 minutes.
+  @Test
+  void theAlertRuleFiresWhenAPaymentHasWaitedMoreThan5MinutesForItsCardToBeOnFile()
+      throws IOException {
+    var rule = rule("payment-waiting-card-on-file");
+
+    assertThat(queryOf(rule)).contains("payments_waiting_card_on_file_oldest_seconds");
+    assertThat(thresholdOf(rule)).containsEntry("type", "gt").containsEntry("params", List.of(300));
+  }
+
+  // The provisioned rule with this uid, from any group.
+  private static Map<String, Object> rule(String uid) throws IOException {
+    Map<String, Object> alerting = yaml(GRAFANA.resolve("provisioning/alerting.yaml"));
+    return list(alerting.get("groups")).stream()
+        .flatMap(group -> list(map(group).get("rules")).stream())
+        .map(GrafanaProvisioningTests::map)
+        .filter(rule -> uid.equals(rule.get("uid")))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("No alert rule " + uid));
+  }
+
+  // The rule's Prometheus query, which names only exported metrics.
+  private static String queryOf(Map<String, Object> rule) {
+    var first = map(list(rule.get("data")).getFirst());
+    assertThat(first).containsEntry("datasourceUid", "prometheus");
+    var expr = (String) map(first.get("model")).get("expr");
+    assertThat(metricsIn(expr)).isNotEmpty().isSubsetOf(EXPORTED_METRICS);
+    return expr;
+  }
+
+  // The evaluator of the rule's threshold step, which must be the rule's condition.
+  private static Map<String, Object> thresholdOf(Map<String, Object> rule) {
     var threshold =
-        data.stream()
-            .map(step -> map(step.get("model")))
+        list(rule.get("data")).stream()
+            .map(step -> map(map(step).get("model")))
             .filter(model -> "threshold".equals(model.get("type")))
             .findFirst()
             .orElseThrow();
-    var evaluator = map(map(list(threshold.get("conditions")).getFirst()).get("evaluator"));
-    assertThat(evaluator).containsEntry("type", "gt").containsEntry("params", List.of(100));
     assertThat(rule.get("condition")).isEqualTo(threshold.get("refId"));
+    return map(map(list(threshold.get("conditions")).getFirst()).get("evaluator"));
+  }
+
+  // Every query of the dashboard's panels.
+  private List<String> expressions(String dashboard) throws IOException {
+    var expressions = new ArrayList<String>();
+    for (var panel :
+        json.readTree(GRAFANA.resolve("dashboards").resolve(dashboard + ".json").toFile())
+            .path("panels")) {
+      for (var target : panel.path("targets")) {
+        expressions.add(target.path("expr").asString());
+      }
+    }
+    return expressions;
   }
 
   private static Stream<String> metricsIn(String expression) {

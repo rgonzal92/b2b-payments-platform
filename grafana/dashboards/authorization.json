@@ -1,7 +1,7 @@
 {
   "uid": "authorization",
   "title": "Authorization",
-  "description": "The Network's Authorize calls: how many, how fast against the 100 ms target (ADR-0010), and how they were answered.",
+  "description": "The Network's Authorize calls to authorization-service: how many, how fast against the 100 ms target (ADR-0010), and how they were answered; and how far each Kafka consumer lags on the cards and authorizations topics.",
   "tags": [
     "b2b-payments"
   ],
@@ -17,7 +17,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Authorize calls per second",
-      "description": "Every Authorize call authorization-service's gRPC server finished, by gRPC status; the panel shows data once the service exports to Grafana (#96). A status other than OK is a call refused before any answer, such as one without a retrieval reference number.",
+      "description": "Every Authorize call authorization-service's gRPC server finished, by gRPC status. A status other than OK is a call refused before any answer, such as one without a retrieval reference number.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -53,7 +53,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (grpc_status_code) (rate(grpc_server_milliseconds_count{rpc_method=\"Authorize\"}[$__rate_interval]))",
+          "expr": "sum by (grpc_status_code) (rate(grpc_server_milliseconds_count{job=\"authorization-service\", rpc_method=\"Authorize\"}[$__rate_interval]))",
           "legendFormat": "{{grpc_status_code}}",
           "range": true
         }
@@ -63,7 +63,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "Authorize latency (server side)",
-      "description": "p50, p95 and p99 of authorization-service's own time to answer Authorize, from Spring gRPC's grpc.server timing; the panel shows data once the service exports to Grafana (#96). The red line is the 100 ms target the p99 must stay under (ADR-0010); the Authorization p99 alert fires when it stays above it for 5 minutes.",
+      "description": "p50, p95 and p99 of authorization-service's own time to answer Authorize, from Spring gRPC's grpc.server timing. The red line is the 100 ms target the p99 must stay under (ADR-0010); the Authorization p99 alert fires when it stays above it for 5 minutes.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -117,7 +117,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(grpc_server_milliseconds_bucket{rpc_method=\"Authorize\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(grpc_server_milliseconds_bucket{job=\"authorization-service\", rpc_method=\"Authorize\"}[$__rate_interval])))",
           "legendFormat": "p50",
           "range": true
         },
@@ -127,7 +127,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(grpc_server_milliseconds_bucket{rpc_method=\"Authorize\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(grpc_server_milliseconds_bucket{job=\"authorization-service\", rpc_method=\"Authorize\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "range": true
         },
@@ -137,7 +137,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(grpc_server_milliseconds_bucket{rpc_method=\"Authorize\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(grpc_server_milliseconds_bucket{job=\"authorization-service\", rpc_method=\"Authorize\"}[$__rate_interval])))",
           "legendFormat": "p99",
           "range": true
         }
@@ -189,7 +189,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (response_code) (rate(authorization_answers_total[$__rate_interval]))",
+          "expr": "sum by (response_code) (rate(authorization_answers_total{job=\"authorization-service\"}[$__rate_interval]))",
           "legendFormat": "{{response_code}}",
           "range": true
         }
@@ -241,10 +241,104 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (response_code) (round(increase(authorization_answers_total[$__range])))",
+          "expr": "sum by (response_code) (round(increase(authorization_answers_total{job=\"authorization-service\"}[$__range])))",
           "legendFormat": "{{response_code}}",
           "instant": true,
           "range": false
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Consumer lag on cards",
+      "description": "Messages on the platform's cards topic that authorization-service's consumer (group authorization-service) hasn't read yet, summed over the partitions it reads, as its Kafka client last measured. While it lags, the service's copy misses the newest cards and declines their Charges as an invalid card (14). A consumer that stopped shows no line, not a growing one.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (client_id) (kafka_consumer_fetch_manager_records_lag{topic=\"cards\"})",
+          "legendFormat": "{{client_id}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Consumer lag on authorizations",
+      "description": "Messages on authorization-service's authorizations topic that each of the platform's consumers hasn't read yet, by Kafka client: consumer-platform-authorization-* keeps the Authorization Copy the Clearing File import waits for (#94), consumer-platform-payables-* moves Payments waiting for their card to be on file. Events still in the service's outbox don't count here. A consumer that stopped shows no line, not a growing one.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (client_id) (kafka_consumer_fetch_manager_records_lag{topic=\"authorizations\"})",
+          "legendFormat": "{{client_id}}",
+          "range": true
         }
       ]
     }

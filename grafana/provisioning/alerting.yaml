@@ -1,6 +1,7 @@
 # Grafana reads this at startup from /otel-lgtm/grafana/conf/provisioning/alerting/ (docs/learning/grafana-provisioning.md).
-# One rule, ADR-0010's target: Authorize's server-side p99 above 100 ms for 5 minutes. No contact point is set up
-# locally, so it only shows as firing in Grafana (Alerting > Alert rules).
+# Two rules: ADR-0010's target, authorization-service's Authorize p99 above 100 ms for 5 minutes; and a Payment waiting
+# more than 5 minutes for its card to be on file (M5 design, "The gaps"). No contact point is set up locally, so they
+# only show as firing in Grafana (Alerting > Alert rules).
 apiVersion: 1
 
 groups:
@@ -13,7 +14,8 @@ groups:
         title: Authorization p99 above 100 ms
         condition: C
         for: 5m
-        # No Authorize calls means nothing to measure, not a breach; a query that fails is shown as an error.
+        # No Authorize calls means nothing to measure, not a breach, as when the Network is idle; a query that fails is
+        # shown as an error.
         noDataState: OK
         execErrState: Error
         dashboardUid: authorization
@@ -30,7 +32,7 @@ groups:
               to: 0
             model:
               refId: A
-              expr: histogram_quantile(0.99, sum by (le) (rate(grpc_server_milliseconds_bucket{rpc_method="Authorize"}[5m])))
+              expr: histogram_quantile(0.99, sum by (le) (rate(grpc_server_milliseconds_bucket{job="authorization-service", rpc_method="Authorize"}[5m])))
               instant: true
               range: false
           - refId: B
@@ -53,3 +55,56 @@ groups:
                     type: gt
                     params:
                       - 100
+
+  - orgId: 1
+    name: payables
+    folder: B2B Payments
+    interval: 1m
+    rules:
+      - uid: payment-waiting-card-on-file
+        title: Payment waiting more than 5 minutes for its card to be on file
+        condition: C
+        # The gauge is the oldest wait itself, so the first evaluation above 5 minutes fires.
+        for: 0s
+        # No data means the platform isn't exporting; nothing waits that this rule can see.
+        noDataState: OK
+        execErrState: Error
+        dashboardUid: payments
+        panelId: 6
+        annotations:
+          summary: >-
+            A Payment has waited more than 5 minutes for authorization-service to have its card on file: check the
+            consumer lag on the cards and authorizations topics, and the service's outbox.
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              refId: A
+              expr: max(payments_waiting_card_on_file_oldest_seconds{job="platform"})
+              instant: true
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 300

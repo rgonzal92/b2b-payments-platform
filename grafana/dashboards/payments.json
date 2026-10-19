@@ -1,7 +1,7 @@
 {
   "uid": "payments",
   "title": "Payments",
-  "description": "The Payment saga (ADR-0013, ADR-0014): the states Payments reach, and how long each step takes to run.",
+  "description": "The Payment saga (ADR-0013, ADR-0014): the states Payments reach, and how long each step takes to run, and the Payments waiting for their card to be on file.",
   "tags": [
     "b2b-payments"
   ],
@@ -202,6 +202,117 @@
           "range": true
         }
       ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Payments waiting for their card to be on file",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(payments_waiting_card_on_file{job=\"platform\"})",
+          "legendFormat": "waiting",
+          "range": true
+        }
+      ],
+      "description": "Payments whose Single-Use Card is issued (CARD_ISSUED), waiting for authorization-service to confirm it has the card on file before the Remittance Advice goes out (M5 design, \"The gaps\"). Read from the platform's database every 30 seconds."
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Longest wait for a card to be on file",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          },
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(payments_waiting_card_on_file_oldest_seconds{job=\"platform\"})",
+          "legendFormat": "longest wait",
+          "range": true
+        }
+      ],
+      "description": "How long the Payment waiting longest for its card to be on file has waited; 0 when none waits. The red line is 5 minutes, past which the Payment waiting for its card alert fires: look at the consumer lag on the cards and authorizations topics and at authorization-service's outbox."
     }
   ]
 }
