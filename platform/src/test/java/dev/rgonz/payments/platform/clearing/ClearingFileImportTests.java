@@ -13,10 +13,8 @@ import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 import com.jayway.jsonpath.JsonPath;
-import dev.rgonz.payments.contracts.network.AuthorizationRequest;
-import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
-import dev.rgonz.payments.contracts.network.ReversalRequest;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.authorization.ServiceAuthorizations;
 import dev.rgonz.payments.platform.cards.CardExpired;
 import dev.rgonz.payments.platform.cards.CardExpiryJob;
 import dev.rgonz.payments.platform.cards.Cards;
@@ -29,8 +27,6 @@ import dev.rgonz.payments.platform.shared.Money;
 import dev.rgonz.payments.platform.suppliers.SupplierOnInvoice;
 import dev.rgonz.payments.platform.suppliers.Suppliers;
 import dev.rgonz.payments.platform.vault.Vault;
-import io.grpc.ManagedChannel;
-import io.grpc.netty.NettyChannelBuilder;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -40,8 +36,6 @@ import java.sql.Date;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Currency;
 import java.util.HashMap;
@@ -54,30 +48,23 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.assertj.core.groups.Tuple;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.grpc.client.interceptor.security.BearerTokenAuthenticationInterceptor;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.modulith.events.CompletedEventPublications;
 import org.springframework.modulith.events.EventPublication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -87,10 +74,10 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
 /**
  * Issuer staff import a Clearing File from the drop folder through the endpoint, on PostgreSQL:
  * every Clearing is posted to the journal and recorded with its outcome, its card becomes {@code
- * CLEARED}, and so does its Hold if still open. The cards are issued and charged the way the
- * Payment saga and the Network do it, the Charge over gRPC with a mocked Network token.
+ * CLEARED}, and so does its Hold if still open. The cards are issued the way the Payment saga does
+ * it, and charged the way authorization-service's approved Authorizations reach the platform.
  */
-@Import({TestcontainersConfiguration.class, ClearingFileImportTests.NetworkTokens.class})
+@Import(TestcontainersConfiguration.class)
 @SpringBootTest
 @AutoConfigureMockMvc
 class ClearingFileImportTests {
@@ -100,23 +87,7 @@ class ClearingFileImportTests {
   private static final String ACCEPTOR_ID = "GLOBEX000000001";
   // In the platform's 990000 range, but 19 digits: the vault issues 16, so no card has it.
   private static final String UNKNOWN_PAN = "9900000000000000000";
-  private static final DateTimeFormatter EXPIRATION_DATE =
-      DateTimeFormatter.ofPattern("yyMM").withZone(ZoneOffset.UTC);
   private static final Path DROP_FOLDER = newDropFolder();
-
-  /** Every bearer token on the gRPC port decodes as the Network's, so the test can charge cards. */
-  static class NetworkTokens {
-
-    @Bean
-    JwtDecoder networkTokens() {
-      return token ->
-          Jwt.withTokenValue(token)
-              .header("alg", "none")
-              .subject("service-account-network")
-              .claim("roles", List.of("network"))
-              .build();
-    }
-  }
 
   @DynamicPropertySource
   static void dropFolder(DynamicPropertyRegistry registry) {
@@ -138,20 +109,6 @@ class ClearingFileImportTests {
   // The real journal and file records, which the restart tests make fail once.
   @MockitoSpyBean Journal journal;
   @MockitoSpyBean ClearingFiles files;
-
-  @LocalGrpcServerPort int grpcPort;
-
-  private ManagedChannel channel;
-
-  @BeforeEach
-  void connect() {
-    channel = NettyChannelBuilder.forAddress("127.0.0.1", grpcPort).usePlaintext().build();
-  }
-
-  @AfterEach
-  void disconnect() {
-    channel.shutdownNow();
-  }
 
   @Test
   void anImportStoppedInItsSecondChunkRestartsAfterItsFirstAndPostsEveryClearingOnce()
@@ -1239,23 +1196,17 @@ class ClearingFileImportTests {
   // charged for its whole amount by the Network, which the platform approved.
   private ChargedCard chargedCard(BuyerId buyerId) {
     var card = issuedCard(buyerId);
-    var details = vault.cardDetails(card.cardToken());
-    var requestId = newId("Q", 12);
-    var response =
-        network()
-            .authorize(
-                AuthorizationRequest.newBuilder()
-                    .setPrimaryAccountNumber(details.pan())
-                    .setSecurityCode(details.securityCode())
-                    .setExpirationDate(EXPIRATION_DATE.format(card.expiresAt()))
-                    .setAmountMinor(CARD_AMOUNT)
-                    .setCurrencyCode("USD")
-                    .setRetrievalReferenceNumber(requestId)
-                    .setCardAcceptorId(ACCEPTOR_ID)
-                    .setCardAcceptorName("Globex, Springfield")
-                    .build());
-    assertThat(response.getResponseCode()).isEqualTo("00");
-    return new ChargedCard(card, details.pan(), requestId, response.getAuthorizationCode());
+    var charged =
+        new ChargedCard(
+            card, vault.cardDetails(card.cardToken()).pan(), newId("Q", 12), newId("A", 6));
+    ServiceAuthorizations.approve(
+        context,
+        charged.requestId(),
+        card.cardToken(),
+        new Money(CARD_AMOUNT, USD),
+        charged.authorizationCode(),
+        ACCEPTOR_ID);
+    return charged;
   }
 
   private SingleUseCard issuedCard(BuyerId buyerId) {
@@ -1279,21 +1230,15 @@ class ClearingFileImportTests {
 
   // The Network cancels the Charge's Authorization: the card is ACTIVE again.
   private void reverse(ChargedCard charged) {
-    var response =
-        network()
-            .reverse(
-                ReversalRequest.newBuilder()
-                    .setRetrievalReferenceNumber(charged.requestId())
-                    .build());
-    assertThat(response.getResponseCode()).isEqualTo("00");
+    ServiceAuthorizations.reverse(
+        context,
+        charged.requestId(),
+        charged.card().cardToken(),
+        new Money(CARD_AMOUNT, USD),
+        charged.authorizationCode(),
+        ACCEPTOR_ID);
     assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
         .isEqualTo(SingleUseCard.Status.ACTIVE);
-  }
-
-  private IssuerAuthorizationGrpc.IssuerAuthorizationBlockingStub network() {
-    return IssuerAuthorizationGrpc.newBlockingStub(channel)
-        .withDeadlineAfter(5, TimeUnit.SECONDS)
-        .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"));
   }
 
   private record ChargedCard(

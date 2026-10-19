@@ -11,32 +11,26 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
-import dev.rgonz.payments.contracts.network.AuthorizationRequest;
-import dev.rgonz.payments.contracts.network.AuthorizationResponse;
-import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
+import dev.rgonz.payments.platform.authorization.ServiceAuthorizations;
 import dev.rgonz.payments.platform.clearing.TestClearingFiles;
 import dev.rgonz.payments.platform.payables.CardOnFile;
-import io.grpc.netty.NettyChannelBuilder;
+import dev.rgonz.payments.platform.shared.Money;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.io.UnsupportedEncodingException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
+import java.util.Currency;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
 import org.springframework.boot.restclient.test.autoconfigure.AutoConfigureMockRestServiceServer;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -44,7 +38,6 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
-import org.springframework.grpc.client.interceptor.security.BearerTokenAuthenticationInterceptor;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -60,7 +53,7 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
  * its Credit Line, Acme's ERP submits an Invoice above the Approval Threshold, two Approvers
  * approve it, the Payment saga's worker pays it on its schedule, and the Supplier opens its card
  * link once. Only the Supplier's remittance address is stubbed. The PAN check goes on to the
- * Network's Charge and its Clearing File.
+ * Charge, which authorization-service approves (played here), and its Clearing File.
  */
 @Import(TestcontainersConfiguration.class)
 @SpringBootTest
@@ -87,8 +80,6 @@ class CorePathTests {
   @Autowired MockRestServiceServer supplier;
   @Autowired JdbcClient jdbc;
   @Autowired ApplicationContext context;
-
-  @LocalGrpcServerPort int grpcPort;
 
   @Test
   void anInvoiceAboveTheThresholdIsApprovedTwicePaidAndItsCardShownToTheSupplierOnce()
@@ -148,21 +139,22 @@ class CorePathTests {
             .getContentAsString();
     String pan = JsonPath.read(opened, "$.pan");
     String securityCode = JsonPath.read(opened, "$.securityCode");
-    // DE 14, the expiry month as printed on the card.
-    var expirationDate =
-        DateTimeFormatter.ofPattern("yyMM")
-            .withZone(ZoneOffset.UTC)
-            .format(OffsetDateTime.parse(JsonPath.read(opened, "$.expiresAt")));
     String cardToken =
         JsonPath.read(
             invoice(erpToken, invoiceId).getResponse().getContentAsString(),
             "$.payment.card.cardToken");
     String paymentId = JsonPath.read(deliveries.getFirst(), "$.id");
-    // The Network charges the card with what the Supplier read: the PAN and security code pass
-    // through authorization on their way to the vault.
+    // authorization-service answers the Network's Charge with the PAN and security code the
+    // Supplier read, and the platform's copy receives only the Card Token.
     var requestId = TestClearingFiles.newId("Q", 12);
-    var charged = charge(requestId, pan, securityCode, expirationDate);
-    assertThat(charged.getResponseCode()).isEqualTo("00");
+    var authorizationCode = "ABC123";
+    ServiceAuthorizations.approve(
+        context,
+        requestId,
+        cardToken,
+        new Money(AMOUNT, Currency.getInstance("USD")),
+        authorizationCode,
+        GLOBEX_ACCEPTOR_ID);
     // The Network clears the Charge in its Clearing File, PAN and all; Issuer staff import it, and
     // the PAN passes through clearing on its way to the vault.
     var fileId = TestClearingFiles.newId("F", 16);
@@ -178,7 +170,7 @@ class CorePathTests {
                     pan,
                     AMOUNT,
                     requestId,
-                    charged.getAuthorizationCode(),
+                    authorizationCode,
                     GLOBEX_ACCEPTOR_ID)));
     var imported =
         mvc.post()
@@ -207,11 +199,9 @@ class CorePathTests {
         .contains("clearing.clearing.network_record_id", "ledger.journal_entry.idempotency_key");
     assertThat(columnsOutsideTheVaultHolding("clearingRecordReader.read.count"))
         .contains("batch.batch_step_execution_context.short_context");
-    // The worker's log lines, the gRPC call's and the import's, from their own threads, were
-    // captured too.
+    // The worker's log lines and the import's, from their own threads, were captured too.
     assertThat(output)
         .contains("Payment " + paymentId + " is COMPLETED")
-        .contains("Authorization " + requestId + " answered 00")
         .contains("Clearing File " + fileId + " (sequence 1, Business Date 2026-10-15) imported")
         .doesNotContain(pan);
     // Three digits alone turn up in any log (timestamps, ports), so this looks for the security
@@ -343,31 +333,6 @@ class CorePathTests {
     return JsonPath.<Number>read(
             response.getResponse().getContentAsString(), "$.availableCredit.minorUnits")
         .longValue();
-  }
-
-  // The Network's Authorization request for the whole Invoice, signed in as the Network.
-  private AuthorizationResponse charge(
-      String requestId, String pan, String securityCode, String expirationDate) {
-    var channel = NettyChannelBuilder.forAddress("127.0.0.1", grpcPort).usePlaintext().build();
-    try {
-      return IssuerAuthorizationGrpc.newBlockingStub(channel)
-          .withDeadlineAfter(5, TimeUnit.SECONDS)
-          .withInterceptors(
-              new BearerTokenAuthenticationInterceptor(clientCredentialsToken("network")))
-          .authorize(
-              AuthorizationRequest.newBuilder()
-                  .setPrimaryAccountNumber(pan)
-                  .setSecurityCode(securityCode)
-                  .setExpirationDate(expirationDate)
-                  .setAmountMinor(AMOUNT)
-                  .setCurrencyCode("USD")
-                  .setRetrievalReferenceNumber(requestId)
-                  .setCardAcceptorId(GLOBEX_ACCEPTOR_ID)
-                  .setCardAcceptorName("Globex, Springfield")
-                  .build());
-    } finally {
-      channel.shutdownNow();
-    }
   }
 
   private static String securityCodeAfterItsName(String securityCode) {
