@@ -10,6 +10,8 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtDecoders;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.SupplierJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
@@ -46,11 +48,20 @@ class SecurityConfig {
 
   // Spring gRPC's security is blocking and takes a JwtDecoder; Spring Boot makes only the reactive
   // one in a WebFlux app. Built at the first call, not at startup, so the service starts while
-  // Keycloak is down, as Spring Boot's own decoder does.
+  // Keycloak is down, as Spring Boot's own decoder does. With jwk-set-uri set, as in the cluster,
+  // the keys come from it and iss is still checked against issuer-uri, which isn't fetched: as
+  // Spring Boot's own decoder does with both set. Unlike Boot's, it ignores jwt.audiences,
+  // jwt.jws-algorithms (RS256 only, Keycloak's) and any OAuth2TokenValidator beans.
   @Bean
   JwtDecoder jwtDecoder(
-      @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}") String issuer) {
-    return new SupplierJwtDecoder(() -> JwtDecoders.fromIssuerLocation(issuer));
+      @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}") String issuer,
+      @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri:}") String jwkSetUri) {
+    if (jwkSetUri.isEmpty()) {
+      return new SupplierJwtDecoder(() -> JwtDecoders.fromIssuerLocation(issuer));
+    }
+    var decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+    decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(issuer));
+    return decoder;
   }
 
   // Adding Spring Security would otherwise close every HTTP path, health included.

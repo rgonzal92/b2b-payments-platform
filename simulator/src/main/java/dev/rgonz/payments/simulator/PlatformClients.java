@@ -103,8 +103,7 @@ class PlatformClients {
       RestClient.Builder builder,
       OAuth2AuthorizedClientManager clients,
       @Value("${simulator.platform-url}") String platformUrl,
-      @Value("http://localhost:${server.port}" + GlobexSupplier.ADVICE_PATH)
-          String globexRemittanceAddress,
+      @Value("${simulator.globex.url}" + GlobexSupplier.ADVICE_PATH) String globexRemittanceAddress,
       @Value("${simulator.globex.acceptor-id}") String globexAcceptorId) {
     return new Initech(
         signedInAs("initech-erp", builder.clone(), clients, platformUrl)

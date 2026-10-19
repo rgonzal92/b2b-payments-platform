@@ -59,7 +59,7 @@ Most background work already tolerates a second instance: the drop-folder check 
 ### Files and secrets (Q6, Q15, Q21, Q22)
 
 - **Shared files:** the k3d cluster mounts the repo root into its single node, and the pods use hostPath volumes under it: the Clearing drop folder (`var/clearing`), which the simulator and platform must share for atomic moves, and the load test's cards file (`var/load-test/cards.csv`), so the files sit where they do in development. This holds only on one node; a multi-node cluster needs a ReadWriteMany volume (deferred).
-- **Secrets:** `scripts/init-env.sh` still writes `.env`; a script turns it into Kubernetes Secrets, which the apps read as environment variables as today. Nothing is committed. `init-env.sh` also generates `NETWORK_CLIENT_SECRET`, which the simulator reads but nothing generated. Sealed Secrets and an external vault wait for M7, where the vault's keys make them matter.
+- **Secrets:** `scripts/init-env.sh` still writes `.env`; a script turns it into Kubernetes Secrets, which the apps read as environment variables as today. Nothing is committed. The Secrets include `NETWORK_CLIENT_SECRET`, which `init-env.sh` has generated since M2. Sealed Secrets and an external vault wait for M7, where the vault's keys make them matter.
 
 ### Proving it (Q1, Q12, Q22, Q23)
 
