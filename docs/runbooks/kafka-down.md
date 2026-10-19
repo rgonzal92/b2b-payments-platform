@@ -1,6 +1,6 @@
 # Kafka is down
 
-**Signals:** no new messages on the `cards` topic; rows in `modulith.event_publication` for `CardIssued`, `CardCancelled` or `CardExpired` keep `completion_date` null; the platform logs the externalizer's send failing (`Node is not available`, `TimeoutException`); `docker compose ps` doesn't show `kafka` as running.
+**Signals:** no new messages on the `cards` or `authorizations` topic; rows in `modulith.event_publication` for `CardIssued`, `CardCancelled` or `CardExpired` keep `completion_date` null, or the service's `outbox` rows keep `sent_at` null; the platform logs the externalizer's send failing (`Node is not available`, `TimeoutException`); `docker compose ps` doesn't show `kafka` as running.
 
 The platform keeps working: issuing, cancelling and expiring cards commit as usual, and the in-process `CardExpired` listener still ends Payments and releases Holds. Only the externalization lags, because the event publication registry is the outbox (ADR-0008). `authorization-service` keeps its copy of the cards as it was and keeps running; its consumer resumes from its group's committed offset once Kafka is back, so the copy catches up without losing an event.
 
@@ -31,3 +31,18 @@ Kafka delivers at least once, and the registry may resend an event whose complet
 ## The service's database is down
 
 `authorization-service` can't store a card event while its PostgreSQL (`authorization-postgres`) is down. It doesn't skip the event: Spring Kafka retries it with a pause growing to 30 seconds, without limit, and logs each failed try, so that partition waits while the others carry on. Bring the database back (`docker compose up -d authorization-postgres`) and the consumer resumes where it stopped; `kafka-consumer-groups.sh --describe --group authorization-service` shows the lag falling to 0.
+
+## The service's outbox
+
+`authorization-service` keeps answering while Kafka is down: each approval, Reversal and new card writes its event to the service's `outbox` table and commits. Only the relay stops; it logs `Outbox row … wasn't sent` once a pass, and every 100 ms starts again from the oldest unsent row. Once Kafka is back the next pass sends the backlog in order, with no restart. A relay that logs `Outbox relay pass failed` can't reach the service's database instead: see the section above.
+
+The platform's Clearing lag check can't see these rows, so drain the outbox before importing a Clearing File. Count what waits, in the service's database (`docker compose exec authorization-postgres psql -U authorization`):
+
+```sql
+select event_type, count(*), min(created_at)
+  from outbox
+ where sent_at is null
+ group by event_type;
+```
+
+If the count doesn't fall while Kafka is up, the oldest unsent row is failing to send: its id is in the log line. The rows behind it wait for it on purpose, so a card's events are never sent out of order. Never delete a row to unblock the relay: the platform would then never hear of that Authorization.
