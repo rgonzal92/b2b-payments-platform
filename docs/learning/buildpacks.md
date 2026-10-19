@@ -1,0 +1,19 @@
+# Cloud Native Buildpacks
+
+## The problem it solves here
+
+M6 runs the four apps on Kubernetes, which runs container images, not jars (ADR-0017). Writing a Dockerfile per app means choosing a base image and a JDK, then layering the jar and sizing the JVM's memory for a container, four times over. Most of that is easy to get subtly wrong: a heap sized for the host gets OOMKilled at the pod's limit, and an image runs as root. Buildpacks build the image straight from the app's executable jar with none of that written by hand. `./mvnw -pl platform,authorization-service,simulator,gateway -am -DskipTests spring-boot:build-image` builds `b2b-payments/<module>:local` for each app (README, "Run it on Kubernetes").
+
+## Mental model
+
+- **A builder turns source into an image; buildpacks are its steps.** Spring Boot's `build-image` goal hands the jar to Paketo's Java builder, run in Docker. Each buildpack detects whether it applies, then contributes a layer: a JRE (BellSoft Liberica), the memory calculator, and the app itself, split into dependency, loader and application layers. A rebuild after a code change replaces only the application layer.
+- **No Dockerfile, no registry.** The image lands in the local Docker. `scripts/k3d-cluster.sh` imports it into the k3d node, and the chart uses it with `imagePullPolicy: Never` ([kubernetes.md](kubernetes.md)).
+- **The JVM is sized at start, from the container's limit.** At launch, Paketo's memory calculator reads the cgroup memory limit (the chart's `memory`, 1 Gi by default). It subtracts what it reserves for threads, metaspace, the code cache and direct memory, gives the heap the rest as `-Xmx`, and puts all of it in `JAVA_TOOL_OPTIONS` (the `Picked up JAVA_TOOL_OPTIONS` line at the top of every pod's log). A flag already in `JAVA_TOOL_OPTIONS` is kept, and the heap shrinks to make room.
+- **Only the apps build an image.** The root POM sets `spring-boot.build-image.skip=true` and the image name `b2b-payments/${project.artifactId}:local`; the four apps turn the skip off, as with `spring-boot.run.skip`.
+
+## Gotchas we hit
+
+- **Direct memory is capped at 10 MB.** The calculator's default `-XX:MaxDirectMemorySize=10M` is far too small for Netty, which keeps its buffers there and runs under the Gateway and under `authorization-service`'s WebFlux and gRPC servers. After a few requests the Gateway logged `OutOfDirectMemoryError: failed to allocate 131072 byte(s) of direct memory (used: 10485760, max: 10485760)` and cut answers off mid-body. The simulator then failed with `EOF reached while reading`, and later calls hung, while the pod stayed ready. The chart sets `JAVA_TOOL_OPTIONS=-XX:MaxDirectMemorySize=64M` for every app (`templates/_app.tpl`); the calculator keeps that value and takes it out of the heap.
+- **The `:local` tag is fixed, so a rebuild doesn't restart anything.** Every build overwrites `b2b-payments/<app>:local`, and Kubernetes sees no change in the pod spec. After rebuilding, run `scripts/k3d-cluster.sh` again to import the images, then `kubectl rollout restart deployment/<app>`. The images also show as created "46 years ago": buildpacks set a fixed 1980 timestamp so that the same input gives the same image.
+- **The image is built from the `exec` jar.** Each app's `spring-boot-maven-plugin` gives the executable jar the `exec` classifier, so the plain jar stays the artifact `e2e` depends on ([testcontainers.md](testcontainers.md)). That setting sits in the plugin's shared configuration, which `build-image` reads too, so it finds the executable jar by the same classifier: keep the two goals' classifier together.
+- **The image runs as its own non-root user,** which can't write to folders you own. The pods that write under `var/` through hostPath run as your user and group instead (`global.hostUser`, from `id -u` and `id -g` at install).
