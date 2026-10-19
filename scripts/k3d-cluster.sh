@@ -24,6 +24,8 @@ if ! k3d cluster get "$cluster" > /dev/null 2>&1; then
     --port '127.0.0.1:8180:8180@loadbalancer' \
     --wait
 fi
+# Creating the cluster switches kubectl to it; an existing one may not be the current context.
+kubectl config use-context "k3d-$cluster"
 
 images=(platform authorization-service simulator gateway)
 refs=()
