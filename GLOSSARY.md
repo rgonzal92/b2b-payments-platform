@@ -60,6 +60,10 @@ _Avoid_: Card number, credit card number
 A stand-in value that identifies a Virtual Card without revealing its PAN.
 _Avoid_: Alias, masked PAN
 
+**Card Copy**:
+The authorization service's own record of a card it may authorize, kept from the platform's card events: its Card Token, the keyed hashes of its PAN and security code, expiry, amount, Acceptor ID and status.
+_Avoid_: Replica, cache, card mirror
+
 ### Payables
 
 **Invoice**:

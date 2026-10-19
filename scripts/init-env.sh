@@ -7,7 +7,8 @@ for name in KEYCLOAK_ADMIN_PASSWORD SIMULATOR_ISSUER_ADMIN_SECRET SIMULATOR_RECO
   grep -q "^${name}=" .env || echo "${name}=$(openssl rand -hex 32)" >> .env
 done
 # The vault's keys (ADR-0004): 256 bits each, base64-encoded, one to encrypt card data and one to hash PANs.
-# Changing one later makes the card data already stored unreadable or unfindable.
+# Changing one later makes the card data already stored unreadable or unfindable. authorization-service reads
+# the same VAULT_HASH_KEY, to hash each Charge's PAN and security code as the vault does (ADR-0016).
 # The Remittance Advice link key: 256 bits, base64-encoded. Each link's token is an HMAC of its Payment
 # under it; changing it while a delivery awaits its retry makes the retry send a link that doesn't open.
 for name in VAULT_ENCRYPTION_KEY VAULT_HASH_KEY REMITTANCE_LINK_KEY; do

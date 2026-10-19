@@ -18,6 +18,7 @@ flowchart LR
     network["Network"]
   end
   platform["platform<br/>(the Issuer's system)"]
+  authz["authorization-service<br/>(M5: copy of the cards so far)"]
   keycloak["Keycloak"]
 
   simIssuer -- "create Buyers, set Credit Lines (REST)" --> platform
@@ -31,15 +32,16 @@ flowchart LR
   network -- "Authorization, Reversal (gRPC)" --> platform
   network -- "daily Clearing File" --> platform
   platform -. "validates tokens" .-> keycloak
+  platform -- "card events (Kafka cards topic)" --> authz
 ```
 
 ## Runtime
 
-Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, with dashboards provisioned from `grafana/` ([Dashboards and alerts](#dashboards-and-alerts)), Keycloak, which issues every token, and a single-broker Kafka for the `cards` topic ([The cards topic](#the-cards-topic)). The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support. The `load-test` module's Gatling simulation runs by hand against them (`-Pload-test`): it charges the simulator's seeded cards over gRPC as the Network, at 200 Authorizations a second from 5 paced users (Gatling's open-source gRPC limit); without the profile the build only compiles it and unit-tests how it reads the cards file.
+Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for metrics, traces and logs, with dashboards provisioned from `grafana/` ([Dashboards and alerts](#dashboards-and-alerts)), Keycloak, which issues every token, a single-broker Kafka for the `cards` topic ([The cards topic](#the-cards-topic)), and `authorization-service`'s own PostgreSQL, `authorization-postgres` on `127.0.0.1:5433` ([authorization-service](#authorization-service)). The `platform` and `simulator` run from Maven and start the stack themselves through Spring Boot's Docker Compose support; the platform ignores `authorization-postgres` (its `org.springframework.boot.ignore` label), so it still finds one PostgreSQL. `authorization-service` also runs from Maven (`./mvnw -pl authorization-service spring-boot:run`) but doesn't use Docker Compose support, which would hand it the platform's database too: it connects by the addresses in its `application.properties`, so start the stack first. The `load-test` module's Gatling simulation runs by hand against them (`-Pload-test`): it charges the simulator's seeded cards over gRPC as the Network, at 200 Authorizations a second from 5 paced users (Gatling's open-source gRPC limit); without the profile the build only compiles it and unit-tests how it reads the cards file.
 
 - **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp`, `issuer-admin`, `reconciler` (the `simulator-reconciler` client, which resolves Breaks) and `network` (the `network` client, which the Network signs in with), and puts them in a flat `roles` claim. Every Buyer-side client also carries its Buyer in a `buyer_id` claim (`acme-erp`, `acme-approver-1` and `acme-approver-2` carry Acme's; `initech-erp` and `initech-approver` carry Initech's), and the platform takes the Buyer only from that claim. An Approver is the token's subject (`sub`); its `preferred_username` is kept beside it to make the approval record readable. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
 - **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it. The Network link's contract is a protobuf file in the same module (`src/main/proto`), from which both sides get generated messages and gRPC stubs.
-- **Ports:** REST on `8080`; the Network link's gRPC on `127.0.0.1:9090`.
+- **Ports:** REST on `8080`; the Network link's gRPC on `127.0.0.1:9090`; `authorization-service`'s HTTP (actuator only) on `8082` (the simulator has `8081`).
 
 ## Modules
 
@@ -196,26 +198,30 @@ sequenceDiagram
 
 ## The cards topic
 
-M5's `authorization-service` keeps its own copy of the cards it may authorize (ADR-0016), fed by the platform's events on the `cards` topic. Nothing consumes the topic yet; #88 adds the service's side.
+M5's `authorization-service` keeps its own copy of the cards it may authorize (ADR-0016), fed by the platform's events on the `cards` topic.
 
 ```mermaid
 sequenceDiagram
   participant CRD as cards
   participant REG as modulith.event_publication
   participant KAF as Kafka: cards topic
+  participant SVC as authorization-service
 
   CRD->>CRD: store the card change
   CRD->>REG: CardIssued, CardCancelled or CardExpired, in the same transaction
   REG-)KAF: after commit, keyed by Card Token, event-type header
   REG->>REG: completion_date set when the send completes
+  KAF-)SVC: consumer group authorization-service
+  SVC->>SVC: apply to card_copy, then commit the offset
 ```
 
 - **What is published:** `CardIssued` when `Cards.issueSingleUse` creates a card (issuing again for a Payment that has one publishes nothing), `CardCancelled` when an `ACTIVE` card is cancelled, and `CardExpired` from the expiry job, which already published it in-process.
 - **`CardIssued` carries what the service needs and nothing secret:** Card Token, the PAN's and security code's keyed hashes (HMAC-SHA-256 under `vault.hash-key`, base64-encoded), expiry, amount in minor units with its currency, and the Supplier's Acceptor ID. The saga reads the Acceptor ID from `suppliers` and passes it into issuance, because `cards` can't call `suppliers` (Spring Modulith forbids the cycle); it is copied at issuance, so a Supplier that changes Acquirer later is declined. The service holds the same hash key and hashes each request's PAN and security code in memory to compare.
 - **`CardCancelled`** names the Card Token, so the service refuses Charges on it; `CardExpired` is the existing in-process event, now externalized too.
-- **Routing:** topic `cards` with 3 partitions, keyed by Card Token so one card's events stay in order; the value is JSON and the `event-type` header names `CardIssued`, `CardCancelled` or `CardExpired`. Externalization is serialized, so concurrent listener threads can't reorder events.
+- **Routing:** topic `cards` with 3 partitions, keyed by Card Token so one card's events stay in the order they reached the topic; the value is JSON and the `event-type` header names `CardIssued`, `CardCancelled` or `CardExpired`. Externalization is serialized, one send at a time, but each event is sent from its own thread after its commit, so the platform may send one card's events out of the order it published them: consumers must be order-tolerant.
 - **Outbox:** Spring Modulith's publication registry row is the outbox; the send sets its `completion_date`. A failed send or a stopped platform leaves it incomplete, and `spring.modulith.events.republish-outstanding-events-on-restart=true` sends it again at the next start. Kafka delivers at least once, so a consumer keys its write on the Card Token and event type.
 - **Tests:** `CardEventsTests` runs PostgreSQL and Kafka in Testcontainers and reads each event back from the topic, checking the key, header, payload and publication row. Externalization is off in every other test context.
+- **Contract:** Pact message pacts, one per event and one more for a `CardIssued` without an Acceptor ID (`null`, when no Invoice gave the Supplier one), in `pacts/authorization-service-platform.json` (no Pact Broker). `authorization-service`'s `CardEventsPactTests` writes them, saying only what the service reads, and reads each through the service's own reader; the platform's `CardEventsPactVerificationTests` issues, cancels and expires a real card, reads each event back from Kafka and checks its value and headers against them. The reactor builds `authorization-service` before the platform, so a full build verifies the pacts it just wrote. Each side keeps its own Java records ([`learning/pact.md`](learning/pact.md)).
 - **How it works and why:** [`learning/kafka.md`](learning/kafka.md). When the broker is down or events stop arriving: [`runbooks/kafka-down.md`](runbooks/kafka-down.md).
 
 ## Remittance Advice
@@ -516,6 +522,16 @@ sequenceDiagram
 
   An extra Clearing is otherwise the first one's, under its own Network record ID and retrieval reference number. The trailer stays true to the records except under `wrongTrailerTotal`, and its net settlement amount is their total. The switches combine, change a file but never make one (with nothing to clear the answer is `204` whatever they say), and a Clearing sent under one counts as sent, even in a refused file. Sending a file again uses no sequence number.
 - **In memory only:** restarting the simulator loses the Clearings not yet sent, and the sequence number starts again at 1, like the Acquirer's STANs. The file holds PANs, as the Network's file does; the Network logs a file by its name, Business Date, count and total only.
+
+## authorization-service
+
+A Spring Boot app in its own Maven module and package, `dev.rgonz.payments.authorization`, with its own PostgreSQL (ADR-0016, [M5 design](design/m5-authorization-service.md)). So far it keeps a copy of every card it may authorize and answers nothing; the Network link moves into it with #89.
+
+- **Stack:** WebFlux serves only its HTTP (actuator, health); the database is reached through R2DBC's `DatabaseClient` with handwritten SQL, not `JdbcClient` as in the platform: ADR-0009, as amended for the service, keeps the handwritten SQL and swaps the client so the hot path never blocks a Netty thread. Flyway migrates over its own JDBC connection from `spring.flyway.url`, with no connection pool: Spring Boot's Flyway module without the JDBC starter ([`learning/r2dbc.md`](learning/r2dbc.md)). One database, `authorization`, schema `public`: the service is one module, so it needs no per-module schemas.
+- **`card_copy`:** one row per card: Card Token, the PAN's keyed hash (unique) and the security code's, expiry, amount in minor units with its currency, the Supplier's Acceptor ID copied at issuance, and status `ACTIVE`, `CANCELLED` or `EXPIRED`. No PAN or security code (ADR-0004).
+- **Feeding it:** `CardsTopicListener` consumes `cards` as group `authorization-service` (from the earliest offset for a new group), reads each message by its `event-type` header (`CardEventReader`) and applies it (`CardCopies`), blocking on the consumer's own thread, off the hot path. The offset is committed after the write, so a crash redelivers. Every write is keyed on the Card Token and event type: `CardIssued` inserts `on conflict do nothing`, so a repeat can't revive a cancelled card; `CardCancelled` and `CardExpired` move only a card not already `CANCELLED` or `EXPIRED`, both final. Because the platform may send a card's events out of order, any order gives the same result: a `CardCancelled` or `CardExpired` for a card not seen yet stores a row with only the Card Token and the final status, and the `CardIssued` that follows fills in its details but keeps the status, so a card that ended before it was issued never becomes `ACTIVE` (a check constraint holds `ACTIVE` rows to having every detail). A failure that may pass, such as the database being down, is retried with a pause growing from 1 to 30 seconds and no limit (`CardsTopicErrorHandling`), so the partition waits rather than skip a card. Only a message that can never succeed is logged by partition and offset and skipped: no `event-type` header or one the service doesn't use, or JSON that is malformed or lacks a field the service needs.
+- **The hash key:** `CardHashing` holds the platform's `vault.hash-key` from the service's own environment (`VAULT_HASH_KEY` in `.env`, written by `scripts/init-env.sh`) and hashes as the vault does (HMAC-SHA-256, base64). A missing, malformed or wrong-length key stops the service at startup; no message or log shows it.
+- **Tests:** `CardsTopicTests` runs PostgreSQL and Kafka in Testcontainers, sends each event as the platform does and reads the copy back: `CardIssued` stores every field, `CardCancelled` and `CardExpired` move the status, and a repeated event, a `CardIssued` after a cancellation included, changes nothing (the test waits until the consumer group has committed every offset). A `CardCancelled` or `CardExpired` before its `CardIssued` leaves the card ended with its details. A `CardIssued` sent while the database refuses connections waits, unconsumed, for longer than the default handler's ten tries, and is stored once the database is back; messages with no or an unknown `event-type`, malformed JSON or a missing field are skipped and the card's later events still arrive. `CardHashingTests` checks the hash against `openssl`'s for the test key, and the key checks. `CardEventsPactTests`: see [The cards topic](#the-cards-topic).
 
 ## How the core path is proven
 
