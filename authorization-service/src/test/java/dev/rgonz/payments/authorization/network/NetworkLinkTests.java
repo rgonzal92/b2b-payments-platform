@@ -1,0 +1,740 @@
+package dev.rgonz.payments.authorization.network;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.awaitility.Awaitility.await;
+
+import dev.rgonz.payments.authorization.TestcontainersConfiguration;
+import dev.rgonz.payments.authorization.cards.CardCopies;
+import dev.rgonz.payments.authorization.cards.CardHashing;
+import dev.rgonz.payments.authorization.cards.CardStatus;
+import dev.rgonz.payments.contracts.network.AuthorizationRequest;
+import dev.rgonz.payments.contracts.network.AuthorizationResponse;
+import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
+import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc.IssuerAuthorizationBlockingStub;
+import dev.rgonz.payments.contracts.network.ReversalRequest;
+import dev.rgonz.payments.contracts.network.ReversalResponse;
+import io.grpc.ManagedChannel;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.grpc.netty.NettyChannelBuilder;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.grpc.test.autoconfigure.LocalGrpcServerPort;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
+import org.springframework.grpc.client.interceptor.security.BearerTokenAuthenticationInterceptor;
+import org.springframework.r2dbc.core.DatabaseClient;
+import org.springframework.security.oauth2.jwt.BadJwtException;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+
+/**
+ * The Network asks the service for an Authorization, or cancels one with a Reversal, over gRPC with
+ * a stand-in Network token, on the service's own PostgreSQL: the test plays the platform, issuing
+ * each card on a real Kafka's {@code cards} topic, and the Network, calling the service's gRPC
+ * server. The answers are the platform's (its {@code AuthorizeTests}), from the service's copy of
+ * the card.
+ */
+@Import({TestcontainersConfiguration.class, NetworkLinkTests.NetworkTokens.class})
+@SpringBootTest
+class NetworkLinkTests {
+
+  private static final long AMOUNT = 1_240_000;
+  private static final String ACCEPTOR_ID = "GLOBEX000000001";
+  private static final String SECURITY_CODE = "123";
+  // DE 14, as printed on the card.
+  private static final DateTimeFormatter EXPIRATION_DATE =
+      DateTimeFormatter.ofPattern("yyMM").withZone(ZoneOffset.UTC);
+  // Low-entropy fake PANs, one per card: 990000 followed by a counter.
+  private static final AtomicLong PANS = new AtomicLong();
+
+  /**
+   * Stands in for Keycloak's decoder: {@code network-token} decodes as the Network's, {@code
+   * buyer-token} as a token without the role, anything else is refused. Primary over the
+   * application's own decoder, which would ask Keycloak. Imported rather than nested: Spring
+   * Framework 7.0 ignores an enclosing class's nested configuration in a {@code @Nested} class.
+   */
+  static class NetworkTokens {
+
+    @Bean
+    @Primary
+    JwtDecoder networkTokens() {
+      return token -> {
+        // The token check runs on the call's gRPC thread, like the handler.
+        TOKEN_CHECK_THREADS.add(Thread.currentThread().getName());
+        return switch (token) {
+          case "network-token" -> jwt(token, "network");
+          case "buyer-token" -> jwt(token, "buyer");
+          default -> throw new BadJwtException("Not a test token.");
+        };
+      };
+    }
+
+    private static Jwt jwt(String token, String role) {
+      return Jwt.withTokenValue(token)
+          .header("alg", "none")
+          .subject("service-account-" + role)
+          .claim("roles", List.of(role))
+          .build();
+    }
+  }
+
+  // The threads every token check ran on, recorded by NetworkTokens.
+  private static final Queue<String> TOKEN_CHECK_THREADS = new ConcurrentLinkedQueue<>();
+
+  /** A card as the test issued it, with the PAN the Network would send. */
+  private record Card(String cardToken, String pan, Instant expiresAt) {}
+
+  @Autowired CardCopies copies;
+  @Autowired CardHashing hashing;
+  @Autowired DatabaseClient db;
+  @Autowired MeterRegistry meters;
+  @Autowired KafkaContainer kafka;
+  @Autowired PostgreSQLContainer postgres;
+
+  @LocalGrpcServerPort int port;
+
+  private ManagedChannel channel;
+  private KafkaProducer<String, String> producer;
+
+  @BeforeEach
+  void connect() {
+    channel = NettyChannelBuilder.forAddress("127.0.0.1", port).usePlaintext().build();
+    producer =
+        new KafkaProducer<>(
+            Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG,
+                kafka.getBootstrapServers(),
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+                StringSerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+                StringSerializer.class));
+  }
+
+  @AfterEach
+  void disconnect() {
+    channel.shutdownNow();
+    producer.close();
+  }
+
+  @Test
+  void anActiveCardIsApprovedAndAuthorized() {
+    var card = issuedCard();
+    var request = chargeOn(card);
+    var requestId = request.getRetrievalReferenceNumber();
+
+    var response = authorize(request);
+
+    assertThat(response.getRetrievalReferenceNumber()).isEqualTo(requestId);
+    assertThat(response.getResponseCode()).isEqualTo("00");
+    assertThat(response.getAuthorizationCode()).matches("[A-Z0-9]{6}");
+    assertThat(statusOf(card)).isEqualTo(CardStatus.AUTHORIZED);
+    assertThat(recorded(requestId))
+        .containsEntry("card_token", card.cardToken())
+        .containsEntry("amount_minor", AMOUNT)
+        .containsEntry("currency", "USD")
+        .containsEntry("acceptor_id", ACCEPTOR_ID)
+        .containsEntry("response_code", "00")
+        .containsEntry("authorization_code", response.getAuthorizationCode())
+        .containsEntry("status", "APPROVED");
+  }
+
+  @Test
+  void anUnknownPanIsDeclinedAsAnInvalidCard() {
+    var requestId = UUID.randomUUID().toString();
+
+    var response =
+        authorize(
+            AuthorizationRequest.newBuilder()
+                .setPrimaryAccountNumber("4000000000000002")
+                .setSecurityCode(SECURITY_CODE)
+                .setExpirationDate("2611")
+                .setAmountMinor(AMOUNT)
+                .setCurrencyCode("USD")
+                .setRetrievalReferenceNumber(requestId)
+                .setCardAcceptorId(ACCEPTOR_ID));
+
+    assertThat(response.getResponseCode()).isEqualTo("14");
+    assertThat(response.getAuthorizationCode()).isEmpty();
+    assertThat(recorded(requestId))
+        .containsEntry("card_token", null)
+        .containsEntry("amount_minor", AMOUNT)
+        .containsEntry("response_code", "14")
+        .containsEntry("authorization_code", null)
+        .containsEntry("status", "DECLINED");
+  }
+
+  @Test
+  void aCancelledCardIsDeclinedAndStaysCancelled() {
+    var card = issuedCard();
+    send(card.cardToken(), "CardCancelled", "{\"cardToken\":\"" + card.cardToken() + "\"}");
+    awaitStatus(card, CardStatus.CANCELLED);
+
+    var response = authorize(chargeOn(card));
+
+    assertThat(response.getResponseCode()).isEqualTo("54");
+    assertThat(statusOf(card)).isEqualTo(CardStatus.CANCELLED);
+  }
+
+  @Test
+  void aCardCopiedWithoutAnAcceptorIdIsDeclinedAsNotPermitted() {
+    var card = issuedCard(null);
+
+    var response = authorize(chargeOn(card));
+
+    assertThat(response.getResponseCode()).isEqualTo("57");
+    assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @CsvSource(
+      delimiter = '|',
+      textBlock =
+          """
+          # Charge                                | expiry | amount  | currency | security code | acceptor ID     | answer
+          the wrong expiry month                  | 2001   | 1240000 | USD      | 123           | GLOBEX000000001 | 54
+          a wrong security code                   |        | 1240000 | USD      | 999           | GLOBEX000000001 | N7
+          another Acceptor ID                     |        | 1240000 | USD      | 123           | OTHER0000000002 | 57
+          one minor unit above the card's amount  |        | 1240001 | USD      | 123           | GLOBEX000000001 | 61
+          another currency                        |        | 1240000 | EUR      | 123           | GLOBEX000000001 | 61
+          a currency that isn't ISO 4217          |        | 1240000 | DOLLARS  | 123           | GLOBEX000000001 | 61
+          a zero amount                           |        | 0       | USD      | 123           | GLOBEX000000001 | 13
+          """)
+  void aDeclineIsRecordedAndLeavesTheCardActive(
+      String charge,
+      String expirationDate,
+      long amountMinor,
+      String currencyCode,
+      String securityCode,
+      String acceptorId,
+      String answer) {
+    var card = issuedCard();
+    var request =
+        chargeOn(card)
+            .setAmountMinor(amountMinor)
+            .setCurrencyCode(currencyCode)
+            .setSecurityCode(securityCode)
+            .setCardAcceptorId(acceptorId);
+    if (expirationDate != null) {
+      request.setExpirationDate(expirationDate);
+    }
+
+    var response = authorize(request);
+
+    assertThat(response.getResponseCode()).isEqualTo(answer);
+    assertThat(response.getAuthorizationCode()).isEmpty();
+    assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+    assertThat(recorded(request.getRetrievalReferenceNumber()))
+        .containsEntry("card_token", card.cardToken())
+        .containsEntry("amount_minor", amountMinor)
+        .containsEntry("currency", currencyCode)
+        .containsEntry("acceptor_id", acceptorId)
+        .containsEntry("response_code", answer)
+        .containsEntry("authorization_code", null)
+        .containsEntry("status", "DECLINED");
+  }
+
+  @Test
+  void aSecondChargeOnAnApprovedCardIsDeclinedAndTheCardStaysAuthorized() {
+    var card = issuedCard();
+    assertThat(authorize(chargeOn(card)).getResponseCode()).isEqualTo("00");
+    var second = chargeOn(card);
+
+    var response = authorize(second);
+
+    assertThat(response.getResponseCode()).isEqualTo("57");
+    assertThat(statusOf(card)).isEqualTo(CardStatus.AUTHORIZED);
+    assertThat(recorded(second.getRetrievalReferenceNumber()))
+        .containsEntry("response_code", "57")
+        .containsEntry("status", "DECLINED");
+  }
+
+  @Test
+  void aResentRequestGetsTheFirstAnswerWhateverTheRulesWouldSayNow() {
+    var card = issuedCard();
+    var request = chargeOn(card);
+    var first = authorize(request);
+
+    // The card is AUTHORIZED now and the amount above the card's: both would decline a new Charge.
+    var resent = authorize(request.setAmountMinor(AMOUNT + 1));
+
+    assertThat(first.getResponseCode()).isEqualTo("00");
+    assertThat(resent).isEqualTo(first);
+    assertThat(recordedCount(request.getRetrievalReferenceNumber())).isOne();
+    assertThat(recorded(request.getRetrievalReferenceNumber()))
+        .containsEntry("amount_minor", AMOUNT);
+  }
+
+  @Test
+  void requestsWithOneRequestIdAtOnceRecordOneAuthorizationAndAllGetItsAnswer() throws Exception {
+    var card = issuedCard();
+    var request = chargeOn(card).build();
+
+    var answers = atOnce(List.of(request, request, request, request, request, request));
+
+    assertThat(answers).allSatisfy(answer -> assertThat(answer).isEqualTo(answers.getFirst()));
+    assertThat(answers.getFirst().getResponseCode()).isEqualTo("00");
+    assertThat(recordedCount(request.getRetrievalReferenceNumber())).isOne();
+    assertThat(statusOf(card)).isEqualTo(CardStatus.AUTHORIZED);
+  }
+
+  @Test
+  void ofChargesWithDifferentRequestIdsAtOnceOnOneCardExactlyOneIsApproved() throws Exception {
+    var card = issuedCard();
+    var requests = new ArrayList<AuthorizationRequest>();
+    for (var i = 0; i < 8; i++) {
+      requests.add(chargeOn(card).build());
+    }
+
+    var answers = atOnce(requests);
+
+    assertThat(answers)
+        .extracting(AuthorizationResponse::getResponseCode)
+        .containsOnlyOnce("00")
+        .containsOnly("00", "57");
+    for (var answer : answers) {
+      assertThat(recorded(answer.getRetrievalReferenceNumber()))
+          .containsEntry("response_code", answer.getResponseCode());
+    }
+    assertThat(statusOf(card)).isEqualTo(CardStatus.AUTHORIZED);
+  }
+
+  // The proof that the gRPC handler only hands each call to Reactor: Charges stuck on a locked
+  // table outnumber the gRPC call threads, yet a Reversal still gets its answer. A handler that
+  // waited for the database would hold every call thread, and the Reversal would never start.
+  @Test
+  void callsWaitingOnTheDatabaseHoldNoThreadSoAnotherCallIsStillAnswered() throws Exception {
+    var held = GrpcCallThreads.THREADS + 1;
+    TOKEN_CHECK_THREADS.clear();
+    var requests = new ArrayList<AuthorizationRequest>();
+    for (var i = 0; i < held; i++) {
+      requests.add(chargeOn(issuedCard()).build());
+    }
+
+    // Fewer held Charges than R2DBC's pool has connections (10 by default), so one is left for the
+    // Reversal. Closed in reverse order: the lock's connection rolls back before the executor
+    // waits.
+    try (var network = Executors.newFixedThreadPool(held);
+        var lock = connection()) {
+      lock.setAutoCommit(false);
+      try (var statement = lock.createStatement()) {
+        statement.execute("lock table card_copy in access exclusive mode");
+      }
+      var answers = new ArrayList<Future<AuthorizationResponse>>();
+      for (var request : requests) {
+        answers.add(network.submit(() -> authorize(request)));
+      }
+      await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= held);
+
+      var requestId = UUID.randomUUID().toString();
+      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+      assertThat(answers).noneMatch(Future::isDone);
+      // Every call ran on the fixed pool: with gRPC's unbounded default the Reversal would be
+      // answered whatever the handler did, and the test would prove nothing.
+      assertThat(TOKEN_CHECK_THREADS)
+          .hasSize(held + 1)
+          .allMatch(thread -> thread.startsWith("grpc-call-"));
+
+      lock.rollback();
+      for (var answer : answers) {
+        assertThat(answer.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("00");
+      }
+    }
+  }
+
+  @Test
+  void aRequestWithoutARetrievalReferenceNumberIsRefusedAndNothingIsRecorded() {
+    var card = issuedCard();
+
+    assertThat(grpcStatusOf(() -> authorize(chargeOn(card).clearRetrievalReferenceNumber())))
+        .isEqualTo(Status.Code.INVALID_ARGUMENT);
+    assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+    assertThat(recordedCount("")).isZero();
+  }
+
+  @Test
+  void aCallWithoutTheNetworksTokenIsRefused() {
+    var card = issuedCard();
+    var request = chargeOn(card).build();
+    var stub =
+        IssuerAuthorizationGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
+
+    assertThat(grpcStatusOf(() -> stub.authorize(request))).isEqualTo(Status.Code.UNAUTHENTICATED);
+    assertThat(
+            grpcStatusOf(
+                () ->
+                    stub.withInterceptors(new BearerTokenAuthenticationInterceptor("buyer-token"))
+                        .authorize(request)))
+        .isEqualTo(Status.Code.PERMISSION_DENIED);
+    assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+    assertThat(recordedCount(request.getRetrievalReferenceNumber())).isZero();
+  }
+
+  // The Authorization dashboard reads the counter; Spring gRPC's observation times every call.
+  @Test
+  void everyAnswerIsCountedByItsResponseCodeAndEveryCallIsTimed() {
+    var card = issuedCard();
+    var approvedBefore = answersCounted("00");
+    var declinedBefore = answersCounted("57");
+
+    authorize(chargeOn(card));
+    authorize(chargeOn(card));
+
+    assertThat(answersCounted("00")).isEqualTo(approvedBefore + 1);
+    assertThat(answersCounted("57")).isEqualTo(declinedBefore + 1);
+    assertThat(meters.find("grpc.server").tag("rpc.method", "Authorize").timer().count())
+        .isPositive();
+  }
+
+  /**
+   * The Network cancels an Authorization by its request ID. Every Reversal is acknowledged with
+   * {@code 00}; only an approved Authorization changes, and its card goes back to ACTIVE.
+   */
+  @Nested
+  class Reversals {
+
+    @Test
+    void anApprovedAuthorizationIsReversedAndItsCardCanBeChargedAgain() {
+      var card = issuedCard();
+      var charge = chargeOn(card);
+      var requestId = charge.getRetrievalReferenceNumber();
+      var approval = authorize(charge);
+      assertThat(approval.getResponseCode()).isEqualTo("00");
+
+      var response = reverse(requestId);
+
+      assertThat(response).isEqualTo(acknowledgement(requestId));
+      assertThat(recorded(requestId))
+          .containsEntry("response_code", "00")
+          .containsEntry("authorization_code", approval.getAuthorizationCode())
+          .containsEntry("status", "REVERSED");
+      assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+      assertThat(authorize(chargeOn(card)).getResponseCode()).isEqualTo("00");
+    }
+
+    @Test
+    void aDeclinedAuthorizationIsAcknowledgedTwiceAndNothingChanges() {
+      var card = issuedCard();
+      var charge = chargeOn(card).setAmountMinor(AMOUNT + 1);
+      var requestId = charge.getRetrievalReferenceNumber();
+      assertThat(authorize(charge).getResponseCode()).isEqualTo("61");
+
+      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+
+      assertThat(recorded(requestId)).containsEntry("status", "DECLINED");
+      assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+    }
+
+    // Only the reversed Authorization's own record decides: reversing A again mustn't free the
+    // card that B now holds.
+    @Test
+    void aRepeatedReversalChangesNothingMore() {
+      var card = issuedCard();
+      var first = chargeOn(card);
+      var firstRequestId = first.getRetrievalReferenceNumber();
+      assertThat(authorize(first).getResponseCode()).isEqualTo("00");
+      reverse(firstRequestId);
+      var second = chargeOn(card);
+      assertThat(authorize(second).getResponseCode()).isEqualTo("00");
+
+      assertThat(reverse(firstRequestId)).isEqualTo(acknowledgement(firstRequestId));
+
+      assertThat(recorded(second.getRetrievalReferenceNumber()))
+          .containsEntry("status", "APPROVED");
+      assertThat(statusOf(card)).isEqualTo(CardStatus.AUTHORIZED);
+    }
+
+    @Test
+    void aReversalBeforeItsAuthorizationMakesTheLateAuthorizationAnswerDoNotHonour() {
+      var card = issuedCard();
+      var charge = chargeOn(card);
+      var requestId = charge.getRetrievalReferenceNumber();
+
+      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+      var late = authorize(charge);
+
+      assertThat(late.getResponseCode()).isEqualTo("05");
+      assertThat(late.getAuthorizationCode()).isEmpty();
+      assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+      assertThat(recordedCount(requestId)).isOne();
+      assertThat(recorded(requestId))
+          .containsEntry("card_token", null)
+          .containsEntry("response_code", "05")
+          .containsEntry("status", "REVERSED");
+    }
+
+    // The Reversal commits while the Authorization is running: a lock on the card copy holds it
+    // before it reads the card, so it claims its request ID only afterwards.
+    @Test
+    void anAuthorizationStillRunningWhenItsReversalCommitsAnswersDoNotHonour() throws Exception {
+      var card = issuedCard();
+      var charge = chargeOn(card).build();
+      var requestId = charge.getRetrievalReferenceNumber();
+
+      try (var network = Executors.newSingleThreadExecutor();
+          var lock = connection()) {
+        lock.setAutoCommit(false);
+        try (var statement = lock.createStatement()) {
+          statement.execute("lock table card_copy in access exclusive mode");
+        }
+        var late = network.submit(() -> authorize(charge));
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 1);
+
+        var reversal = reverse(requestId);
+        lock.rollback();
+
+        assertThat(reversal).isEqualTo(acknowledgement(requestId));
+        assertThat(late.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("05");
+      }
+      assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+      assertThat(recorded(requestId))
+          .containsEntry("card_token", null)
+          .containsEntry("status", "REVERSED");
+    }
+
+    // The Authorization claims its request ID first and approves after the Reversal arrived: a
+    // lock on the card's row holds it after it recorded its approval, before it moved the card.
+    // The Reversal's claim waits for it to commit, then reverses it.
+    @Test
+    void anAuthorizationApprovedAfterItsReversalArrivedIsReversed() throws Exception {
+      var card = issuedCard();
+      var charge = chargeOn(card).build();
+      var requestId = charge.getRetrievalReferenceNumber();
+
+      try (var network = Executors.newFixedThreadPool(2);
+          var lock = connection()) {
+        lock.setAutoCommit(false);
+        try (var statement =
+            lock.prepareStatement("select 1 from card_copy where card_token = ? for update")) {
+          statement.setString(1, card.cardToken());
+          statement.executeQuery().close();
+        }
+        var slow = network.submit(() -> authorize(charge));
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 1);
+        var reversal = network.submit(() -> reverse(requestId));
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 2);
+
+        lock.rollback();
+
+        assertThat(slow.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("00");
+        assertThat(reversal.get(10, TimeUnit.SECONDS)).isEqualTo(acknowledgement(requestId));
+      }
+      assertThat(statusOf(card)).isEqualTo(CardStatus.ACTIVE);
+      assertThat(recorded(requestId))
+          .containsEntry("response_code", "00")
+          .containsEntry("status", "REVERSED");
+    }
+
+    @ParameterizedTest(name = "retrieval reference number \"{0}\"")
+    @ValueSource(strings = {"", "   "})
+    void aReversalWithoutARetrievalReferenceNumberIsRefusedAndNothingIsRecorded(String requestId) {
+      assertThat(grpcStatusOf(() -> reverse(requestId))).isEqualTo(Status.Code.INVALID_ARGUMENT);
+      assertThat(recordedCount(requestId)).isZero();
+    }
+  }
+
+  // Sends every request at once, each from its own thread, and returns the answers in order.
+  private List<AuthorizationResponse> atOnce(List<AuthorizationRequest> requests) throws Exception {
+    var start = new CountDownLatch(1);
+    var futures = new ArrayList<Future<AuthorizationResponse>>();
+    try (var network = Executors.newFixedThreadPool(requests.size())) {
+      for (var request : requests) {
+        futures.add(
+            network.submit(
+                () -> {
+                  start.await();
+                  return authorize(request);
+                }));
+      }
+      start.countDown();
+      var answers = new ArrayList<AuthorizationResponse>();
+      for (var future : futures) {
+        answers.add(future.get(10, TimeUnit.SECONDS));
+      }
+      return answers;
+    }
+  }
+
+  private Card issuedCard() {
+    return issuedCard(ACCEPTOR_ID);
+  }
+
+  // Issued as the platform issues it, on the cards topic, with the PAN's and security code's
+  // hashes under the shared hash key; returns once the service holds its copy.
+  private Card issuedCard(String acceptorId) {
+    var card =
+        new Card(
+            UUID.randomUUID().toString(),
+            "990000%010d".formatted(PANS.incrementAndGet()),
+            Instant.now().plus(30, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS));
+    send(
+        card.cardToken(),
+        "CardIssued",
+        """
+        {"cardToken":"%s","panHash":"%s","securityCodeHash":"%s","expiresAt":"%s",
+         "amountMinorUnits":%d,"currency":"USD","acceptorId":%s}
+        """
+            .formatted(
+                card.cardToken(),
+                hashing.hash(card.pan()),
+                hashing.hash(SECURITY_CODE),
+                card.expiresAt(),
+                AMOUNT,
+                acceptorId == null ? "null" : "\"" + acceptorId + "\""));
+    awaitStatus(card, CardStatus.ACTIVE);
+    return card;
+  }
+
+  private void send(String cardToken, String eventType, String json) {
+    var record = new ProducerRecord<>("cards", cardToken, json);
+    record.headers().add("event-type", eventType.getBytes(StandardCharsets.UTF_8));
+    producer.send(record);
+    producer.flush();
+  }
+
+  private void awaitStatus(Card card, CardStatus status) {
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .untilAsserted(() -> assertThat(statusOf(card)).isEqualTo(status));
+  }
+
+  private CardStatus statusOf(Card card) {
+    var copy = copies.find(card.cardToken()).block();
+    return copy == null ? null : copy.status();
+  }
+
+  // Everything the Network would send for a Charge of the card's whole amount, under a new
+  // request ID.
+  private AuthorizationRequest.Builder chargeOn(Card card) {
+    return AuthorizationRequest.newBuilder()
+        .setPrimaryAccountNumber(card.pan())
+        .setSecurityCode(SECURITY_CODE)
+        .setExpirationDate(EXPIRATION_DATE.format(card.expiresAt()))
+        .setAmountMinor(AMOUNT)
+        .setCurrencyCode("USD")
+        .setRetrievalReferenceNumber(UUID.randomUUID().toString())
+        .setCardAcceptorId(ACCEPTOR_ID)
+        .setCardAcceptorName("Globex, Springfield");
+  }
+
+  private AuthorizationResponse authorize(AuthorizationRequest.Builder request) {
+    return authorize(request.build());
+  }
+
+  private AuthorizationResponse authorize(AuthorizationRequest request) {
+    return network().authorize(request);
+  }
+
+  private ReversalResponse reverse(String requestId) {
+    return network()
+        .reverse(ReversalRequest.newBuilder().setRetrievalReferenceNumber(requestId).build());
+  }
+
+  // Every Reversal's answer: its request ID and 00, whatever it changed.
+  private static ReversalResponse acknowledgement(String requestId) {
+    return ReversalResponse.newBuilder()
+        .setRetrievalReferenceNumber(requestId)
+        .setResponseCode("00")
+        .build();
+  }
+
+  // Signed in as the Network (NetworkTokens), with a deadline so a hang fails the test quickly.
+  private IssuerAuthorizationBlockingStub network() {
+    return IssuerAuthorizationGrpc.newBlockingStub(channel)
+        .withDeadlineAfter(5, TimeUnit.SECONDS)
+        .withInterceptors(new BearerTokenAuthenticationInterceptor("network-token"));
+  }
+
+  // The gRPC status of a call refused before any answer.
+  private static Status.Code grpcStatusOf(ThrowingCallable call) {
+    return assertThatExceptionOfType(StatusRuntimeException.class)
+        .isThrownBy(call)
+        .actual()
+        .getStatus()
+        .getCode();
+  }
+
+  // The test context's registry outlives each test, so a test compares counts before and after.
+  private double answersCounted(String responseCode) {
+    var counter = meters.find("authorization.answers").tag("response.code", responseCode).counter();
+    return counter == null ? 0 : counter.count();
+  }
+
+  private Map<String, Object> recorded(String requestId) {
+    return db.sql(
+            """
+            select card_token, amount_minor, currency, acceptor_id, response_code,
+                   authorization_code, status
+              from authorizations
+             where request_id = :requestId
+            """)
+        .bind("requestId", requestId)
+        .fetch()
+        .one()
+        .block();
+  }
+
+  private long recordedCount(String requestId) {
+    return db.sql("select count(*) as n from authorizations where request_id = :requestId")
+        .bind("requestId", requestId)
+        .map(row -> row.get("n", Long.class))
+        .one()
+        .block();
+  }
+
+  // Connections to the test database waiting for a lock: the calls a test holds up.
+  private long lockWaiters() {
+    return db.sql(
+            """
+            select count(*) as n from pg_stat_activity
+             where datname = current_database() and wait_event_type = 'Lock'
+            """)
+        .map(row -> row.get("n", Long.class))
+        .one()
+        .block();
+  }
+
+  private Connection connection() throws SQLException {
+    return DriverManager.getConnection(
+        postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+  }
+}
