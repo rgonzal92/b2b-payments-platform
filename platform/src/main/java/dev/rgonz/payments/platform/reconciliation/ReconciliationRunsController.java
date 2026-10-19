@@ -36,6 +36,12 @@ class ReconciliationRunsController implements ReconciliationRunsApi {
                   + "; the Breaks it raised stay raised. Run it again to find the rest: see"
                   + " docs/runbooks/reconciliation-run-failed.md."),
           e);
+    } catch (Reconciliations.RunInProgressException e) {
+      throw new ErrorResponseException(
+          HttpStatus.CONFLICT,
+          ProblemDetail.forStatusAndDetail(
+              HttpStatus.CONFLICT, e.getMessage() + ". Run it again once that run is done."),
+          e);
     }
     return ResponseEntity.status(HttpStatus.CREATED)
         .body(

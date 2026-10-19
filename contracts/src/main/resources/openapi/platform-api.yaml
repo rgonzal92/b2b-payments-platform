@@ -488,6 +488,9 @@ paths:
         (an Undercharge). Each Break has a natural key, its kind and the record it names, so a run that finds a Break
         raised before counts it as known instead of raising it again: a repeat is harmless, so there is no
         `Idempotency-Key`. A run that fails keeps the Breaks it raised and answers `500`; running it again finds them.
+        One Reconciliation runs at a time, whatever its Business Date and whichever platform instance runs it: asked
+        for while another run, scheduled or on demand, is going, it doesn't start and answers `409`; ask again once
+        that run is done.
       requestBody:
         required: true
         content:
@@ -506,6 +509,8 @@ paths:
         '401':
           $ref: '#/components/responses/Problem'
         '403':
+          $ref: '#/components/responses/Problem'
+        '409':
           $ref: '#/components/responses/Problem'
         '500':
           $ref: '#/components/responses/Problem'
