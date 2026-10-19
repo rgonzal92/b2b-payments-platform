@@ -125,7 +125,7 @@ class OneReconciliationAtATimeTests {
     assertThat(held.started().await(30, SECONDS)).isTrue();
     jdbc.sql(
             """
-            select pg_terminate_backend(pid) from pg_locks
+            select pg_terminate_backend(pid, 10000) from pg_locks
              where locktype = 'advisory' and granted
             """)
         .query()
@@ -148,7 +148,8 @@ class OneReconciliationAtATimeTests {
       assertThat(tryLock(lock)).isTrue();
       assertThat(run(date)).hasStatus(409);
 
-      jdbc.sql("select pg_terminate_backend(:pid)").param("pid", pid).query().singleValue();
+      // Waits for the backend to exit: without a timeout it returns once the signal is sent.
+      jdbc.sql("select pg_terminate_backend(:pid, 10000)").param("pid", pid).query().singleValue();
 
       assertThat(run(date)).hasStatus(201);
     }
