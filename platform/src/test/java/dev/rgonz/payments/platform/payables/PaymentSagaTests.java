@@ -330,7 +330,8 @@ class PaymentSagaTests {
     var acme = newBuyerWithCreditLine(10_000_000);
     var invoiceId = approvedInvoice(acme, 1_240_000);
     supplierAnswers(withSuccess());
-    var issuedAt = Instant.now();
+    // As PostgreSQL stores it, which would otherwise round it up by a fraction of a microsecond.
+    var issuedAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
     waitingMetric.refreshAt(issuedAt);
     var waitingBefore = paymentsWaiting();
 
