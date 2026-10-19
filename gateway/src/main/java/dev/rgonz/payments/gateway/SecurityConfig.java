@@ -34,7 +34,8 @@ class SecurityConfig {
                     .pathMatchers("/actuator/health/**")
                     .permitAll()
                     // A Remittance Advice's link: its token is the credential (suppliers), and
-                    // the platform checks it.
+                    // the platform checks it. Same path as the remittance-link route in
+                    // application.properties: change both together.
                     .pathMatchers(HttpMethod.GET, "/v1/remittance-links/*")
                     .permitAll()
                     .anyExchange()
