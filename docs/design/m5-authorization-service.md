@@ -94,7 +94,7 @@ Replaying the service's card copy from Kafka; deriving the security code from th
 
 ## Risks
 
-- **Pact on Java 25 is unproven:** the first ticket proves it before any contract depends on it, with Spring Cloud Contract as the fallback.
+- **Pact on Java 25 is unproven:** the first ticket proves it before any contract depends on it, with Spring Cloud Contract as the fallback. Proven in #88: Pact JVM 4.7.5's consumer and provider message tests run on Java 25 (with Spring Boot's Kotlin 2.3.21), and a provider message with a wrong header fails verification, so the fallback wasn't needed.
 - **The reactive bridge is hand-written:** a mistake there blocks a Netty thread and stalls every call; the service's tests run the bridge under concurrent calls, and the load test would show it.
 - **A shared hash key:** the service now holds `vault.hash-key`, and with it a 3-digit security code's hash is trivially reversed; it's an environment variable like the vault's own keys, never logged, and M7 revisits it.
 - **Two outboxes and a lag check:** the lag check can't see the service's unsent outbox rows, so a Clearing can still match against a copy missing an Authorization; the result is a Break a Reconciler sees, and the runbook says to drain the outbox first.

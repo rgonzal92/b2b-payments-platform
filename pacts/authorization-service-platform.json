@@ -1,0 +1,164 @@
+{
+  "consumer": {
+    "name": "authorization-service"
+  },
+  "interactions": [
+    {
+      "contents": {
+        "content": {
+          "cardToken": "q2yJ0p8bX7mN4vL1sT6wZ3"
+        },
+        "contentType": "application/json",
+        "encoded": false
+      },
+      "description": "a CardCancelled for a cancelled card",
+      "key": "c38e545a",
+      "matchingRules": {
+        "body": {
+          "$.cardToken": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json",
+        "event-type": "CardCancelled"
+      },
+      "pending": false,
+      "type": "Asynchronous/Messages"
+    },
+    {
+      "contents": {
+        "content": {
+          "cardToken": "q2yJ0p8bX7mN4vL1sT6wZ3"
+        },
+        "contentType": "application/json",
+        "encoded": false
+      },
+      "description": "a CardExpired for an expired card",
+      "key": "ecaf6144",
+      "matchingRules": {
+        "body": {
+          "$.cardToken": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json",
+        "event-type": "CardExpired"
+      },
+      "pending": false,
+      "type": "Asynchronous/Messages"
+    },
+    {
+      "contents": {
+        "content": {
+          "acceptorId": "ACCEPTOR-1",
+          "amountMinorUnits": 1240000,
+          "cardToken": "q2yJ0p8bX7mN4vL1sT6wZ3",
+          "currency": "USD",
+          "expiresAt": "2026-11-17T09:30:00.123456Z",
+          "panHash": "3q2+7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "securityCodeHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "contentType": "application/json",
+        "encoded": false
+      },
+      "description": "a CardIssued for a newly issued card",
+      "key": "2e634cfd",
+      "matchingRules": {
+        "body": {
+          "$.acceptorId": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.amountMinorUnits": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "integer"
+              }
+            ]
+          },
+          "$.cardToken": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.currency": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "^[A-Z]{3}$"
+              }
+            ]
+          },
+          "$.expiresAt": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+              }
+            ]
+          },
+          "$.panHash": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.securityCodeHash": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json",
+        "event-type": "CardIssued"
+      },
+      "pending": false,
+      "type": "Asynchronous/Messages"
+    }
+  ],
+  "metadata": {
+    "pact-jvm": {
+      "version": "4.7.5"
+    },
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": [
+
+    ]
+  },
+  "provider": {
+    "name": "platform"
+  }
+}
