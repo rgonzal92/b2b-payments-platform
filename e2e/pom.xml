@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>e2e</artifactId>
 	<name>e2e</name>
-	<description>The end-to-end test: the platform and the simulator in one JVM, authorization-service beside them. No main code.</description>
+	<description>The end-to-end tests: the platform and the simulator in one JVM, authorization-service beside them. No main code.</description>
 
 	<dependencies>
 		<dependency>
