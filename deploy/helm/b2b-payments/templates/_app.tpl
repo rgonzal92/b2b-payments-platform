@@ -23,6 +23,10 @@ spec:
     spec:
       # Kubernetes would add PLATFORM_PORT and the like for every Service, which Spring would bind to properties.
       enableServiceLinks: false
+      # The 5-second preStop pause, then Spring Boot's graceful shutdown, which waits up to 30 s for requests in
+      # flight (spring.lifecycle.timeout-per-shutdown-phase; the service's gRPC server likewise, with
+      # spring.grpc.server.shutdown.grace-period), plus a margin; Kubernetes kills whatever is left after it.
+      terminationGracePeriodSeconds: 40
       {{- if .Values.hostFolders }}
       # It writes under var/ in the mounted repository, so it runs as you (global.hostUser).
       securityContext:
@@ -57,12 +61,33 @@ spec:
             - secretRef:
                 name: {{ . }}
           {{- end }}
-          # Basic readiness from Spring Boot's probe group, so the Service sends nothing before the app has started.
+          # Spring Boot's probe groups (M6 design, Two copies of each app). Readiness, whether the Service sends the
+          # pod traffic, leaves the database out: a database outage answers fast errors and 91 from every pod rather
+          # than emptying the Service. Liveness, whether Kubernetes restarts the container, is the process alone. The
+          # startup probe holds liveness off until the app first answers, so a slow start isn't killed for it.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
               port: http
             periodSeconds: 5
+          # Kubernetes takes a stopping pod out of its Services while it sends SIGTERM, and the two race: the pause
+          # lets every client stop sending here before Spring Boot's graceful shutdown starts refusing new requests.
+          # (The buildpack image has no shell, so Kubernetes sleeps, not the container.)
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           resources:
             limits:
               # Paketo's memory calculator sizes the JVM's heap to fit this.
