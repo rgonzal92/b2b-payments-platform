@@ -298,6 +298,39 @@ class GatewayTests {
     http.get().uri("/actuator/health").exchange().expectStatus().isOk();
   }
 
+  // On Kubernetes Spring Boot would read the client's address from forwarding headers unless told
+  // not to, and each forged X-Forwarded-For would get a fresh bucket.
+  @Nested
+  class OnKubernetes {
+
+    @DynamicPropertySource
+    static void kubernetes(DynamicPropertyRegistry registry) {
+      registry.add("spring.main.cloud-platform", () -> "kubernetes");
+    }
+
+    @Autowired WebTestClient http;
+
+    @Test
+    void aForgedForwardingHeaderGetsNoFreshRemittanceLinkBucket() {
+      var link = "/v1/remittance-links/" + LINK_TOKEN;
+      for (var i = 1; i <= 10; i++) {
+        http.get()
+            .uri(link)
+            .header("X-Forwarded-For", "203.0.113." + i)
+            .exchange()
+            .expectStatus()
+            .isOk();
+      }
+
+      http.get()
+          .uri(link)
+          .header("X-Forwarded-For", "203.0.113.11")
+          .exchange()
+          .expectStatus()
+          .isEqualTo(429);
+    }
+  }
+
   // The route points at a port nothing listens on, as when every platform pod is down.
   @Nested
   class WithThePlatformDown {
