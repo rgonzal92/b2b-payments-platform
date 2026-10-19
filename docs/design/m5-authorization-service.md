@@ -1,6 +1,6 @@
 # M5: Authorization becomes its own service
 
-**Status:** approved 2026-10-18. Decisions from the M5 grilling (Rounds 1–4, Q1–Q24, 2026-10-18).
+**Status:** approved 2026-10-18; done 2026-10-19 (#97 checked every "Done when" item and recorded the measurements). Decisions from the M5 grilling (Rounds 1–4, Q1–Q24, 2026-10-18).
 
 ## Problem
 
@@ -10,13 +10,13 @@ The force is availability, not latency (ADR-0016). M4 measured the monolith's se
 
 ## Done when
 
-1. With the platform stopped, the Network still gets approvals for cards already on file with the service; an automated test stops the platform mid-run and proves it ([`PlatformStoppedEndToEndTests`](../../e2e/src/test/java/dev/rgonz/payments/e2e/PlatformStoppedEndToEndTests.java)).
-2. M4's Gatling simulation runs unchanged against the service, and its p50/p95/p99, errors and achieved rate are recorded in this document beside M4's.
-3. One more run with both PostgreSQL data folders bind-mounted on a folder with copy-on-write off (`chattr +C`) is recorded beside it, separating the disk's effect from the code's.
-4. Grafana's Authorization dashboard reads the service's metrics, with new panels for Kafka consumer lag on both topics; the Payments dashboard has new panels for Payments waiting for the card to be on file; and an alert fires when a Payment waits more than 5 minutes ([`grafana/`](../../grafana/), checked by [`GrafanaProvisioningTests`](../../platform/src/test/java/dev/rgonz/payments/platform/GrafanaProvisioningTests.java)); one trace runs from the Network's call to the platform's consumers ([`CorePathEndToEndTests`](../../e2e/src/test/java/dev/rgonz/payments/e2e/CorePathEndToEndTests.java)).
-5. The end-to-end test's core path runs through the service, and Clearing and Reconciliation behave as in M4.
-6. A Pact consumer test and provider test cover each event in both directions.
-7. `docs/architecture.md`, explainers for Kafka, Reactor and WebFlux, Resilience4j and Pact, and runbooks for Kafka down and for the service or its database down are written.
+1. With the platform stopped, the Network still gets approved Authorizations for cards already on file with the service; an automated test stops the platform mid-run and proves it ([`PlatformStoppedEndToEndTests`](../../e2e/src/test/java/dev/rgonz/payments/e2e/PlatformStoppedEndToEndTests.java)). **Proven** (#95, PR #108).
+2. M4's Gatling simulation runs unchanged against the service, and its p50/p95/p99, errors and achieved rate are recorded in this document beside M4's. **Recorded** in [Measured (#97)](#measured-97): run 1.
+3. One more run with both PostgreSQL data folders bind-mounted on a folder with copy-on-write off (`chattr +C`) is recorded beside it, separating the disk's effect from the code's. **Recorded** in [Measured (#97)](#measured-97): run 2.
+4. Grafana's Authorization dashboard reads the service's metrics, with new panels for Kafka consumer lag on both topics; the Payments dashboard has new panels for Payments waiting for the card to be on file; and an alert fires when a Payment waits more than 5 minutes ([`grafana/`](../../grafana/), checked by [`GrafanaProvisioningTests`](../../platform/src/test/java/dev/rgonz/payments/platform/GrafanaProvisioningTests.java)); one trace runs from the Network's call to the platform's consumers ([`CorePathEndToEndTests`](../../e2e/src/test/java/dev/rgonz/payments/e2e/CorePathEndToEndTests.java)). **Proven** (#96, PR #109); the metric names, labels and rules were also checked once against a running stack there, and the measured runs below read the Authorization dashboard's series.
+5. The end-to-end test's core path runs through the service, and Clearing and Reconciliation behave as in M4. **Proven** by [`CorePathEndToEndTests`](../../e2e/src/test/java/dev/rgonz/payments/e2e/CorePathEndToEndTests.java): the service approves the Charge, its Clearing imports `matched` and settles, and the Reconciliation finds no Break (cutover #92, PR #104; the import's wait #94, PR #107).
+6. A Pact consumer test and provider test cover each event in both directions. **Proven**: `cards` by `authorization-service`'s `CardEventsPactTests` and the platform's `CardEventsPactVerificationTests` (#88, PR #99; `CardCleared` #101, PR #105), `authorizations` by the platform's `AuthorizationEventsPactTests` and `CardOnFilePactTests` and the service's `AuthorizationEventsPactVerificationTests` (#92, PR #104); CI fails when a build changes the committed `pacts/`.
+7. `docs/architecture.md`, explainers for Kafka, Reactor and WebFlux, Resilience4j and Pact, and runbooks for Kafka down and for the service or its database down are written. **Done**: [`architecture.md`](../architecture.md) (final for M5 in #97), [`kafka.md`](../learning/kafka.md), [`reactor-webflux.md`](../learning/reactor-webflux.md), [`r2dbc.md`](../learning/r2dbc.md), [`resilience4j.md`](../learning/resilience4j.md), [`pact.md`](../learning/pact.md), [`kafka-down.md`](../runbooks/kafka-down.md) and [`authorization-service-database-down.md`](../runbooks/authorization-service-database-down.md).
 
 ## Approach
 
@@ -77,6 +77,41 @@ Each side's copy trails the other's by Kafka's delay. Two places can't tolerate 
 - The service exports to the same `otel-lgtm` container under its own `service.name`. Spring Kafka's observation carries trace context in message headers; the service's outbox row stores the context it was written under and the relay restores it, so one trace runs from the Network's call through the service, Kafka and the platform's copy.
 - Grafana: the Authorization dashboard and its p99 alert read the service; new panels for consumer lag on both topics on the Authorization dashboard, and for Payments waiting for the card to be on file on the Payments dashboard.
 - Measurement: M4's simulation, unchanged, against the service; then one more run with both databases' data on a no-copy-on-write folder. Both go in a "Measured" section here.
+
+### Measured (#97)
+
+**Result: both runs pass the 100 ms target, and nothing contradicts the expectation; one run per storage can't confirm it either.** On Docker's default storage, as M4 ran, the service's server-side p99 was 16.2 ms; with both PostgreSQL data folders on a folder with copy-on-write off it was 8.2 ms, every call within 100 ms. The extraction made the median slower, not faster (p50 4.5 ms against M4's 2.4 and 2.5), and the tail looks like the disk's: with btrfs copy-on-write off the p99 halved and every percentile fell, from one run on each storage. Run 1's 16.2 ms is below both of M4's runs (35.6 and 104.2 ms on the same storage), but M4's two identical runs differed threefold, so one run can't claim a p99 gain over M4.
+
+| | M4 run 1 (platform) | M4 run 2 (platform) | M5 run 1 (service) | M5 run 2 (service, copy-on-write off) |
+|---|---|---|---|---|
+| Server-side p50 / p95 / p99 | 2.4 / 3.7 / 35.6 ms | 2.5 / 4.1 / 104.2 ms | 4.5 / 7.8 / 16.2 ms | 3.7 / 6.3 / 8.2 ms |
+| At or under 100 ms | 99.705% (pass) | 98.768% (fail) | 99.961% (pass) | 100.000% (pass) |
+| Failed calls | 0 | 0 | 0 | 0 |
+| Achieved rate | 190.7/s | 187.6/s | 197.7/s | 199.5/s |
+
+- **When:** 2026-10-19, 08:49 and 09:14 UTC.
+- **Hardware:** as M4's: AMD Ryzen 9 5900X (12 cores, 24 threads), 31 GiB RAM, CachyOS Linux (kernel 7.2.9), Docker 29.9.1 with its storage on btrfs (the NVMe disk's root subvolume, mounted without `nodatacow`), OpenJDK 25.0.4.1, PostgreSQL 18.6 with default settings, both databases in their own containers on that one disk. The platform, `authorization-service`, the simulator, Gatling and the Compose stack shared the machine; unrelated home-server containers (Plex and others) ran beside them; no build or test ran. Each app ran from `spring-boot:run`, as the README starts them.
+- **Storage:** run 1 kept both PostgreSQL data folders in the containers' anonymous volumes under Docker's storage, as M4 did. Run 2 bind-mounted both (`postgres` and `authorization-postgres`) into a folder on the same disk's `/home` subvolume, made empty with `chattr +C` so every file PostgreSQL created in it, WAL included, had copy-on-write off (checked with `lsattr`). Each run started from a fresh stack and fresh databases.
+- **Profile:** M4's simulation, unchanged: 5 paced users, 200 Authorizations a second for a 30-second warm-up then 2 measured minutes, about 90% approved Charges on fresh cards, 5% second Charges (`57`), 5% wrong security codes (`N7`), now answered by `authorization-service` on `127.0.0.1:9090`. Both apps ran with `--management.otlp.metrics.export.step=10s`, as M4's platform did.
+- **Server side** (`grpc.server` for `Authorize`, `job="authorization-service"`, from Prometheus, cumulative buckets differenced over the window, interpolated within buckets as `histogram_quantile` does, as in M4; the window starts at the first export after the warm-up):
+
+  | Run | Calls in window | p50 | p95 | p99 | At or under 100 ms | Warm-up p99 |
+  |---|---|---|---|---|---|---|
+  | 1 | 23,323 | 4.5 ms | 7.8 ms | 16.2 ms | 99.961% (pass) | 9.1 ms |
+  | 2 | 24,010 | 3.7 ms | 6.3 ms | 8.2 ms | 100.000% (pass) | 14.4 ms |
+
+  Run 1's window covers about 98% of the measured calls. Run 2's first export after the warm-up came within a second of its end, so its window holds every measured call and about 70 of the warm-up's.
+- **Gatling, client side** (measured 2 minutes; no failed call in either run):
+
+  | Run | Measured calls | Achieved rate | Approved Charge p50 / p95 / p99 / max | Second Charge p99 | Wrong security code p99 |
+  |---|---|---|---|---|---|
+  | 1 | 23,728 | 197.7/s | 5 / 8 / 17 / 128 ms | 15 ms | 18 ms |
+  | 2 | 23,938 | 199.5/s | 4 / 7 / 9 / 37 ms | 8 ms | 7 ms |
+
+  With fewer slow answers than M4's runs, the paced users held close to 200 a second.
+- **Seeding:** 25,000 cards in 988 s and 981 s (about 25 a second, against M4's 40), plus 3,000 appended in 124 s each time. Each Payment now waits for the service to have its card on file before Globex gets it, which is the likely cause of the slower seeding; not investigated further.
+- **Against the expectation:** the design expected no gain on p99, because M4's miss came from the disk's commit flushes. The measurements are consistent with that, one run each: on the same storage as M4, one run can't separate a real change from M4's run-to-run spread (run 1's warm-up p99 of 9.1 ms against run 2's 14.4 ms shows the same noise); with copy-on-write off, p99 fell from 16.2 to 8.2 ms and the slowest approved Charge Gatling saw from 128 to 37 ms. The reactive hot path did not make the median faster: the server-side p50 rose from about 2.4 ms to 4.5 ms on the same storage. Likely causes, not profiled: each call now crosses threads (a `grpc-call-` thread, then R2DBC's event loop), each approved Authorization writes an outbox row in its transaction, and the R2DBC driver replaces JDBC. A p50 of 4.5 ms is far inside the 100 ms target, and M5's force is availability (ADR-0016), so no fix is planned here.
+- **Not measured:** a run on hardware not shared with other services, more than one run per storage, and an open-model load, which needs Gatling Enterprise or another tool (Deferred).
 
 ## Deferred
 
