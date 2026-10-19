@@ -52,33 +52,49 @@ class RateLimits {
             .map(address -> address.getAddress().getHostAddress());
   }
 
-  /**
-   * Gateway's own limiter, counting what it lets through unlimited. RedisRateLimiter already fails
-   * open: on any Redis error it logs, allows the request and reports -1 tokens remaining, a count
-   * its token bucket never returns. Grafana alerts on the counter (alerting.yaml).
-   */
+  /** Replaces Spring Cloud Gateway's own RedisRateLimiter bean, which backs off for this one. */
   @Bean
   RedisRateLimiter redisRateLimiter(
       ReactiveStringRedisTemplate redis,
       @Qualifier(RedisRateLimiter.REDIS_SCRIPT_NAME) RedisScript<List<Long>> script,
       ConfigurationService configuration,
       MeterRegistry meters) {
-    var failedOpen =
-        Counter.builder("gateway.rate.limiter.failed.open")
-            .description("Requests let through without a rate limit because Redis failed")
-            .register(meters);
-    return new RedisRateLimiter(redis, script, configuration) {
-      @Override
-      public Mono<Response> isAllowed(String routeId, String id) {
-        return super.isAllowed(routeId, id)
-            .doOnNext(
-                response -> {
-                  if ("-1".equals(response.getHeaders().get(REMAINING_HEADER))) {
-                    failedOpen.increment();
-                  }
-                });
-      }
-    };
+    return new FailOpenCountingRateLimiter(redis, script, configuration, meters);
+  }
+
+  /**
+   * RedisRateLimiter, counting what it lets through unlimited. It already fails open: on any Redis
+   * error it logs "Error calling rate limiter lua" under this class's name, allows the request and
+   * reports -1 tokens remaining, a count its token bucket never returns. Grafana alerts on the
+   * counter (alerting.yaml).
+   */
+  static class FailOpenCountingRateLimiter extends RedisRateLimiter {
+
+    private final Counter failedOpen;
+
+    FailOpenCountingRateLimiter(
+        ReactiveStringRedisTemplate redis,
+        RedisScript<List<Long>> script,
+        ConfigurationService configuration,
+        MeterRegistry meters) {
+      super(redis, script, configuration);
+      // Registered at startup, so the first failure is an increase Prometheus can see.
+      this.failedOpen =
+          Counter.builder("gateway.rate.limiter.failed.open")
+              .description("Requests let through without a rate limit because Redis failed")
+              .register(meters);
+    }
+
+    @Override
+    public Mono<Response> isAllowed(String routeId, String id) {
+      return super.isAllowed(routeId, id)
+          .doOnNext(
+              response -> {
+                if ("-1".equals(response.getHeaders().get(REMAINING_HEADER))) {
+                  failedOpen.increment();
+                }
+              });
+    }
   }
 
   /**

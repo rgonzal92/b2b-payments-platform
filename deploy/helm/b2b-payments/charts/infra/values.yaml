@@ -4,6 +4,7 @@ images:
   kafka: apache/kafka:4.2.1
   keycloak: quay.io/keycloak/keycloak:26.8.1
   lgtm: grafana/otel-lgtm:0.36.0
+  redis: redis:8.10.2-alpine
 
 # One PostgreSQL per database, as in compose.yaml. Each keeps its data on a volume from k3s's local-path storage, so a
 # restarted pod finds it; helm uninstall leaves the volume (kubectl delete pvc to drop it).

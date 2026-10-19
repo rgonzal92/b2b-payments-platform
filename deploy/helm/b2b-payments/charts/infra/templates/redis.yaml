@@ -1,0 +1,44 @@
+# The Gateway's rate limiter keeps its token buckets here, so every Gateway pod draws on the same ones. One replica and
+# no volume: a bucket refills within seconds, so a restarted Redis that forgot them only hands out a fresh burst. While
+# it's down the Gateway lets requests through and Grafana alerts (docs/runbooks/rate-limiter-redis-down.md).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    {{- include "b2b-payments.labels" (dict "name" "redis" "context" $) | nindent 4 }}
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "b2b-payments.selectorLabels" (dict "name" "redis" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "b2b-payments.labels" (dict "name" "redis" "context" $) | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.images.redis }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    {{- include "b2b-payments.labels" (dict "name" "redis" "context" $) | nindent 4 }}
+spec:
+  selector:
+    {{- include "b2b-payments.selectorLabels" (dict "name" "redis" "context" $) | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
