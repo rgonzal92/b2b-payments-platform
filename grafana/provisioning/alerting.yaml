@@ -1,7 +1,8 @@
 # Grafana reads this at startup from /otel-lgtm/grafana/conf/provisioning/alerting/ (docs/learning/grafana-provisioning.md).
-# Four rules: ADR-0010's target, authorization-service's Authorize p99 above 100 ms for 5 minutes; a Payment waiting
-# more than 5 minutes for its card to be on file (M5 design, "The gaps"); and authorization-service or the platform
-# exporting nothing for 5 minutes, which the other rules can't tell from an idle system. No contact point is set up
+# Five rules: ADR-0010's target, authorization-service's Authorize p99 above 100 ms for 5 minutes; a Payment waiting
+# more than 5 minutes for its card to be on file (M5 design, "The gaps"); authorization-service or the platform
+# exporting nothing for 5 minutes, which the other rules can't tell from an idle system; and the Gateway letting
+# requests through unlimited because its Redis is down (ADR-0017). No contact point is set up
 # locally, so they only show as firing in Grafana (Alerting > Alert rules).
 apiVersion: 1
 
@@ -184,6 +185,57 @@ groups:
             model:
               refId: A
               expr: absent_over_time(target_info{job="platform"}[5m])
+              instant: true
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+
+  - orgId: 1
+    name: gateway
+    folder: B2B Payments
+    interval: 1m
+    rules:
+      - uid: rate-limiter-redis-down
+        title: Gateway letting requests through unlimited, its Redis is down
+        condition: C
+        # Requests passing unlimited for 2 minutes running: one slow answer from Redis doesn't fire it.
+        for: 2m
+        # No requests means nothing let through unlimited; the counter starts at 0 when the Gateway starts.
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: >-
+            The Gateway can't reach the rate limiter's Redis and is letting every request through without a limit
+            (ADR-0017: it fails open). Runbook: docs/runbooks/rate-limiter-redis-down.md
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              refId: A
+              expr: sum(rate(gateway_rate_limiter_failed_open_total{job="gateway"}[2m]))
               instant: true
               range: false
           - refId: B

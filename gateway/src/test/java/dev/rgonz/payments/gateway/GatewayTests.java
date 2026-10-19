@@ -7,11 +7,13 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -357,6 +359,53 @@ class GatewayTests {
     assertThat(new String(result.getResponseBody(), StandardCharsets.UTF_8))
         .contains("\"title\":\"Too Many Requests\"")
         .contains("\"status\":429");
+  }
+
+  // ADR-0017: the limiter fails open. This Redis is the nested context's own, so stopping it leaves
+  // the other tests theirs; the Gateway has connected to it before it stops, as in production.
+  @Nested
+  class WithRedisStopped {
+
+    static final GenericContainer<?> doomedRedis =
+        new GenericContainer<>("redis:8.10.2-alpine").withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void ownRedis(DynamicPropertyRegistry registry) {
+      doomedRedis.start();
+      registry.add("spring.data.redis.port", () -> doomedRedis.getMappedPort(6379));
+    }
+
+    @Autowired WebTestClient http;
+
+    @Autowired MeterRegistry meters;
+
+    @Test
+    void requestsStillReachThePlatformAndTheGatewayCountsThem() {
+      var acme = "Bearer " + clientCredentialsToken("acme-erp");
+      http.get()
+          .uri("/v1/invoices")
+          .header(HttpHeaders.AUTHORIZATION, acme)
+          .exchange()
+          .expectStatus()
+          .isOk();
+
+      doomedRedis.stop();
+
+      var started = System.nanoTime();
+      for (var i = 0; i < 3; i++) {
+        http.get()
+            .uri("/v1/invoices")
+            .header(HttpHeaders.AUTHORIZATION, acme)
+            .exchange()
+            .expectStatus()
+            .isOk();
+        http.get().uri("/v1/remittance-links/{token}", LINK_TOKEN).exchange().expectStatus().isOk();
+      }
+      assertThat(Duration.ofNanos(System.nanoTime() - started))
+          .as("six requests without Redis")
+          .isLessThan(Duration.ofSeconds(1));
+      assertThat(meters.get("gateway.rate.limiter.failed.open").counter().count()).isEqualTo(6);
+    }
   }
 
   private static String issuerUri() {

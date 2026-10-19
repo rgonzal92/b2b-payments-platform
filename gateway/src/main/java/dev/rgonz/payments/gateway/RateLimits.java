@@ -1,15 +1,26 @@
 package dev.rgonz.payments.gateway;
 
+import io.lettuce.core.ClientOptions.DisconnectedBehavior;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.util.List;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.data.redis.autoconfigure.LettuceClientOptionsBuilderCustomizer;
 import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
+import org.springframework.cloud.gateway.filter.ratelimit.RedisRateLimiter;
+import org.springframework.cloud.gateway.support.ConfigurationService;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import reactor.core.publisher.Mono;
 
 /**
- * Whose bucket a request takes a token from (M6 design, Rate limiting). The limits themselves are
- * the routes' RequestRateLimiter arguments in application.properties.
+ * Whose bucket a request takes a token from (M6 design, Rate limiting), and what happens when Redis
+ * fails: the request passes and is counted (ADR-0017). The limits themselves are the routes'
+ * RequestRateLimiter arguments in application.properties.
  */
 @Configuration(proxyBeanMethods = false)
 class RateLimits {
@@ -39,5 +50,43 @@ class RateLimits {
     return exchange ->
         Mono.justOrEmpty(exchange.getRequest().getRemoteAddress())
             .map(address -> address.getAddress().getHostAddress());
+  }
+
+  /**
+   * Gateway's own limiter, counting what it lets through unlimited. RedisRateLimiter already fails
+   * open: on any Redis error it logs, allows the request and reports -1 tokens remaining, a count
+   * its token bucket never returns. Grafana alerts on the counter (alerting.yaml).
+   */
+  @Bean
+  RedisRateLimiter redisRateLimiter(
+      ReactiveStringRedisTemplate redis,
+      @Qualifier(RedisRateLimiter.REDIS_SCRIPT_NAME) RedisScript<List<Long>> script,
+      ConfigurationService configuration,
+      MeterRegistry meters) {
+    var failedOpen =
+        Counter.builder("gateway.rate.limiter.failed.open")
+            .description("Requests let through without a rate limit because Redis failed")
+            .register(meters);
+    return new RedisRateLimiter(redis, script, configuration) {
+      @Override
+      public Mono<Response> isAllowed(String routeId, String id) {
+        return super.isAllowed(routeId, id)
+            .doOnNext(
+                response -> {
+                  if ("-1".equals(response.getHeaders().get(REMAINING_HEADER))) {
+                    failedOpen.increment();
+                  }
+                });
+      }
+    };
+  }
+
+  /**
+   * While Lettuce reconnects to a Redis that went away, it fails each command at once instead of
+   * holding it until the command timeout, so the limiter lets requests through without waiting.
+   */
+  @Bean
+  LettuceClientOptionsBuilderCustomizer failFastWhileRedisIsDown() {
+    return options -> options.disconnectedBehavior(DisconnectedBehavior.REJECT_COMMANDS);
   }
 }
