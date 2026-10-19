@@ -4,6 +4,9 @@ import dev.rgonz.payments.authorization.cards.CardCopies;
 import dev.rgonz.payments.authorization.cards.CardCopy;
 import dev.rgonz.payments.authorization.cards.CardHashing;
 import dev.rgonz.payments.authorization.network.Authorization.ResponseCode;
+import dev.rgonz.payments.authorization.network.AuthorizationEvent.AuthorizationApproved;
+import dev.rgonz.payments.authorization.network.AuthorizationEvent.AuthorizationReversed;
+import dev.rgonz.payments.authorization.outbox.Outbox;
 import java.security.SecureRandom;
 import java.time.Instant;
 import org.slf4j.Logger;
@@ -19,7 +22,8 @@ import reactor.core.publisher.Mono;
  * every answer, and cancels an Authorization when the Network sends a Reversal for it: the
  * platform's rules and race safety (M2 design), through R2DBC, so no call waits on a thread for the
  * database. Each method returns a {@link Mono} that does nothing until subscribed; its statements
- * run in one transaction, which commits when it completes.
+ * run in one transaction, which commits when it completes. An approval, and the Reversal of one,
+ * also write their event to the {@link Outbox} in that transaction.
  */
 @Repository
 class Authorizations {
@@ -32,12 +36,14 @@ class Authorizations {
   private final DatabaseClient db;
   private final CardCopies cards;
   private final CardHashing hashing;
+  private final Outbox outbox;
   private final SecureRandom random = new SecureRandom();
 
-  Authorizations(DatabaseClient db, CardCopies cards, CardHashing hashing) {
+  Authorizations(DatabaseClient db, CardCopies cards, CardHashing hashing, Outbox outbox) {
     this.db = db;
     this.cards = cards;
     this.hashing = hashing;
+    this.outbox = outbox;
   }
 
   /**
@@ -59,7 +65,7 @@ class Authorizations {
                     .flatMap(
                         inserted ->
                             inserted
-                                ? moveCard(charge.requestId(), decision)
+                                ? moveCard(charge, decision)
                                 : storedAnswer(charge.requestId())));
   }
 
@@ -96,8 +102,11 @@ class Authorizations {
   }
 
   // An approval moves the card only if it's still ACTIVE: a Charge with another request ID may have
-  // moved it first, after this one read it ACTIVE, and this one is then declined with 57.
-  private Mono<Authorization> moveCard(String requestId, Decision decision) {
+  // moved it first, after this one read it ACTIVE, and this one is then declined with 57. Its event
+  // is written only once the card has moved, after the card's lock, so one card's events take
+  // outbox ids in the order their transactions commit.
+  private Mono<Authorization> moveCard(Charge charge, Decision decision) {
+    var requestId = charge.requestId();
     var authorization = decision.authorization();
     var answer =
         authorization.status() != Authorization.Status.APPROVED
@@ -107,7 +116,17 @@ class Authorizations {
                 .flatMap(
                     moved -> {
                       if (moved) {
-                        return Mono.just(authorization);
+                        return outbox
+                            .append(
+                                decision.cardToken(),
+                                new AuthorizationApproved(
+                                    requestId,
+                                    decision.cardToken(),
+                                    charge.amountMinor(),
+                                    charge.currencyCode(),
+                                    authorization.authorizationCode(),
+                                    charge.acceptorId()))
+                            .thenReturn(authorization);
                       }
                       var declined = Authorization.declined(ResponseCode.NOT_PERMITTED);
                       return replaceAnswer(requestId, declined).thenReturn(declined);
@@ -118,20 +137,33 @@ class Authorizations {
   }
 
   // The request ID's row has committed, an Authorization's or an earlier Reversal's: the claim
-  // waited for it. One conditional update locks the row and checks it is still APPROVED.
+  // waited for it. One conditional update locks the row and checks it is still APPROVED, so only
+  // the first Reversal of an approval publishes one.
   private Mono<Void> reverseIfApproved(String requestId) {
     return db.sql(
             """
             update authorizations set status = :reversed
              where request_id = :requestId and status = :approved
-            returning card_token
+            returning card_token, amount_minor, currency, authorization_code, acceptor_id
             """)
         .bind("reversed", Authorization.Status.REVERSED.name())
         .bind("requestId", requestId)
         .bind("approved", Authorization.Status.APPROVED.name())
-        .map(row -> row.get("card_token", String.class))
+        .map(
+            row ->
+                new AuthorizationReversed(
+                    requestId,
+                    row.get("card_token", String.class),
+                    row.get("amount_minor", Long.class),
+                    row.get("currency", String.class),
+                    row.get("authorization_code", String.class),
+                    row.get("acceptor_id", String.class)))
         .one()
-        .flatMap(cards::moveToActive);
+        .flatMap(
+            reversed ->
+                cards
+                    .moveToActive(reversed.cardToken())
+                    .then(outbox.append(reversed.cardToken(), reversed)));
   }
 
   // Claims the request ID for a Reversal the way an Authorization claims it: whichever insert

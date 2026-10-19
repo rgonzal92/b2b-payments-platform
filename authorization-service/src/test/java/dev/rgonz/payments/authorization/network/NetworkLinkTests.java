@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.awaitility.Awaitility.await;
 
+import dev.rgonz.payments.authorization.AuthorizationsTopic;
 import dev.rgonz.payments.authorization.TestcontainersConfiguration;
 import dev.rgonz.payments.authorization.cards.CardCopies;
 import dev.rgonz.payments.authorization.cards.CardHashing;
@@ -39,6 +40,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -174,6 +176,44 @@ class NetworkLinkTests {
         .containsEntry("response_code", "00")
         .containsEntry("authorization_code", response.getAuthorizationCode())
         .containsEntry("status", "APPROVED");
+  }
+
+  // The card's events, in the order they reached the topic: its card on file, then the approval.
+  @Test
+  void anApprovalIsPublishedWithWhatThePlatformNeedsToMatchItsClearing() {
+    var card = issuedCard();
+    var request = chargeOn(card);
+    var requestId = request.getRetrievalReferenceNumber();
+    var response = authorize(request);
+
+    var records = authorizationsOf(card, 2);
+
+    assertThat(records)
+        .extracting(AuthorizationsTopic::eventType)
+        .containsExactly("CardOnFile", "AuthorizationApproved");
+    assertThat(records.get(1).value())
+        .isEqualTo(authorizationJson(requestId, card, response.getAuthorizationCode()));
+  }
+
+  // Had the decline written an event, it would have reached the card's partition before the
+  // approval that follows it.
+  @Test
+  void aDeclineIsNotPublished() {
+    var card = issuedCard();
+    assertThat(authorize(chargeOn(card).setAmountMinor(AMOUNT + 1)).getResponseCode())
+        .isEqualTo("61");
+    var approved = chargeOn(card);
+    var response = authorize(approved);
+
+    var records = authorizationsOf(card, 2);
+
+    assertThat(records)
+        .extracting(AuthorizationsTopic::eventType)
+        .containsExactly("CardOnFile", "AuthorizationApproved");
+    assertThat(records.get(1).value())
+        .isEqualTo(
+            authorizationJson(
+                approved.getRetrievalReferenceNumber(), card, response.getAuthorizationCode()));
   }
 
   @Test
@@ -450,6 +490,34 @@ class NetworkLinkTests {
     }
 
     @Test
+    void theReversalOfAnApprovedAuthorizationIsPublishedAfterItsApprovalAndOnlyOnce() {
+      var card = issuedCard();
+      var charge = chargeOn(card);
+      var requestId = charge.getRetrievalReferenceNumber();
+      var approval = authorize(charge);
+      reverse(requestId);
+      reverse(requestId);
+      var next = chargeOn(card);
+      var nextApproval = authorize(next);
+
+      var records = authorizationsOf(card, 4);
+
+      assertThat(records)
+          .extracting(AuthorizationsTopic::eventType)
+          .containsExactly(
+              "CardOnFile",
+              "AuthorizationApproved",
+              "AuthorizationReversed",
+              "AuthorizationApproved");
+      var reversed = authorizationJson(requestId, card, approval.getAuthorizationCode());
+      assertThat(records.get(2).value()).isEqualTo(reversed);
+      assertThat(records.get(3).value())
+          .isEqualTo(
+              authorizationJson(
+                  next.getRetrievalReferenceNumber(), card, nextApproval.getAuthorizationCode()));
+    }
+
+    @Test
     void aDeclinedAuthorizationIsAcknowledgedTwiceAndNothingChanges() {
       var card = issuedCard();
       var charge = chargeOn(card).setAmountMinor(AMOUNT + 1);
@@ -570,6 +638,19 @@ class NetworkLinkTests {
       assertThat(grpcStatusOf(() -> reverse(requestId))).isEqualTo(Status.Code.INVALID_ARGUMENT);
       assertThat(recordedCount(requestId)).isZero();
     }
+  }
+
+  private List<ConsumerRecord<String, String>> authorizationsOf(Card card, int count) {
+    return new AuthorizationsTopic(kafka).awaitRecords(card.cardToken(), count);
+  }
+
+  // An approved or reversed Authorization's event, as the platform will read it: the Charge as the
+  // Network sent it, the card it's on and the approval's authorization code.
+  private static String authorizationJson(String requestId, Card card, String authorizationCode) {
+    return """
+        {"requestId":"%s","cardToken":"%s","amountMinorUnits":%d,"currency":"USD",\
+        "authorizationCode":"%s","acceptorId":"%s"}"""
+        .formatted(requestId, card.cardToken(), AMOUNT, authorizationCode, ACCEPTOR_ID);
   }
 
   // Sends every request at once, each from its own thread, and returns the answers in order.

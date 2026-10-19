@@ -3,6 +3,7 @@ package dev.rgonz.payments.authorization.cards;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import dev.rgonz.payments.authorization.AuthorizationsTopic;
 import dev.rgonz.payments.authorization.TestcontainersConfiguration;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.r2dbc.core.DatabaseClient;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -46,6 +48,7 @@ class CardsTopicTests {
   private static final String GROUP = "authorization-service";
 
   @Autowired CardCopies copies;
+  @Autowired DatabaseClient db;
   @Autowired KafkaContainer kafka;
   @Autowired PostgreSQLContainer postgres;
 
@@ -87,6 +90,34 @@ class CardsTopicTests {
                 Currency.getInstance("USD"),
                 "ACCEPTOR-1",
                 CardStatus.ACTIVE));
+  }
+
+  // The platform's saga waits for it before sending the Supplier the card (M5 design, "The gaps").
+  @Test
+  void aNewlyStoredCardIsPublishedAsOnFileOnce() {
+    var cardToken = newCardToken();
+
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    awaitAllConsumed();
+
+    var record = new AuthorizationsTopic(kafka).awaitRecords(cardToken, 1).getFirst();
+    assertThat(AuthorizationsTopic.eventType(record)).isEqualTo("CardOnFile");
+    assertThat(record.value()).isEqualTo("{\"cardToken\":\"" + cardToken + "\"}");
+    assertThat(outboxRows(cardToken)).isOne();
+  }
+
+  // The Supplier never gets a card that ended first, so the platform doesn't wait for it.
+  @Test
+  void aCardThatEndedBeforeItsCardIssuedIsNotOnFile() {
+    var cardToken = newCardToken();
+    send(cardToken, "CardCancelled", "{\"cardToken\":\"" + cardToken + "\"}");
+    awaitCopy(cardToken, CardStatus.CANCELLED);
+
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    awaitAllConsumed();
+
+    assertThat(outboxRows(cardToken)).isZero();
   }
 
   @Test
@@ -243,6 +274,15 @@ class CardsTopicTests {
   private CardStatus status(String cardToken) {
     var copy = copies.find(cardToken).block();
     return copy == null ? null : copy.status();
+  }
+
+  // The events the copy wrote to the outbox for the card, in the same transaction as its write.
+  private long outboxRows(String cardToken) {
+    return db.sql("select count(*) as n from outbox where card_token = :cardToken")
+        .bind("cardToken", cardToken)
+        .map(row -> row.get("n", Long.class))
+        .one()
+        .block();
   }
 
   // The service's consumer group has committed every message the topic holds: whatever was sent
