@@ -39,6 +39,11 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           env:
+            # Paketo's memory calculator caps Netty's direct buffers at 10M, which the Gateway and authorization-service
+            # run out of in a few requests (OutOfDirectMemoryError, cut-off answers); it keeps a size set here and
+            # takes it out of the heap instead.
+            - name: JAVA_TOOL_OPTIONS
+              value: -XX:MaxDirectMemorySize=64M
             {{- /* Values may name others, such as {{ .Values.global.repoRoot }}. */}}
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
