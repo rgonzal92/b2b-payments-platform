@@ -2,6 +2,8 @@ package dev.rgonz.payments.platform.reconciliation;
 
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -15,15 +17,25 @@ import org.springframework.stereotype.Component;
 @ConditionalOnBooleanProperty(name = "reconciliation.daily-run.enabled", matchIfMissing = true)
 class ReconciliationSchedule {
 
+  private static final Logger log = LoggerFactory.getLogger(ReconciliationSchedule.class);
+
   private final Reconciliations reconciliations;
 
   ReconciliationSchedule(Reconciliations reconciliations) {
     this.reconciliations = reconciliations;
   }
 
-  // Every instance runs it: a second run of the day finds the first's Breaks and raises none.
+  // Every instance tries: the one that takes the lock runs it, the others skip it.
   @Scheduled(cron = "0 5 0 * * *", zone = "UTC")
   void reconcileYesterday() {
-    reconciliations.run(LocalDate.now(ZoneOffset.UTC).minusDays(1));
+    var yesterday = LocalDate.now(ZoneOffset.UTC).minusDays(1);
+    try {
+      reconciliations.run(yesterday);
+    } catch (Reconciliations.RunInProgressException e) {
+      log.info(
+          "Another Reconciliation is running, on this pod or another, so this pod skipped the"
+              + " Reconciliation of {}",
+          yesterday);
+    }
   }
 }

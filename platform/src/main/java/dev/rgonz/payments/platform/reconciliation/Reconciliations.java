@@ -1,7 +1,10 @@
 package dev.rgonz.payments.platform.reconciliation;
 
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.LocalDate;
 import java.util.UUID;
+import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
@@ -22,12 +25,17 @@ class Reconciliations {
 
   private static final Logger log = LoggerFactory.getLogger(Reconciliations.class);
 
+  /** The advisory lock a run holds, keyed by {@code hashtext} of this name. */
+  static final String LOCK = "reconciliation";
+
   private final JobOperator jobOperator;
   private final Job reconciliation;
+  private final DataSource dataSource;
 
-  Reconciliations(JobOperator jobOperator, Job reconciliation) {
+  Reconciliations(JobOperator jobOperator, Job reconciliation, DataSource dataSource) {
     this.jobOperator = jobOperator;
     this.reconciliation = reconciliation;
+    this.dataSource = dataSource;
   }
 
   /** What a run found: every Break, and of those, the ones it raised. */
@@ -45,11 +53,68 @@ class Reconciliations {
     }
   }
 
+  /** Another run, on this pod or another, holds the lock, so this one didn't start. */
+  static class RunInProgressException extends RuntimeException {
+    RunInProgressException(LocalDate businessDate) {
+      super(
+          "Another Reconciliation is running, so the Reconciliation of "
+              + businessDate
+              + " didn't start");
+    }
+  }
+
   /**
-   * Runs the Reconciliation of the Business Date and answers when it is done. Not transactional:
-   * each of the job's chunks commits on its own.
+   * Runs the Reconciliation of the Business Date and answers when it is done, unless another run
+   * holds the lock. Not transactional: each of the job's chunks commits on its own.
    */
   RunSummary run(LocalDate businessDate) {
+    // A session-level advisory lock on a connection of its own, outside the job's transactions and
+    // held for the whole run: one run at a time across pods. PostgreSQL drops it with the
+    // connection.
+    try (var connection = dataSource.getConnection()) {
+      if (!advisoryLock(connection, "pg_try_advisory_lock")) {
+        throw new RunInProgressException(businessDate);
+      }
+      try {
+        return runLocked(businessDate);
+      } finally {
+        unlock(connection, businessDate);
+      }
+    } catch (SQLException e) {
+      throw new IllegalStateException("Couldn't lock the Reconciliation of " + businessDate, e);
+    }
+  }
+
+  // The pool keeps the connection open, so without this the lock would outlive the run. When the
+  // unlock fails, the connection is aborted instead, out of the pool, which ends its session and so
+  // the lock; the run's own outcome stands.
+  private static void unlock(Connection connection, LocalDate businessDate) {
+    try {
+      advisoryLock(connection, "pg_advisory_unlock");
+    } catch (SQLException e) {
+      log.warn(
+          "Couldn't release the Reconciliation lock after the run of {}; closing its connection",
+          businessDate,
+          e);
+      try {
+        connection.abort(Runnable::run);
+      } catch (SQLException ignored) {
+        // Already closed: its session, and the lock, ended with it.
+      }
+    }
+  }
+
+  private static boolean advisoryLock(Connection connection, String function) throws SQLException {
+    try (var statement = connection.prepareStatement("select " + function + "(hashtext(?))")) {
+      statement.setString(1, LOCK);
+      try (var result = statement.executeQuery()) {
+        result.next();
+        return result.getBoolean(1);
+      }
+    }
+  }
+
+  private RunSummary runLocked(LocalDate businessDate) {
     var runId = UUID.randomUUID();
     var parameters =
         new JobParametersBuilder()
