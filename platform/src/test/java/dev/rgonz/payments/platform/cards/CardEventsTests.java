@@ -137,7 +137,17 @@ class CardEventsTests {
       docker.unpauseContainerCmd(kafka.getContainerId()).exec();
     }
 
-    EventResubmission.runNow(context);
+    // A resend right after the unpause can join a batch the producer is still expiring from the
+    // outage and fail with it; the schedule would retry it a minute later, so the test retries each
+    // second. A resend still under way is RESUBMITTED, so a pass doesn't send it again beside it.
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .pollInterval(Duration.ofSeconds(1))
+        .untilAsserted(
+            () -> {
+              EventResubmission.runNow(context);
+              assertThat(publicationStatus("CardIssued", cardToken)).isEqualTo("COMPLETED");
+            });
 
     assertThat(header(awaitRecords(cardToken, 1).getFirst(), EVENT_TYPE)).isEqualTo("CardIssued");
     awaitCompletedEvent("CardIssued", cardToken);
