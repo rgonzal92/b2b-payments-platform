@@ -43,6 +43,7 @@
 	<properties>
 		<java.version>25</java.version>
 		<pact.version>4.7.5</pact.version>
+		<resilience4j.version>2.4.0</resilience4j.version>
 		<!-- Only the apps run: `./mvnw -pl platform -am spring-boot:run` builds contracts on the way. -->
 		<spring-boot.run.skip>true</spring-boot.run.skip>
 		<sonar.organization>rgonzal92</sonar.organization>
@@ -76,6 +77,21 @@
 				<groupId>au.com.dius.pact.provider</groupId>
 				<artifactId>junit5</artifactId>
 				<version>${pact.version}</version>
+			</dependency>
+			<!-- Resilience4j (M5, #93): the service's circuit breaker and time limiter around its database. 2.4.0 is the
+			     first release with a Spring Boot 4 starter; the BOM pins its modules (Reactor, Micrometer) to the same
+			     version, but doesn't list the Boot 4 starter. -->
+			<dependency>
+				<groupId>io.github.resilience4j</groupId>
+				<artifactId>resilience4j-bom</artifactId>
+				<version>${resilience4j.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+			<dependency>
+				<groupId>io.github.resilience4j</groupId>
+				<artifactId>resilience4j-spring-boot4</artifactId>
+				<version>${resilience4j.version}</version>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
