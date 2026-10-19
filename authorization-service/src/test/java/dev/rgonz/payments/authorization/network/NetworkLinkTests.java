@@ -31,7 +31,9 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -94,12 +96,15 @@ class NetworkLinkTests {
     @Bean
     @Primary
     JwtDecoder networkTokens() {
-      return token ->
-          switch (token) {
-            case "network-token" -> jwt(token, "network");
-            case "buyer-token" -> jwt(token, "buyer");
-            default -> throw new BadJwtException("Not a test token.");
-          };
+      return token -> {
+        // The token check runs on the call's gRPC thread, like the handler.
+        TOKEN_CHECK_THREADS.add(Thread.currentThread().getName());
+        return switch (token) {
+          case "network-token" -> jwt(token, "network");
+          case "buyer-token" -> jwt(token, "buyer");
+          default -> throw new BadJwtException("Not a test token.");
+        };
+      };
     }
 
     private static Jwt jwt(String token, String role) {
@@ -110,6 +115,9 @@ class NetworkLinkTests {
           .build();
     }
   }
+
+  // The threads every token check ran on, recorded by NetworkTokens.
+  private static final Queue<String> TOKEN_CHECK_THREADS = new ConcurrentLinkedQueue<>();
 
   /** A card as the test issued it, with the PAN the Network would send. */
   private record Card(String cardToken, String pan, Instant expiresAt) {}
@@ -334,6 +342,7 @@ class NetworkLinkTests {
   @Test
   void callsWaitingOnTheDatabaseHoldNoThreadSoAnotherCallIsStillAnswered() throws Exception {
     var held = GrpcCallThreads.THREADS + 1;
+    TOKEN_CHECK_THREADS.clear();
     var requests = new ArrayList<AuthorizationRequest>();
     for (var i = 0; i < held; i++) {
       requests.add(chargeOn(issuedCard()).build());
@@ -357,6 +366,11 @@ class NetworkLinkTests {
       var requestId = UUID.randomUUID().toString();
       assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
       assertThat(answers).noneMatch(Future::isDone);
+      // Every call ran on the fixed pool: with gRPC's unbounded default the Reversal would be
+      // answered whatever the handler did, and the test would prove nothing.
+      assertThat(TOKEN_CHECK_THREADS)
+          .hasSize(held + 1)
+          .allMatch(thread -> thread.startsWith("grpc-call-"));
 
       lock.rollback();
       for (var answer : answers) {
