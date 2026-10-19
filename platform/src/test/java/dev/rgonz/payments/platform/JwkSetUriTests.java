@@ -27,62 +27,61 @@ import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
 /**
  * In the cluster a token names Keycloak's host address as its issuer, which the pods can't reach:
- * with {@code jwk-set-uri} set, Spring Boot's decoder fetches the signing keys from it and still
- * checks {@code iss} against {@code issuer-uri}, never asking the issuer for its discovery
- * document.
+ * with {@code jwk-set-uri} set, Spring Boot's decoder, which the platform uses unchanged, fetches
+ * the signing keys from it and still checks {@code iss} against {@code issuer-uri}, never asking
+ * the issuer for its discovery document. Boot's resource-server auto-configuration alone, not the
+ * platform's whole context.
  */
 class JwkSetUriTests {
 
   // An address nothing answers on.
   private static final String ISSUER = "http://keycloak.invalid:8180/realms/payments";
 
+  private final ApplicationContextRunner app =
+      new ApplicationContextRunner()
+          .withConfiguration(AutoConfigurations.of(OAuth2ResourceServerAutoConfiguration.class));
+
   private final Queue<String> requested = new ConcurrentLinkedQueue<>();
   private RSAKey signingKey;
-  private HttpServer jwks;
+  private HttpServer keycloak;
 
   @BeforeEach
-  void serveTheKeys() throws Exception {
-    signingKey = new RSAKeyGenerator(2048).keyID("platform-test-key").generate();
-    var body = new JWKSet(signingKey.toPublicJWK()).toString().getBytes(StandardCharsets.UTF_8);
-    jwks = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-    jwks.createContext(
+  void startKeycloak() throws Exception {
+    signingKey = new RSAKeyGenerator(2048).keyID("test-key").generate();
+    var jwks = new JWKSet(signingKey.toPublicJWK()).toString().getBytes(StandardCharsets.UTF_8);
+    keycloak = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    keycloak.createContext(
         "/",
         exchange -> {
           requested.add(exchange.getRequestURI().getPath());
           exchange.getResponseHeaders().add("Content-Type", "application/json");
-          exchange.sendResponseHeaders(200, body.length);
-          exchange.getResponseBody().write(body);
+          exchange.sendResponseHeaders(200, jwks.length);
+          exchange.getResponseBody().write(jwks);
           exchange.close();
         });
-    jwks.start();
+    keycloak.start();
   }
 
   @AfterEach
-  void stopServingTheKeys() {
-    jwks.stop(0);
+  void stopKeycloak() {
+    keycloak.stop(0);
   }
-
-  private final ApplicationContextRunner platform =
-      new ApplicationContextRunner()
-          .withConfiguration(AutoConfigurations.of(OAuth2ResourceServerAutoConfiguration.class));
 
   @Test
   void aTokenFromTheIssuerIsAcceptedWithKeysFromTheJwkSetUri() {
-    platform
-        .withPropertyValues(issuerUri(), jwkSetUri())
+    app.withPropertyValues(issuerUri(), jwkSetUri())
         .run(
             context -> {
-              var jwt = context.getBean(JwtDecoder.class).decode(signedBy(ISSUER));
+              var jwt = context.getBean(JwtDecoder.class).decode(token(ISSUER));
 
               assertThat(jwt.getSubject()).isEqualTo("service-account-acme-erp");
-              assertThat(requested).containsOnly("/certs");
+              assertThat(requested).containsOnly("/realms/payments/protocol/openid-connect/certs");
             });
   }
 
   @Test
   void aTokenFromAnotherIssuerIsRefused() {
-    platform
-        .withPropertyValues(issuerUri(), jwkSetUri())
+    app.withPropertyValues(issuerUri(), jwkSetUri())
         .run(
             context ->
                 assertThatExceptionOfType(JwtValidationException.class)
@@ -90,7 +89,7 @@ class JwkSetUriTests {
                         () ->
                             context
                                 .getBean(JwtDecoder.class)
-                                .decode(signedBy("http://elsewhere.invalid/realms/payments")))
+                                .decode(token("http://elsewhere.invalid/realms/payments")))
                     .withMessageContaining("iss"));
   }
 
@@ -100,11 +99,11 @@ class JwkSetUriTests {
 
   private String jwkSetUri() {
     return "spring.security.oauth2.resourceserver.jwt.jwk-set-uri=http://127.0.0.1:"
-        + jwks.getAddress().getPort()
-        + "/certs";
+        + keycloak.getAddress().getPort()
+        + "/realms/payments/protocol/openid-connect/certs";
   }
 
-  private String signedBy(String issuer) {
+  private String token(String issuer) {
     var claims =
         JwtClaimsSet.builder()
             .issuer(issuer)

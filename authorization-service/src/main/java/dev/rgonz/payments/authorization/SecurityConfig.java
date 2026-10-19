@@ -50,7 +50,8 @@ class SecurityConfig {
   // one in a WebFlux app. Built at the first call, not at startup, so the service starts while
   // Keycloak is down, as Spring Boot's own decoder does. With jwk-set-uri set, as in the cluster,
   // the keys come from it and iss is still checked against issuer-uri, which isn't fetched: as
-  // Spring Boot's own decoder does with both set.
+  // Spring Boot's own decoder does with both set. Unlike Boot's, it ignores jwt.audiences,
+  // jwt.jws-algorithms (RS256 only, Keycloak's) and any OAuth2TokenValidator beans.
   @Bean
   JwtDecoder jwtDecoder(
       @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}") String issuer,
