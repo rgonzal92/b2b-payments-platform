@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -162,6 +163,17 @@ abstract class EndToEndHarness {
     return keycloak.getAuthServerUrl() + "/realms/payments";
   }
 
+  // No OTLP receiver runs here: every app exports nothing. Metrics would otherwise go to
+  // localhost:4318 by default, and any OTEL_EXPORTER_OTLP_* variable set in the environment would
+  // turn traces and logs on. Only the OTLP span exporter is off, not tracing export as a whole:
+  // Spring Boot turns trace propagation off with that, and the Charge's trace must still cross
+  // gRPC and Kafka (#96).
+  private static final List<String> NO_OTLP_EXPORT =
+      List.of(
+          "management.otlp.metrics.export.enabled=false",
+          "management.tracing.export.otlp.enabled=false",
+          "management.logging.export.otlp.enabled=false");
+
   // Starts the app in this JVM with its own application.properties and the given properties on
   // top, as command-line arguments, which outrank the file. Docker Compose support is an optional
   // dependency of both apps, so it isn't on this classpath and starts nothing.
@@ -170,16 +182,10 @@ abstract class EndToEndHarness {
         Stream.concat(
                 Stream.of(
                     "spring.config.location=" + ownApplicationProperties(application),
-                    // No OTLP receiver runs here: export nothing. Metrics would otherwise go to
-                    // localhost:4318 by default, and any OTEL_EXPORTER_OTLP_* variable set in the
-                    // environment would turn traces and logs on.
-                    "management.otlp.metrics.export.enabled=false",
-                    "management.tracing.export.enabled=false",
-                    "management.logging.export.otlp.enabled=false",
                     // Logback is set up once per JVM, by the first app to start, so every line
                     // would carry the platform's name; the logger's package tells the apps apart.
                     "logging.include-application-name=false"),
-                Arrays.stream(properties))
+                Stream.concat(NO_OTLP_EXPORT.stream(), Arrays.stream(properties)))
             .map(property -> "--" + property)
             .toArray(String[]::new);
     // The main class names the app in its log lines; Boot would guess Surefire's.
@@ -201,18 +207,20 @@ abstract class EndToEndHarness {
                     Path.of(System.getProperty("authorizationServiceJar"))
                         .toAbsolutePath()
                         .toString()),
-                Stream.of(
-                        "server.port=" + servicePort,
-                        "spring.grpc.server.port=" + serviceGrpcPort,
-                        "spring.r2dbc.url=" + jdbcUrl.replaceFirst("^jdbc:", "r2dbc:"),
-                        "spring.r2dbc.username=" + authorizationPostgres.getUsername(),
-                        "spring.r2dbc.password=" + authorizationPostgres.getPassword(),
-                        "spring.flyway.url=" + jdbcUrl,
-                        "spring.flyway.user=" + authorizationPostgres.getUsername(),
-                        "spring.flyway.password=" + authorizationPostgres.getPassword(),
-                        "spring.kafka.bootstrap-servers=" + kafka.getBootstrapServers(),
-                        "spring.security.oauth2.resourceserver.jwt.issuer-uri=" + issuerUri,
-                        "vault.hash-key=" + HASH_KEY)
+                Stream.concat(
+                        Stream.of(
+                            "server.port=" + servicePort,
+                            "spring.grpc.server.port=" + serviceGrpcPort,
+                            "spring.r2dbc.url=" + jdbcUrl.replaceFirst("^jdbc:", "r2dbc:"),
+                            "spring.r2dbc.username=" + authorizationPostgres.getUsername(),
+                            "spring.r2dbc.password=" + authorizationPostgres.getPassword(),
+                            "spring.flyway.url=" + jdbcUrl,
+                            "spring.flyway.user=" + authorizationPostgres.getUsername(),
+                            "spring.flyway.password=" + authorizationPostgres.getPassword(),
+                            "spring.kafka.bootstrap-servers=" + kafka.getBootstrapServers(),
+                            "spring.security.oauth2.resourceserver.jwt.issuer-uri=" + issuerUri,
+                            "vault.hash-key=" + HASH_KEY),
+                        NO_OTLP_EXPORT.stream())
                     .map(property -> "--" + property))
             .toList();
     try {

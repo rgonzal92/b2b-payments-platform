@@ -311,7 +311,10 @@ class CardEventsTests {
   }
 
   // The event as Spring Modulith stored it in its publication registry, the platform's outbox,
-  // completed only once Kafka had it.
+  // completed only once Kafka had it. Modulith marks it completed when the send's future completes,
+  // after the broker acknowledged it, so a consumer can read the record before the row is
+  // completed: until then the query finds nothing, and the await tries again. More than one
+  // completed row still fails at once.
   private String awaitCompletedEvent(String type, String cardToken) {
     var stored = new AtomicReference<String>();
     await()
@@ -329,7 +332,11 @@ class CardEventsTests {
                         .param("eventType", "dev.rgonz.payments.platform.cards." + type)
                         .param("cardToken", "%" + cardToken + "%")
                         .query(String.class)
-                        .single()));
+                        .optional()
+                        .orElseThrow(
+                            () ->
+                                new AssertionError(
+                                    "No completed " + type + " for " + cardToken + " yet"))));
     return stored.get();
   }
 }

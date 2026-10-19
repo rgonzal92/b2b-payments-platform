@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.rgonz.payments.authorization.AuthorizationsTopic;
 import dev.rgonz.payments.authorization.TestcontainersConfiguration;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
 import java.nio.charset.StandardCharsets;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -16,6 +19,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -103,6 +107,7 @@ class OutboxRelayTests {
   @Autowired FlakyKafkaTemplate flakyKafka;
   @Autowired KafkaContainer kafka;
   @Autowired PostgreSQLContainer postgres;
+  @Autowired ObservationRegistry observations;
 
   @AfterEach
   void healKafka() {
@@ -133,6 +138,54 @@ class OutboxRelayTests {
   // The platform counts a card's 7 days to clear from the record's timestamp: the time the event
   // was written with the approved Authorization, not when a pass got it out, perhaps hours later
   // after Kafka was down.
+  // No trace was current when the event was written: the row keeps none, and is sent all the same.
+  @Test
+  void anEventWrittenOutsideATraceIsStoredWithoutOneAndStillSent() {
+    var cardToken = newCardToken();
+    outbox.append(cardToken, new First(cardToken)).block();
+    assertThat(traceParentOf(cardToken)).isNull();
+
+    assertThat(relay.relay().block()).isOne();
+
+    assertThat(awaitRecords(cardToken, 1))
+        .extracting(AuthorizationsTopic::eventType)
+        .containsExactly("First");
+  }
+
+  // The relay's span for a row's send lasts until Kafka answers, so a send that fails is recorded
+  // on it, in the row's trace.
+  @Test
+  void aFailedSendIsRecordedOnTheRelaysSpanInTheRowsTrace() {
+    var cardToken = newCardToken();
+    outbox.append(cardToken, new First(cardToken)).block();
+    setTraceParent(cardToken, "00-00000000000000000000000000000096-0000000000000096-01");
+    flakyKafka.failBeforeKafka.add(cardToken + "/First");
+    var stopped = new ConcurrentLinkedQueue<Observation.Context>();
+    observations
+        .observationConfig()
+        .observationHandler(
+            new ObservationHandler<>() {
+              @Override
+              public boolean supportsContext(Observation.Context context) {
+                return "outbox.relay".equals(context.getName());
+              }
+
+              @Override
+              public void onStop(Observation.Context context) {
+                stopped.add(context);
+              }
+            });
+
+    assertThat(relay.relay().block()).isZero();
+
+    assertThat(stopped)
+        .singleElement()
+        .satisfies(context -> assertThat(context.getError()).isInstanceOf(TimeoutException.class));
+    // Once Kafka answers, the row goes out, leaving nothing for the other tests' passes.
+    flakyKafka.failBeforeKafka.clear();
+    assertThat(relay.relay().block()).isOne();
+  }
+
   @Test
   void aRelayPassSendsTheTimeTheEventWasWrittenAsTheRecordsTimestamp() {
     var cardToken = newCardToken();
@@ -223,6 +276,37 @@ class OutboxRelayTests {
         var statement =
             connection.prepareStatement("update outbox set created_at = ? where card_token = ?")) {
       statement.setObject(1, writtenAt.atOffset(ZoneOffset.UTC));
+      statement.setString(2, cardToken);
+      assertThat(statement.executeUpdate()).isEqualTo(1);
+    } catch (SQLException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  private String traceParentOf(String cardToken) {
+    try (var connection =
+            DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        var statement =
+            connection.prepareStatement("select trace_parent from outbox where card_token = ?")) {
+      statement.setString(1, cardToken);
+      try (var result = statement.executeQuery()) {
+        assertThat(result.next()).isTrue();
+        return result.getString(1);
+      }
+    } catch (SQLException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  private void setTraceParent(String cardToken, String traceParent) {
+    try (var connection =
+            DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        var statement =
+            connection.prepareStatement(
+                "update outbox set trace_parent = ? where card_token = ?")) {
+      statement.setString(1, traceParent);
       statement.setString(2, cardToken);
       assertThat(statement.executeUpdate()).isEqualTo(1);
     } catch (SQLException e) {

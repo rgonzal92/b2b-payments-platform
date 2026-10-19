@@ -162,19 +162,24 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
     var observer = (ServerCallStreamObserver<T>) responseObserver;
     // Without a handler, answering a call the Network cancelled would throw.
     observer.setOnCancelHandler(() -> log.info("{} {} cancelled by the Network", call, requestId));
-    answer.subscribe(
-        response -> {
-          if (!observer.isCancelled()) {
-            observer.onNext(response);
-            observer.onCompleted();
-          }
-        },
-        error -> {
-          log.error("{} {} failed", call, requestId, error);
-          if (!observer.isCancelled()) {
-            observer.onError(Status.UNKNOWN.asRuntimeException());
-          }
-        });
+    // contextCapture takes the call's trace, current on this thread, into the Mono's context, and
+    // Reactor makes it current again on whichever thread runs each step, so the outbox row records
+    // it (#96).
+    answer
+        .contextCapture()
+        .subscribe(
+            response -> {
+              if (!observer.isCancelled()) {
+                observer.onNext(response);
+                observer.onCompleted();
+              }
+            },
+            error -> {
+              log.error("{} {} failed", call, requestId, error);
+              if (!observer.isCancelled()) {
+                observer.onError(Status.UNKNOWN.asRuntimeException());
+              }
+            });
   }
 
   // A call the open breaker refused never reached the database, so it has nothing to reverse, and
@@ -198,6 +203,8 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
     reversal(requestId)
         .retryWhen(selfReversalRetry)
         .timeout(selfReversalGiveUpAfter)
+        // In the trace of the call that answered 91.
+        .contextCapture()
         .subscribe(
             null,
             error ->
