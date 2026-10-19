@@ -12,6 +12,7 @@
 	<description>Answers the Network's Authorizations without the platform (M5, ADR-0016).</description>
 	<properties>
 		<spring-boot.run.skip>false</spring-boot.run.skip>
+		<spring-boot.build-image.skip>false</spring-boot.build-image.skip>
 	</properties>
 	<dependencies>
 		<!-- WebFlux serves only the service's HTTP (actuator, health); the database is reached through R2DBC. -->

@@ -12,6 +12,7 @@
 	<description>The edge in front of the platform's REST API: routes /v1 and refuses a request without a valid token (M6, ADR-0017).</description>
 	<properties>
 		<spring-boot.run.skip>false</spring-boot.run.skip>
+		<spring-boot.build-image.skip>false</spring-boot.build-image.skip>
 	</properties>
 	<dependencies>
 		<!-- Spring Cloud Gateway's server on WebFlux and Netty; the release train is pinned in the root POM. -->
