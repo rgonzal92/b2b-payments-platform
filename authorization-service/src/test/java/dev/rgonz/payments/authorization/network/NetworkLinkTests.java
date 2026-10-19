@@ -15,9 +15,7 @@ import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc.IssuerAuthorizationBlockingStub;
 import dev.rgonz.payments.contracts.network.ReversalRequest;
 import dev.rgonz.payments.contracts.network.ReversalResponse;
-import io.github.resilience4j.timelimiter.TimeLimiter;
-import io.github.resilience4j.timelimiter.TimeLimiterConfig;
-import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.grpc.ManagedChannel;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -34,6 +32,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
 import java.util.UUID;
@@ -67,7 +66,7 @@ import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.security.oauth2.jwt.BadJwtException;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.testcontainers.DockerClientFactory;
+import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -88,6 +87,11 @@ class NetworkLinkTests {
   // DE 14, as printed on the card.
   private static final DateTimeFormatter EXPIRATION_DATE =
       DateTimeFormatter.ofPattern("yyMM").withZone(ZoneOffset.UTC);
+  // For tests that hold the database on purpose: long enough that a held Charge isn't answered 91.
+  private static final String LONG_TIME_LIMIT =
+      "resilience4j.timelimiter.instances."
+          + IssuerAuthorizationService.DATABASE
+          + ".timeout-duration=30s";
   // Low-entropy fake PANs, one per card: 990000 followed by a counter.
   private static final AtomicLong PANS = new AtomicLong();
 
@@ -134,7 +138,6 @@ class NetworkLinkTests {
   @Autowired MeterRegistry meters;
   @Autowired KafkaContainer kafka;
   @Autowired PostgreSQLContainer postgres;
-  @Autowired TimeLimiterRegistry timeLimiters;
 
   @LocalGrpcServerPort int port;
 
@@ -272,38 +275,6 @@ class NetworkLinkTests {
     assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
   }
 
-  // The Charge reads the card ACTIVE, then CardCleared commits before it moves the card: a lock on
-  // the card's row queues CardCleared's write first and the Charge's move behind it, so the move
-  // finds the card CLEARED and the Charge is declined.
-  @Test
-  void aCardClearedWhileItsChargeIsMovingItIsDeclinedAndStaysCleared() throws Exception {
-    var card = issuedCard();
-    var charge = chargeOn(card).build();
-
-    try (var unlimited = timeLimitLifted();
-        var network = Executors.newSingleThreadExecutor();
-        var lock = connection()) {
-      lock.setAutoCommit(false);
-      try (var statement =
-          lock.prepareStatement("select 1 from card_copy where card_token = ? for update")) {
-        statement.setString(1, card.cardToken());
-        statement.executeQuery().close();
-      }
-      send(card.cardToken(), "CardCleared", "{\"cardToken\":\"" + card.cardToken() + "\"}");
-      await().atMost(Duration.ofSeconds(10)).until(() -> lockWaiters() >= 1);
-      var late = network.submit(() -> authorize(charge));
-      await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 2);
-
-      lock.rollback();
-
-      assertThat(late.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("57");
-    }
-    assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
-    assertThat(recorded(charge.getRetrievalReferenceNumber()))
-        .containsEntry("response_code", "57")
-        .containsEntry("status", "DECLINED");
-  }
-
   @Test
   void aCardCopiedWithoutAnAcceptorIdIsDeclinedAsNotPermitted() {
     var card = issuedCard(null);
@@ -427,50 +398,6 @@ class NetworkLinkTests {
     assertThat(statusOf(card)).isEqualTo(CardStatus.AUTHORIZED);
   }
 
-  // The proof that the gRPC handler only hands each call to Reactor: Charges stuck on a locked
-  // table outnumber the gRPC call threads, yet a Reversal still gets its answer. A handler that
-  // waited for the database would hold every call thread, and the Reversal would never start.
-  @Test
-  void callsWaitingOnTheDatabaseHoldNoThreadSoAnotherCallIsStillAnswered() throws Exception {
-    var held = GrpcCallThreads.THREADS + 1;
-    TOKEN_CHECK_THREADS.clear();
-    var requests = new ArrayList<AuthorizationRequest>();
-    for (var i = 0; i < held; i++) {
-      requests.add(chargeOn(issuedCard()).build());
-    }
-
-    // Fewer held Charges than R2DBC's pool has connections (10 by default), so one is left for the
-    // Reversal. Closed in reverse order: the lock's connection rolls back before the executor
-    // waits.
-    try (var unlimited = timeLimitLifted();
-        var network = Executors.newFixedThreadPool(held);
-        var lock = connection()) {
-      lock.setAutoCommit(false);
-      try (var statement = lock.createStatement()) {
-        statement.execute("lock table card_copy in access exclusive mode");
-      }
-      var answers = new ArrayList<Future<AuthorizationResponse>>();
-      for (var request : requests) {
-        answers.add(network.submit(() -> authorize(request)));
-      }
-      await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= held);
-
-      var requestId = UUID.randomUUID().toString();
-      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
-      assertThat(answers).noneMatch(Future::isDone);
-      // Every call ran on the fixed pool: with gRPC's unbounded default the Reversal would be
-      // answered whatever the handler did, and the test would prove nothing.
-      assertThat(TOKEN_CHECK_THREADS)
-          .hasSize(held + 1)
-          .allMatch(thread -> thread.startsWith("grpc-call-"));
-
-      lock.rollback();
-      for (var answer : answers) {
-        assertThat(answer.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("00");
-      }
-    }
-  }
-
   @Test
   void aRequestWithoutARetrievalReferenceNumberIsRefusedAndNothingIsRecorded() {
     var card = issuedCard();
@@ -516,10 +443,96 @@ class NetworkLinkTests {
   }
 
   /**
+   * Tests that hold the database on purpose, to order a race, under a time limit long enough that
+   * the held Charge isn't answered 91 meanwhile (DatabaseFailures).
+   */
+  @Nested
+  @TestPropertySource(properties = LONG_TIME_LIMIT)
+  class HeldOnLocks {
+
+    // The Charge reads the card ACTIVE, then CardCleared commits before it moves the card: a lock
+    // on
+    // the card's row queues CardCleared's write first and the Charge's move behind it, so the move
+    // finds the card CLEARED and the Charge is declined.
+    @Test
+    void aCardClearedWhileItsChargeIsMovingItIsDeclinedAndStaysCleared() throws Exception {
+      var card = issuedCard();
+      var charge = chargeOn(card).build();
+
+      try (var network = Executors.newSingleThreadExecutor();
+          var lock = connection()) {
+        lock.setAutoCommit(false);
+        try (var statement =
+            lock.prepareStatement("select 1 from card_copy where card_token = ? for update")) {
+          statement.setString(1, card.cardToken());
+          statement.executeQuery().close();
+        }
+        send(card.cardToken(), "CardCleared", "{\"cardToken\":\"" + card.cardToken() + "\"}");
+        await().atMost(Duration.ofSeconds(10)).until(() -> lockWaiters() >= 1);
+        var late = network.submit(() -> authorize(charge));
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 2);
+
+        lock.rollback();
+
+        assertThat(late.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("57");
+      }
+      assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
+      assertThat(recorded(charge.getRetrievalReferenceNumber()))
+          .containsEntry("response_code", "57")
+          .containsEntry("status", "DECLINED");
+    }
+
+    // The proof that the gRPC handler only hands each call to Reactor: Charges stuck on a locked
+    // table outnumber the gRPC call threads, yet a Reversal still gets its answer. A handler that
+    // waited for the database would hold every call thread, and the Reversal would never start.
+    @Test
+    void callsWaitingOnTheDatabaseHoldNoThreadSoAnotherCallIsStillAnswered() throws Exception {
+      var held = GrpcCallThreads.THREADS + 1;
+      TOKEN_CHECK_THREADS.clear();
+      var requests = new ArrayList<AuthorizationRequest>();
+      for (var i = 0; i < held; i++) {
+        requests.add(chargeOn(issuedCard()).build());
+      }
+
+      // Fewer held Charges than R2DBC's pool has connections (10 by default), so one is left for
+      // the
+      // Reversal. Closed in reverse order: the lock's connection rolls back before the executor
+      // waits.
+      try (var network = Executors.newFixedThreadPool(held);
+          var lock = connection()) {
+        lock.setAutoCommit(false);
+        try (var statement = lock.createStatement()) {
+          statement.execute("lock table card_copy in access exclusive mode");
+        }
+        var answers = new ArrayList<Future<AuthorizationResponse>>();
+        for (var request : requests) {
+          answers.add(network.submit(() -> authorize(request)));
+        }
+        await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= held);
+
+        var requestId = UUID.randomUUID().toString();
+        assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+        assertThat(answers).noneMatch(Future::isDone);
+        // Every call ran on the fixed pool: with gRPC's unbounded default the Reversal would be
+        // answered whatever the handler did, and the test would prove nothing.
+        assertThat(TOKEN_CHECK_THREADS)
+            .hasSize(held + 1)
+            .allMatch(thread -> thread.startsWith("grpc-call-"));
+
+        lock.rollback();
+        for (var answer : answers) {
+          assertThat(answer.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("00");
+        }
+      }
+    }
+  }
+
+  /**
    * The Network cancels an Authorization by its request ID. Every Reversal is acknowledged with
    * {@code 00}; only an approved Authorization changes, and its card goes back to ACTIVE.
    */
   @Nested
+  @TestPropertySource(properties = LONG_TIME_LIMIT)
   class Reversals {
 
     @Test
@@ -647,8 +660,7 @@ class NetworkLinkTests {
       var charge = chargeOn(card).build();
       var requestId = charge.getRetrievalReferenceNumber();
 
-      try (var unlimited = timeLimitLifted();
-          var network = Executors.newSingleThreadExecutor();
+      try (var network = Executors.newSingleThreadExecutor();
           var lock = connection()) {
         lock.setAutoCommit(false);
         try (var statement = lock.createStatement()) {
@@ -678,8 +690,7 @@ class NetworkLinkTests {
       var charge = chargeOn(card).build();
       var requestId = charge.getRetrievalReferenceNumber();
 
-      try (var unlimited = timeLimitLifted();
-          var network = Executors.newFixedThreadPool(2);
+      try (var network = Executors.newFixedThreadPool(2);
           var lock = connection()) {
         lock.setAutoCommit(false);
         try (var statement =
@@ -713,20 +724,20 @@ class NetworkLinkTests {
 
   /**
    * The service's database is slow or down (#93): the Network gets {@code 91} (Issuer unavailable)
-   * before its 1-second deadline, so it never times out and sends a Reversal, and the 91 records
-   * nothing. The circuit breaker opens while the database is down and closes once it is back, with
-   * no restart.
+   * before its 1-second deadline, so it never times out and sends a Reversal, and the 91 leaves no
+   * approval standing. The circuit breaker opens while the database is down and closes once it is
+   * back, with no restart. On the application's own settings.
    */
   @Nested
   class DatabaseFailures {
 
     // The simulator's Network gives each call 1 second, then declines and sends a Reversal.
     private static final Duration NETWORK_DEADLINE = Duration.ofSeconds(1);
-    // Half the time limit: a call the open breaker refuses never waits for the database.
-    private static final Duration FAST = Duration.ofMillis(250);
+    // A call the open breaker refuses never waits for the database.
+    private static final Duration AT_ONCE = Duration.ofMillis(50);
 
     @Test
-    void aChargeStillWaitingAtTheTimeLimitAnswers91BeforeTheNetworksDeadlineAndRecordsNothing()
+    void aChargeStillWaitingAtTheTimeLimitAnswers91BeforeTheNetworksDeadlineAndIsReversed()
         throws Exception {
       var card = issuedCard();
       var charge = chargeOn(card).build();
@@ -745,63 +756,46 @@ class NetworkLinkTests {
         assertThat(response).isEqualTo(issuerUnavailable(requestId));
         lock.rollback();
       }
-      assertNothingRecorded(card, requestId);
+      // Nothing committed, so the service's own Reversal claimed the request ID: a resend answers
+      // 05 and moves no card.
+      awaitNoApprovalStanding(card, requestId);
+      assertThat(recorded(requestId)).containsEntry("response_code", "05");
+      assertThat(outboxCount(card, "AuthorizationApproved")).isZero();
     }
 
     @Test
-    void whileTheDatabaseIsDownChargesAnswer91AndTheBreakerOpensThenClosesOnceItIsBack() {
-      var card = issuedCard();
-      var unavailableBefore = answersCounted("91");
-      var answered91 = new ArrayList<String>();
+    void whileTheDatabaseIsFrozenChargesAnswer91AndTheBreakerOpensThenClosesOnceItThaws()
+        throws SQLException {
+      var docker = postgres.getDockerClient();
 
-      pausePostgres();
-      try {
-        await()
-            .atMost(Duration.ofSeconds(30))
-            .pollInterval(Duration.ZERO)
-            .until(
-                () -> {
-                  var charge = chargeOn(card).build();
-                  answered91.add(charge.getRetrievalReferenceNumber());
-                  assertThat(authorize(charge).getResponseCode()).isEqualTo("91");
-                  return breakerIs("open");
-                });
-        var charge = chargeOn(card).build();
-        answered91.add(charge.getRetrievalReferenceNumber());
-        var started = System.nanoTime();
+      answers91ThenRecovers(
+          () -> docker.pauseContainerCmd(postgres.getContainerId()).exec(),
+          () -> docker.unpauseContainerCmd(postgres.getContainerId()).exec());
+    }
 
-        var refused = authorize(charge);
-
-        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(FAST);
-        assertThat(refused).isEqualTo(issuerUnavailable(charge.getRetrievalReferenceNumber()));
-        assertThat(answersCounted("91")).isEqualTo(unavailableBefore + answered91.size());
-      } finally {
-        unpausePostgres();
-      }
-
-      // Once the breaker lets calls through again, the database answers them and it closes.
-      await()
-          .atMost(Duration.ofSeconds(30))
-          .pollInterval(Duration.ofMillis(200))
-          .until(() -> authorize(chargeOn(issuedCard())).getResponseCode().equals("00"));
-      await()
-          .atMost(Duration.ofSeconds(10))
-          .until(
-              () -> {
-                authorize(chargeOn(issuedCard()));
-                return breakerIs("closed");
-              });
-      for (var requestId : answered91) {
-        assertNothingRecorded(card, requestId);
+    // The database stopped rather than stuck: every connection is ended and new ones are refused,
+    // so the pool has to reconnect once it is back.
+    @Test
+    void whileTheDatabaseRefusesConnectionsChargesAnswer91AndThePoolReconnectsOnceItIsBack()
+        throws SQLException {
+      // Connected to the server's postgres database: PostgreSQL won't refuse connections to the
+      // database the statement runs in.
+      try (var admin =
+          DriverManager.getConnection(
+              postgres.getJdbcUrl().replace("/" + postgres.getDatabaseName(), "/postgres"),
+              postgres.getUsername(),
+              postgres.getPassword())) {
+        answers91ThenRecovers(
+            () -> refuseConnections(admin, true), () -> refuseConnections(admin, false));
       }
     }
 
     // The time limit cancels the Charge while PostgreSQL waits to confirm its commit, which has
     // already happened: the commit can't be taken back. A synchronous standby that never comes
-    // holds every commit there. The Network got 91, but the recorded answer stands, and a resend
-    // of the request ID gets it.
+    // holds every commit there. The Network got 91, so the service reverses the Authorization
+    // itself, and the card can be charged again.
     @Test
-    void aChargeCommittedAfterItsTimeLimitKeepsItsRecordedAnswerForAResend() throws Exception {
+    void aChargeCommittedAfterItsTimeLimitIsReversedAndItsCardCanBeChargedAgain() throws Exception {
       var card = issuedCard();
       var charge = chargeOn(card).build();
       var requestId = charge.getRetrievalReferenceNumber();
@@ -817,45 +811,109 @@ class NetworkLinkTests {
       }
 
       assertThat(response).isEqualTo(issuerUnavailable(requestId));
-      await().atMost(Duration.ofSeconds(10)).until(() -> recordedCount(requestId) == 1);
-      var resent = authorize(charge);
-      assertThat(resent.getResponseCode()).isEqualTo("00");
-      assertThat(recorded(requestId))
-          .containsEntry("status", "APPROVED")
-          .containsEntry("authorization_code", resent.getAuthorizationCode());
-      assertThat(statusOf(card)).isEqualTo(CardStatus.AUTHORIZED);
+      awaitNoApprovalStanding(card, requestId);
+      assertThat(recorded(requestId)).containsEntry("response_code", "00");
+      assertThat(outboxCount(card, "AuthorizationReversed")).isOne();
+      assertThat(authorize(chargeOn(card)).getResponseCode()).isEqualTo("00");
     }
 
-    // Long enough for the cancelled transactions to have rolled back, had they gone on to commit.
-    private void assertNothingRecorded(Card card, String requestId) {
+    // Charges on a card answer 91 while the database is down, the breaker opens and then answers
+    // at once, every 91 is counted, and a Reversal fails quickly; once the database is back, the
+    // breaker closes, a Charge is
+    // approved, and none of the 91s left an approval standing.
+    private void answers91ThenRecovers(DatabaseSwitch down, DatabaseSwitch up) throws SQLException {
+      var card = issuedCard();
+      var unavailableBefore = answersCounted("91");
+      var answered91 = new ArrayList<String>();
+
+      down.flip();
+      try {
+        await()
+            .atMost(Duration.ofSeconds(30))
+            .pollInterval(Duration.ZERO)
+            .until(
+                () -> {
+                  var charge = chargeOn(card).build();
+                  answered91.add(charge.getRetrievalReferenceNumber());
+                  assertThat(authorize(charge).getResponseCode()).isEqualTo("91");
+                  return breakerIs(CircuitBreaker.State.OPEN);
+                });
+        var charge = chargeOn(card).build();
+        answered91.add(charge.getRetrievalReferenceNumber());
+        var started = System.nanoTime();
+
+        var refused = authorize(charge);
+
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(AT_ONCE);
+        assertThat(refused).isEqualTo(issuerUnavailable(charge.getRetrievalReferenceNumber()));
+        assertThat(answersCounted("91")).isEqualTo(unavailableBefore + answered91.size());
+        // A Reversal has no breaker but the same time limit: a quick error for the Network to
+        // resend on, before its deadline.
+        var reversalStarted = System.nanoTime();
+        assertThat(grpcStatusOf(() -> reverse(UUID.randomUUID().toString())))
+            .isEqualTo(Status.Code.UNKNOWN);
+        assertThat(Duration.ofNanos(System.nanoTime() - reversalStarted))
+            .isLessThan(NETWORK_DEADLINE);
+      } finally {
+        up.flip();
+      }
+
+      // Once the breaker lets calls through again, the database answers them and it closes.
       await()
-          .during(Duration.ofMillis(500))
-          .atMost(Duration.ofSeconds(5))
+          .atMost(Duration.ofSeconds(30))
+          .pollInterval(Duration.ofMillis(200))
+          .until(() -> authorize(chargeOn(issuedCard())).getResponseCode().equals("00"));
+      await()
+          .atMost(Duration.ofSeconds(10))
+          .until(
+              () -> {
+                authorize(chargeOn(issuedCard()));
+                return breakerIs(CircuitBreaker.State.CLOSED);
+              });
+      for (var requestId : answered91) {
+        awaitNoApprovalStanding(card, requestId);
+      }
+    }
+
+    /** Takes the database down, or brings it back. */
+    private interface DatabaseSwitch {
+      void flip() throws SQLException;
+    }
+
+    // No row (the open breaker refused it) or a REVERSED one, and the card ACTIVE.
+    private void awaitNoApprovalStanding(Card card, String requestId) {
+      await()
+          .atMost(Duration.ofSeconds(30))
           .until(
               () ->
-                  recordedCount(requestId) == 0
-                      && statusOf(card) == CardStatus.ACTIVE
-                      && outboxCount(card, "AuthorizationApproved") == 0);
+                  (recordedCount(requestId) == 0
+                          || "REVERSED".equals(recorded(requestId).get("status")))
+                      && statusOf(card) == CardStatus.ACTIVE);
     }
 
-    private boolean breakerIs(String state) {
+    private boolean breakerIs(CircuitBreaker.State state) {
       var gauge =
           meters
               .find("resilience4j.circuitbreaker.state")
-              .tag("name", "authorization-database")
-              .tag("state", state)
+              .tag("name", IssuerAuthorizationService.DATABASE)
+              .tag("state", state.name().toLowerCase(Locale.ROOT))
               .gauge();
       return gauge != null && gauge.value() == 1;
     }
 
-    // Frozen, not stopped: its port stays, and the service's connections hang as on a stuck
-    // server rather than fail at once.
-    private void pausePostgres() {
-      DockerClientFactory.instance().client().pauseContainerCmd(postgres.getContainerId()).exec();
-    }
-
-    private void unpausePostgres() {
-      DockerClientFactory.instance().client().unpauseContainerCmd(postgres.getContainerId()).exec();
+    // Stands in for the database going down: it ends every connection to the service's database
+    // and accepts no new one until allowed again.
+    private void refuseConnections(Connection admin, boolean refuse) throws SQLException {
+      var database = postgres.getDatabaseName();
+      try (var statement = admin.createStatement()) {
+        statement.execute("alter database " + database + " allow_connections " + !refuse);
+        if (refuse) {
+          statement.execute(
+              "select pg_terminate_backend(pid) from pg_stat_activity where datname = '"
+                  + database
+                  + "'");
+        }
+      }
     }
 
     private static void holdCommits(Connection admin, boolean hold) throws SQLException {
@@ -1058,18 +1116,6 @@ class NetworkLinkTests {
         .map(row -> row.get("n", Long.class))
         .one()
         .block();
-  }
-
-  // A test that holds the database on purpose, to order a race, lifts the hot path's time limit
-  // until it closes this: past the limit, its held Charge would answer 91 (DatabaseFailures).
-  private AutoCloseable timeLimitLifted() {
-    var name = IssuerAuthorizationService.DATABASE;
-    var limit = timeLimiters.timeLimiter(name);
-    timeLimiters.replace(
-        name,
-        TimeLimiter.of(
-            name, TimeLimiterConfig.custom().timeoutDuration(Duration.ofSeconds(30)).build()));
-    return () -> timeLimiters.replace(name, limit);
   }
 
   private Connection connection() throws SQLException {

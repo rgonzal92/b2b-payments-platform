@@ -45,7 +45,7 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
     SECURITY_CODE_MISMATCH("N7"),
     /**
      * Issuer unavailable: the service's database is down, or didn't answer within the time limit.
-     * Sent, never recorded (IssuerAuthorizationService).
+     * Sent, never recorded as an answer (IssuerAuthorizationService).
      */
     ISSUER_UNAVAILABLE("91");
 

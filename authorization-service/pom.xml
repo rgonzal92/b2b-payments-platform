@@ -32,6 +32,13 @@
 			<artifactId>r2dbc-postgresql</artifactId>
 			<scope>runtime</scope>
 		</dependency>
+		<!-- Boot 4's R2DBC starter brings no pool, so without this every transaction opened its own connection. With it,
+		     Boot pools them (10 by default) and spring.r2dbc.pool.max-acquire-time bounds the wait for one (#93). -->
+		<dependency>
+			<groupId>io.r2dbc</groupId>
+			<artifactId>r2dbc-pool</artifactId>
+			<scope>runtime</scope>
+		</dependency>
 		<!-- Flyway migrates over its own JDBC connection, made from spring.flyway.url: Spring Boot's Flyway
 		     module without the JDBC starter, so no connection pool sits beside R2DBC's. -->
 		<dependency>
