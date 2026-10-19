@@ -40,6 +40,35 @@
         "contentType": "application/json",
         "encoded": false
       },
+      "description": "a CardCleared for a cleared card",
+      "key": "d064164",
+      "matchingRules": {
+        "body": {
+          "$.cardToken": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json",
+        "event-type": "CardCleared"
+      },
+      "pending": false,
+      "type": "Asynchronous/Messages"
+    },
+    {
+      "contents": {
+        "content": {
+          "cardToken": "card-token-1"
+        },
+        "contentType": "application/json",
+        "encoded": false
+      },
       "description": "a CardExpired for an expired card",
       "key": "ecaf6144",
       "matchingRules": {

@@ -62,4 +62,17 @@ public sealed interface CardEvent {
       Objects.requireNonNull(cardToken, "cardToken");
     }
   }
+
+  /**
+   * A Clearing cleared the card: its Charge is final and it accepts no other. Final, and it
+   * outranks {@code CardCancelled} and {@code CardExpired}: the platform clears a card whatever its
+   * status, and nothing moves a cleared one.
+   */
+  @JsonIgnoreProperties(ignoreUnknown = true)
+  record CardCleared(String cardToken) implements CardEvent {
+
+    public CardCleared {
+      Objects.requireNonNull(cardToken, "cardToken");
+    }
+  }
 }

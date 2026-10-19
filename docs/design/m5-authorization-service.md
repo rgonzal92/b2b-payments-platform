@@ -26,7 +26,7 @@ The force is availability, not latency (ADR-0016). M4 measured the monolith's se
 |---|---|
 | `authorization-service` | New Maven module, a Spring Boot app with its own PostgreSQL container (`postgres:18.6`). The Network link over gRPC, the Authorization rules, every answer and Reversal, its copy of the cards it may authorize, and its outbox. |
 | platform `authorization` | Thin. Loses the gRPC link, the rules and the answers; keeps the platform's copy of approved and reversed Authorizations, fed by the service's events. `ApprovedAuthorizations` keeps its interface, so `clearing` and `reconciliation` don't change. |
-| platform `cards` | Publishes `CardIssued`, `CardCancelled` and `CardExpired` to Kafka; mirrors the service's ACTIVE/AUTHORIZED moves. |
+| platform `cards` | Publishes `CardIssued`, `CardCancelled`, `CardExpired` and (from #101) `CardCleared` to Kafka; mirrors the service's ACTIVE/AUTHORIZED moves. |
 | platform `vault` | Returns the PAN's keyed hash and a new keyed hash of the security code beside the last four digits. |
 | platform `payables` | A new Payment saga step that waits for the card to be on file before sending the Remittance Advice. |
 | platform `clearing` | Waits to import while the platform's copy of Authorizations lags behind Kafka. |
@@ -42,7 +42,7 @@ To answer without the platform, the service keeps its own copy of every card it 
 - **`CardIssued`:** Card Token, the PAN's keyed hash, the security code's keyed hash, expiry, amount and currency, and the Supplier's Acceptor ID. The saga, which already asks `suppliers` for the Supplier, passes the Acceptor ID into `cards.issue(...)`, since `cards` can't call `suppliers` (`suppliers` already calls `cards`, and Spring Modulith forbids the cycle). `cards` publishes the event in its issuing transaction. The Acceptor ID is copied at issuance, as on the Remittance Advice; a Supplier that changes Acquirer after its card is issued is declined.
 - **`CardCancelled`**, new, and **`CardExpired`**, which already exists and is now externalized.
 - **Any order:** the platform may send one card's events out of order (see "Events and contracts"), so the service applies them in any order to the same result: statuses only move forward, and a card cancelled or expired before its `CardIssued` arrives stays ended, never `ACTIVE`.
-- No event for a cleared card: the service's AUTHORIZED already declines a second Charge with `57`, the answer a CLEARED card gets today, until a late Reversal moves it back to ACTIVE (see Risks, #101).
+- No event for a cleared card at first: the service's AUTHORIZED already declines a second Charge with `57`, the answer a CLEARED card gets today, but a late Reversal moved it back to ACTIVE. #101 added **`CardCleared`**: the service's copy becomes CLEARED, final, a Reversal no longer moves it, and every Charge on it answers `57`.
 
 The service holds the platform's `vault.hash-key` from its own environment variable, hashes each request's PAN and security code in memory and compares; no PAN or security code goes onto Kafka or into either event table (ADR-0004, amended).
 
@@ -97,7 +97,7 @@ Replaying the service's card copy from Kafka; deriving the security code from th
 ## Risks
 
 - **Pact on Java 25 is unproven:** the first ticket proves it before any contract depends on it, with Spring Cloud Contract as the fallback. Proven in #88: Pact JVM 4.7.5's consumer and provider message tests run on Java 25 (with Spring Boot's Kotlin 2.3.21), and a provider message with a wrong header fails verification, so the fallback wasn't needed.
-- **A late Reversal frees a cleared card:** the service hears of no Clearing, so its copy of a cleared card stays AUTHORIZED, and a Reversal that arrives after the Clearing moves it back to ACTIVE; a second Charge on it is then approved, where the platform answers `57`. Likely fix: the platform publishes a card-cleared event on `cards` and the service treats CLEARED as final (#101).
+- **A Reversal before `CardCleared` still frees a cleared card:** since #101 a `CardCleared` makes the service's copy CLEARED and final, but a Reversal that reaches the service before it (Kafka lagging or down) still moves an AUTHORIZED card back to ACTIVE, and a second Charge on it could then get `00`. Accepted: a Reversal comes within seconds of its Charge and a Clearing a day or more later, so the window needs Kafka to lag that long and a second Charge on a Single-Use Card inside it.
 - **The reactive bridge is hand-written:** a mistake there blocks a Netty thread and stalls every call; the service's tests run the bridge under concurrent calls, and the load test would show it.
 - **A shared hash key:** the service now holds `vault.hash-key`, and with it a 3-digit security code's hash is trivially reversed; it's an environment variable like the vault's own keys, never logged, and M7 revisits it.
 - **The producer doesn't guarantee per-card order:** Spring Modulith's externalization sends each event from its own thread after the commit, so a card's `CardCancelled` or `CardExpired` can reach the topic before its `CardIssued` (seen in CI on #88: 1 card in 100 issued and cancelled back to back). Every consumer must be order-tolerant; the service is (#88). Modulith's ordered outbox mode would fix it at the source, at the cost of a new dependency.

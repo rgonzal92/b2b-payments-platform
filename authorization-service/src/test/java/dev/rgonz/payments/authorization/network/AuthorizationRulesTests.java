@@ -106,11 +106,12 @@ class AuthorizationRulesTests {
     }
   }
 
-  // The service sends no event for a cleared card: it stays AUTHORIZED here, which already
-  // declines a second Charge as the platform declines one on a CLEARED card.
+  // A Single-Use Card takes one Charge, as the platform declined one on a CLEARED card.
   @Test
-  void aChargeOnACardWithAnApprovedAuthorizationIsDeclinedAsNotPermitted() {
+  void aChargeOnACardWithAnApprovedOrClearedAuthorizationIsDeclinedAsNotPermitted() {
     assertThat(decide(charge(), card(CardStatus.AUTHORIZED), true, NOW))
+        .isEqualTo(ResponseCode.NOT_PERMITTED);
+    assertThat(decide(charge(), card(CardStatus.CLEARED), true, NOW))
         .isEqualTo(ResponseCode.NOT_PERMITTED);
   }
 

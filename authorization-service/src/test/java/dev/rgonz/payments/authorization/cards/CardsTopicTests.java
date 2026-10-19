@@ -27,6 +27,8 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -161,6 +163,53 @@ class CardsTopicTests {
     awaitAllConsumed();
 
     assertThat(status(cardToken)).isEqualTo(CardStatus.EXPIRED);
+  }
+
+  @Test
+  void cardClearedMakesTheCardClearedAndItsRepeatChangesNothing() {
+    var cardToken = newCardToken();
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+
+    send(cardToken, "CardCleared", "{\"cardToken\":\"" + cardToken + "\"}");
+    awaitCopy(cardToken, CardStatus.CLEARED);
+    send(cardToken, "CardCleared", "{\"cardToken\":\"" + cardToken + "\"}");
+    awaitAllConsumed();
+
+    assertThat(status(cardToken)).isEqualTo(CardStatus.CLEARED);
+  }
+
+  // The platform clears a card whatever its status, and nothing moves it after, so CLEARED wins
+  // whichever of the two events arrives first.
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(strings = {"CardCancelled", "CardExpired"})
+  void aCardClearedEndsClearedInWhicheverOrderItsOtherEndArrives(String otherEnd) {
+    var endedFirst = newCardToken();
+    send(endedFirst, "CardIssued", cardIssuedJson(endedFirst));
+    send(endedFirst, otherEnd, "{\"cardToken\":\"" + endedFirst + "\"}");
+    send(endedFirst, "CardCleared", "{\"cardToken\":\"" + endedFirst + "\"}");
+    var clearedFirst = newCardToken();
+    send(clearedFirst, "CardIssued", cardIssuedJson(clearedFirst));
+    send(clearedFirst, "CardCleared", "{\"cardToken\":\"" + clearedFirst + "\"}");
+    send(clearedFirst, otherEnd, "{\"cardToken\":\"" + clearedFirst + "\"}");
+    awaitAllConsumed();
+
+    assertThat(status(endedFirst)).isEqualTo(CardStatus.CLEARED);
+    assertThat(status(clearedFirst)).isEqualTo(CardStatus.CLEARED);
+  }
+
+  @Test
+  void aCardClearedBeforeItsCardIssuedStaysClearedWithItsDetailsAndIsNotOnFile() {
+    var cardToken = newCardToken();
+    send(cardToken, "CardCleared", "{\"cardToken\":\"" + cardToken + "\"}");
+    awaitCopy(cardToken, CardStatus.CLEARED);
+
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    awaitAllConsumed();
+
+    var copy = copies.find(cardToken).block();
+    assertThat(copy.status()).isEqualTo(CardStatus.CLEARED);
+    assertThat(copy.panHash()).isEqualTo("pan-hash-of-" + cardToken);
+    assertThat(outboxRows(cardToken)).isZero();
   }
 
   @Test

@@ -6,6 +6,7 @@ import dev.rgonz.payments.authorization.network.Authorization.ResponseCode;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Set;
 
 /**
  * The Authorization rules (M2 design, Q19), in the order of its table, as the platform applies
@@ -15,6 +16,11 @@ import java.time.format.DateTimeFormatter;
  * once.
  */
 final class AuthorizationRules {
+
+  // An AUTHORIZED or CLEARED card is still chargeable here: a second Charge on it is a 57, not a
+  // 54. Any other status, and any status added later, declines as an expired card.
+  private static final Set<CardStatus> CHARGEABLE =
+      Set.of(CardStatus.ACTIVE, CardStatus.AUTHORIZED, CardStatus.CLEARED);
 
   // DE 14 as printed on the card: the expiry's year and month, in UTC like every stored time.
   private static final DateTimeFormatter EXPIRATION_DATE =
@@ -51,18 +57,16 @@ final class AuthorizationRules {
     if (!withinAmount(card, charge)) {
       return ResponseCode.EXCEEDS_AMOUNT;
     }
-    // A Single-Use Card takes one Charge: once approved it takes no other. The service hears of no
-    // Clearing, so a cleared card stays AUTHORIZED here and declines the same way.
-    if (card.status() == CardStatus.AUTHORIZED) {
+    // A Single-Use Card takes one Charge: once approved, and once cleared, it takes no other.
+    if (card.status() == CardStatus.AUTHORIZED || card.status() == CardStatus.CLEARED) {
       return ResponseCode.NOT_PERMITTED;
     }
     return ResponseCode.APPROVED;
   }
 
-  // An AUTHORIZED card is still chargeable here: a second Charge on it is a 57, not a 54. Only an
-  // ACTIVE or AUTHORIZED card has every detail (V2__card_copy_ended_before_issued.sql).
+  // A CLEARED card found by its PAN's hash has every detail: its CardIssued filled them in.
   private static boolean chargeable(CardCopy card, String expirationDate, Instant now) {
-    return (card.status() == CardStatus.ACTIVE || card.status() == CardStatus.AUTHORIZED)
+    return CHARGEABLE.contains(card.status())
         && EXPIRATION_DATE.format(card.expiresAt()).equals(expirationDate)
         && now.isBefore(card.expiresAt());
   }

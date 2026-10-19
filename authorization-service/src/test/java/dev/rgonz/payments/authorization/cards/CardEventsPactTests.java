@@ -90,6 +90,15 @@ class CardEventsPactTests {
         new PactDslJsonBody().stringType("cardToken", CARD_TOKEN));
   }
 
+  @Pact(consumer = CONSUMER)
+  V4Pact cardCleared(PactBuilder builder) {
+    return message(
+        builder,
+        "a CardCleared for a cleared card",
+        "CardCleared",
+        new PactDslJsonBody().stringType("cardToken", CARD_TOKEN));
+  }
+
   @Test
   @PactTestFor(pactMethod = "cardIssued")
   void readsCardIssued(V4Interaction.AsynchronousMessage message) {
@@ -130,6 +139,12 @@ class CardEventsPactTests {
   @PactTestFor(pactMethod = "cardExpired")
   void readsCardExpired(V4Interaction.AsynchronousMessage message) {
     assertThat(read(message)).isEqualTo(new CardEvent.CardExpired(CARD_TOKEN));
+  }
+
+  @Test
+  @PactTestFor(pactMethod = "cardCleared")
+  void readsCardCleared(V4Interaction.AsynchronousMessage message) {
+    assertThat(read(message)).isEqualTo(new CardEvent.CardCleared(CARD_TOKEN));
   }
 
   // Each message names its event type in the event-type header, which Pact calls metadata.

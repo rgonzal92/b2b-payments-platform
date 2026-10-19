@@ -254,6 +254,50 @@ class NetworkLinkTests {
     assertThat(statusOf(card)).isEqualTo(CardStatus.CANCELLED);
   }
 
+  // As the platform declined a Charge on a CLEARED card: a Single-Use Card takes one Charge.
+  @Test
+  void aClearedCardIsDeclinedAsNotPermittedAndStaysCleared() {
+    var card = issuedCard();
+    send(card.cardToken(), "CardCleared", "{\"cardToken\":\"" + card.cardToken() + "\"}");
+    awaitStatus(card, CardStatus.CLEARED);
+
+    var response = authorize(chargeOn(card));
+
+    assertThat(response.getResponseCode()).isEqualTo("57");
+    assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
+  }
+
+  // The Charge reads the card ACTIVE, then CardCleared commits before it moves the card: a lock on
+  // the card's row queues CardCleared's write first and the Charge's move behind it, so the move
+  // finds the card CLEARED and the Charge is declined.
+  @Test
+  void aCardClearedWhileItsChargeIsMovingItIsDeclinedAndStaysCleared() throws Exception {
+    var card = issuedCard();
+    var charge = chargeOn(card).build();
+
+    try (var network = Executors.newSingleThreadExecutor();
+        var lock = connection()) {
+      lock.setAutoCommit(false);
+      try (var statement =
+          lock.prepareStatement("select 1 from card_copy where card_token = ? for update")) {
+        statement.setString(1, card.cardToken());
+        statement.executeQuery().close();
+      }
+      send(card.cardToken(), "CardCleared", "{\"cardToken\":\"" + card.cardToken() + "\"}");
+      await().atMost(Duration.ofSeconds(10)).until(() -> lockWaiters() >= 1);
+      var late = network.submit(() -> authorize(charge));
+      await().atMost(Duration.ofSeconds(5)).until(() -> lockWaiters() >= 2);
+
+      lock.rollback();
+
+      assertThat(late.get(10, TimeUnit.SECONDS).getResponseCode()).isEqualTo("57");
+    }
+    assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
+    assertThat(recorded(charge.getRetrievalReferenceNumber()))
+        .containsEntry("response_code", "57")
+        .containsEntry("status", "DECLINED");
+  }
+
   @Test
   void aCardCopiedWithoutAnAcceptorIdIsDeclinedAsNotPermitted() {
     var card = issuedCard(null);
@@ -516,6 +560,23 @@ class NetworkLinkTests {
           .isEqualTo(
               authorizationJson(
                   next.getRetrievalReferenceNumber(), card, nextApproved.getAuthorizationCode()));
+    }
+
+    // The Network may still reverse an Authorization whose Charge already cleared: the
+    // Reversal is acknowledged, but the cleared card takes no new Charge.
+    @Test
+    void aReversalAfterItsCardClearedLeavesTheCardClearedAndTheNextChargeIsDeclined() {
+      var card = issuedCard();
+      var charge = chargeOn(card);
+      assertThat(authorize(charge).getResponseCode()).isEqualTo("00");
+      send(card.cardToken(), "CardCleared", "{\"cardToken\":\"" + card.cardToken() + "\"}");
+      awaitStatus(card, CardStatus.CLEARED);
+
+      var requestId = charge.getRetrievalReferenceNumber();
+      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+
+      assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
+      assertThat(authorize(chargeOn(card)).getResponseCode()).isEqualTo("57");
     }
 
     @Test

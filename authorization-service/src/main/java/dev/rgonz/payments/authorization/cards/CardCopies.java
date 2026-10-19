@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Currency;
+import java.util.List;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,11 +17,12 @@ import reactor.core.publisher.Mono;
  * at least once, so every write is keyed on the event's natural ID, the Card Token and the event
  * type, and does nothing the second time. The platform may also send one card's events out of
  * order, so they apply in any order to the same result: a status only moves forward, from {@code
- * ACTIVE} or {@code AUTHORIZED} to {@code CANCELLED} or {@code EXPIRED}, both final. The service's
- * own answers move a card between {@code ACTIVE} and {@code AUTHORIZED}. A card that ends before
- * its {@code CardIssued} arrives is kept with its final status, and the {@code CardIssued} then
- * fills in its details without making it {@code ACTIVE}. A card first stored with its details is on
- * file: a {@link CardOnFile} goes to the {@link Outbox} in the same transaction.
+ * ACTIVE} or {@code AUTHORIZED} to {@code CANCELLED} or {@code EXPIRED}, then to {@code CLEARED},
+ * all final: a Clearing clears a card whatever its status, and nothing moves it after. The
+ * service's own answers move a card between {@code ACTIVE} and {@code AUTHORIZED}. A card that ends
+ * before its {@code CardIssued} arrives is kept with its final status, and the {@code CardIssued}
+ * then fills in its details without making it {@code ACTIVE}. A card first stored with its details
+ * is on file: a {@link CardOnFile} goes to the {@link Outbox} in the same transaction.
  */
 @Repository
 public class CardCopies {
@@ -86,6 +88,7 @@ public class CardCopies {
       case CardEvent.CardCancelled cancelled ->
           endUnlessFinal(cancelled.cardToken(), CardStatus.CANCELLED);
       case CardEvent.CardExpired expired -> endUnlessFinal(expired.cardToken(), CardStatus.EXPIRED);
+      case CardEvent.CardCleared cleared -> endUnlessFinal(cleared.cardToken(), CardStatus.CLEARED);
     };
   }
 
@@ -126,8 +129,9 @@ public class CardCopies {
         .flatMap(active -> outbox.append(issued.cardToken(), new CardOnFile(issued.cardToken())));
   }
 
-  // CANCELLED and EXPIRED are final, so the first to arrive stays. A card not seen yet is kept
-  // with only its token and final status, for its CardIssued to fill in.
+  // CANCELLED, EXPIRED and CLEARED are final. CLEARED replaces the other two, as the platform
+  // clears a card whatever its status; otherwise the first to arrive stays. A card not seen yet is
+  // kept with only its token and final status, for its CardIssued to fill in.
   private Mono<Void> endUnlessFinal(String cardToken, CardStatus status) {
     return db.sql(
             """
@@ -135,9 +139,18 @@ public class CardCopies {
             values (:cardToken, :status)
             on conflict (card_token) do update
                set status = excluded.status
-             where card_copy.status not in ('CANCELLED', 'EXPIRED')
+             -- CLEARED replaces CANCELLED and EXPIRED; nothing replaces CLEARED
+             where card_copy.status not in (:statusesNotReplaced)
             """)
         .bind("status", status.name())
+        .bind(
+            "statusesNotReplaced",
+            status == CardStatus.CLEARED
+                ? List.of(CardStatus.CLEARED.name())
+                : List.of(
+                    CardStatus.CANCELLED.name(),
+                    CardStatus.EXPIRED.name(),
+                    CardStatus.CLEARED.name()))
         .bind("cardToken", cardToken)
         .then();
   }
