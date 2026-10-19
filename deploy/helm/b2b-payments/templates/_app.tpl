@@ -13,6 +13,7 @@ metadata:
   labels:
     {{- include "b2b-payments.labels" $labels | nindent 4 }}
 spec:
+  replicas: {{ .Values.replicas | default 1 }}
   selector:
     matchLabels:
       {{- include "b2b-payments.selectorLabels" $labels | nindent 6 }}
@@ -119,6 +120,11 @@ metadata:
     {{- include "b2b-payments.labels" $labels | nindent 4 }}
 spec:
   type: {{ .Values.service.type | default "ClusterIP" }}
+  {{- if .Values.service.headless }}
+  # Headless: the name resolves to each ready pod's address rather than one virtual IP, so a client that balances
+  # (grpc-java's round_robin over dns:///) connects to every pod.
+  clusterIP: None
+  {{- end }}
   selector:
     {{- include "b2b-payments.selectorLabels" $labels | nindent 4 }}
   ports:

@@ -1,10 +1,14 @@
+# Two, so one can always be replaced while the other answers (M6 design, Two copies of each app).
+replicas: 2
 httpPort: 8082
 extraPorts:
   - name: grpc
     containerPort: 9090
 secret: authorization-service-secrets
-# The Network reaches gRPC here, past the Gateway (M6 design, Traffic).
+# The Network reaches gRPC here, past the Gateway (M6 design, Traffic). Headless, because a ClusterIP Service would
+# pin the Network's one long-lived HTTP/2 connection to one pod; the simulator's Network balances over the pods itself.
 service:
+  headless: true
   ports:
     - name: http
       port: 8082
