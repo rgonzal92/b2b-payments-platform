@@ -10,7 +10,7 @@ The platform checks each token against Keycloak's published keys and caches them
 2. If it starts and stops again, read `docker compose logs keycloak`:
    - **"run scripts/init-env.sh first"** from Docker Compose: `.env` is missing a value. Run `./scripts/init-env.sh`, then `docker compose up -d`.
    - **A realm import error:** the realm file is invalid or references a placeholder that isn't in the environment. `KeycloakTokenTests` checks the same file; run `./mvnw -pl platform -am test -Dtest=KeycloakTokenTests` for a precise error.
-3. Port `8180` taken by something else: stop it, or change the host port in `compose.yaml` together with `issuer-uri` in the platform and `authorization-service` and `token-uri` in the simulator.
+3. Port `8180` taken by something else: stop it, or change the host port in `compose.yaml` together with `issuer-uri` in the platform, `authorization-service` and the Gateway, and `token-uri` in the simulator.
 
 ## A client's token is refused by Keycloak
 
