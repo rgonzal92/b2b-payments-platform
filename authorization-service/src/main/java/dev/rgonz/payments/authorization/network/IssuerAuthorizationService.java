@@ -5,6 +5,12 @@ import dev.rgonz.payments.contracts.network.AuthorizationResponse;
 import dev.rgonz.payments.contracts.network.IssuerAuthorizationGrpc;
 import dev.rgonz.payments.contracts.network.ReversalRequest;
 import dev.rgonz.payments.contracts.network.ReversalResponse;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
+import io.github.resilience4j.reactor.timelimiter.TimeLimiterOperator;
+import io.github.resilience4j.timelimiter.TimeLimiterRegistry;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -25,6 +31,14 @@ import reactor.core.publisher.Mono;
  * call builds its {@link Mono}, subscribes to it and returns at once, freeing its call thread
  * ({@link GrpcCallThreads}); the answer goes out from whichever thread completes the Mono, one of
  * R2DBC's event loop threads.
+ *
+ * <p>An Authorization goes through a time limiter and a circuit breaker around the database (#93),
+ * both configured as {@value #DATABASE} in application.properties. Past the time limit, or while
+ * the breaker is open, or on any error, the Network gets {@code 91} (Issuer unavailable) at once
+ * instead of timing out and sending a Reversal. The time limit cancels the Authorization's Mono,
+ * and its transaction rolls back, so a {@code 91} records nothing; the one exception is a commit
+ * already under way when the limit passes, whose recorded answer then stands (M5 design, "The
+ * service's hot path").
  */
 @GrpcService
 class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthorizationImplBase {
@@ -32,13 +46,27 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
   private static final Logger log = LoggerFactory.getLogger(IssuerAuthorizationService.class);
   // DE 39 on a Reversal's answer: the service has it, whatever it changed.
   private static final String ACKNOWLEDGED = "00";
+  static final String DATABASE = "authorization-database";
 
   private final Authorizations authorizations;
   private final MeterRegistry meters;
+  private final CircuitBreaker database;
+  private final TimeLimiterRegistry timeLimiters;
 
-  IssuerAuthorizationService(Authorizations authorizations, MeterRegistry meters) {
+  IssuerAuthorizationService(
+      Authorizations authorizations,
+      MeterRegistry meters,
+      CircuitBreakerRegistry circuitBreakers,
+      TimeLimiterRegistry timeLimiters) {
     this.authorizations = authorizations;
     this.meters = meters;
+    this.timeLimiters = timeLimiters;
+    database = circuitBreakers.circuitBreaker(DATABASE);
+    // One line per change of state, not per refused call: the runbook starts from these.
+    database
+        .getEventPublisher()
+        .onStateTransition(
+            event -> log.warn("Database circuit breaker: {}", event.getStateTransition()));
     // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
     // before the first increment, or they miss it.
     for (var responseCode : Authorization.ResponseCode.values()) {
@@ -69,6 +97,11 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
         requestId,
         authorizations
             .authorize(charge, Instant.now())
+            // The limit inside the breaker, so a timeout counts as one of its failures. Looked up
+            // per call, so a test can lift it.
+            .transformDeferred(TimeLimiterOperator.of(timeLimiters.timeLimiter(DATABASE)))
+            .transformDeferred(CircuitBreakerOperator.of(database))
+            .onErrorResume(error -> issuerUnavailable(requestId, error))
             .map(
                 authorization -> {
                   // Every answer the Network gets, a resend's included, by DE 39: never the PAN or
@@ -108,7 +141,8 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
   }
 
   // Subscribes and returns without waiting. The work runs to its end even if the Network gives up
-  // on the call: its answer is recorded, for a resend or a Reversal to find. An error reaches the
+  // on the call: its answer is recorded, for a resend or a Reversal to find; only an
+  // Authorization's own time limit cancels it. An error reaches the
   // Network as UNKNOWN with no description, as an exception thrown in a blocking handler would;
   // the log names the request ID only, and no message can hold a PAN or security code, which never
   // leave memory.
@@ -130,6 +164,15 @@ class IssuerAuthorizationService extends IssuerAuthorizationGrpc.IssuerAuthoriza
             observer.onError(Status.UNKNOWN.asRuntimeException());
           }
         });
+  }
+
+  // Logged by request ID only, never the PAN; a call the open breaker refused isn't logged, since
+  // every call is refused then and the breaker's change of state says why.
+  private static Mono<Authorization> issuerUnavailable(String requestId, Throwable error) {
+    if (!(error instanceof CallNotPermittedException)) {
+      log.warn("Authorization {} answered 91: {}", requestId, error.toString());
+    }
+    return Mono.just(Authorization.declined(Authorization.ResponseCode.ISSUER_UNAVAILABLE));
   }
 
   private Counter answers(Authorization.ResponseCode responseCode) {

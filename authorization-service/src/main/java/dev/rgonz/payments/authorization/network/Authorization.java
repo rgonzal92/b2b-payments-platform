@@ -42,7 +42,12 @@ record Authorization(ResponseCode responseCode, String authorizationCode) {
     /** The amount is above the card's, or in another currency. */
     EXCEEDS_AMOUNT("61"),
     /** The security code isn't the card's. */
-    SECURITY_CODE_MISMATCH("N7");
+    SECURITY_CODE_MISMATCH("N7"),
+    /**
+     * Issuer unavailable: the service's database is down, or didn't answer within the time limit.
+     * Sent, never recorded (IssuerAuthorizationService).
+     */
+    ISSUER_UNAVAILABLE("91");
 
     private final String code;
 
