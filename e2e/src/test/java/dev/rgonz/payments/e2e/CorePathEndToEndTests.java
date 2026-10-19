@@ -324,8 +324,9 @@ class CorePathEndToEndTests {
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
     assertThat(json).extractingPath("$.authorization.authorizationCode").asString().hasSize(6);
     // The service's approved Authorization reaches the platform's copy through its outbox and
-    // Kafka a moment after the Network's answer; the Clearing File must not come before it (#94
-    // makes the import wait on its own).
+    // Kafka a moment after the Network's answer. The import waits while the copy lags on the topic
+    // (#94), but the demo imports once through the API, which answers 503 meanwhile, and no lag
+    // check sees an event still in the service's outbox: so the test waits for the copy first.
     String authorizationCode = JsonPath.read(summary, "$.authorization.authorizationCode");
     await()
         .atMost(Duration.ofSeconds(30))

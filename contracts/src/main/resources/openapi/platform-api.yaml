@@ -415,7 +415,9 @@ paths:
         file that fails a check (its layout, its trailer's record count, amount total or currency) answers `422` with
         the check, and nothing in it is posted; either file moves to the drop folder's `failed/` folder. An import that
         stopped partway keeps what it committed and answers `500`; importing the same file name again restarts it where
-        it stopped.
+        it stopped. While the platform's copy of Authorizations lags behind the authorization service, or Kafka can't be
+        reached, nothing is imported and the call answers `503`: the file stays in the drop folder, and the next check
+        of the folder imports it once the copy has caught up.
       requestBody:
         required: true
         content:
@@ -442,6 +444,8 @@ paths:
         '422':
           $ref: '#/components/responses/Problem'
         '500':
+          $ref: '#/components/responses/Problem'
+        '503':
           $ref: '#/components/responses/Problem'
   /v1/clearing-files/{fileId}:
     get:

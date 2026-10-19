@@ -1,5 +1,6 @@
 package dev.rgonz.payments.platform.clearing;
 
+import dev.rgonz.payments.platform.authorization.AuthorizationCopy;
 import dev.rgonz.payments.platform.shared.Money;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -32,6 +33,11 @@ import org.springframework.stereotype.Component;
  * of two importers only one gets it; it waits there until its import completes, then is deleted. A
  * refused file moves on to the folder's {@code failed/} folder, where it waits for a person. Logs
  * name a file by its name or ID, never its contents.
+ *
+ * <p>Before an import starts, it waits for the platform's Authorization Copy to catch up with
+ * authorization-service, so no Clearing is matched against a copy missing its approved
+ * Authorization: while the copy lags, or Kafka can't be reached, the file stays where it is,
+ * untouched, and the next check of the drop folder tries it again (M5 design, "The gaps").
  */
 @Component
 class ClearingFileImports {
@@ -49,6 +55,8 @@ class ClearingFileImports {
   private final Job clearingFileImport;
   private final ClearingFiles files;
   private final MeterRegistry meters;
+  private final AuthorizationCopy authorizationCopy;
+  private final boolean waitForAuthorizationCopy;
 
   // A String, not a Path: Spring converts a Path setting through its resource loader, which
   // resolves a relative path against the classpath, and fails once the platform runs from a jar.
@@ -57,7 +65,9 @@ class ClearingFileImports {
       JobOperator jobOperator,
       Job clearingFileImport,
       ClearingFiles files,
-      MeterRegistry meters) {
+      MeterRegistry meters,
+      AuthorizationCopy authorizationCopy,
+      @Value("${clearing.wait-for-authorization-copy}") boolean waitForAuthorizationCopy) {
     this.dropFolder = Path.of(dropFolder).toAbsolutePath().normalize();
     this.processingFolder = this.dropFolder.resolve("processing");
     this.failedFolder = this.dropFolder.resolve("failed");
@@ -65,6 +75,8 @@ class ClearingFileImports {
     this.clearingFileImport = clearingFileImport;
     this.files = files;
     this.meters = meters;
+    this.authorizationCopy = authorizationCopy;
+    this.waitForAuthorizationCopy = waitForAuthorizationCopy;
     // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
     // before the first increment, or they miss it.
     List.of(IMPORTED, REFUSED, REPEATED).forEach(this::files);
@@ -88,6 +100,16 @@ class ClearingFileImports {
         return new ImportResult.NotFound();
       }
       var file = processingFolder.resolve(fileName);
+      if (Files.notExists(file) && Files.notExists(source)) {
+        return new ImportResult.NotFound();
+      }
+      if (waitForAuthorizationCopy && !authorizationCopy.caughtUp()) {
+        log.warn(
+            "Clearing File {} waits: the platform's Authorization Copy hasn't caught up, or Kafka"
+                + " can't be reached; see docs/runbooks/kafka-down.md",
+            fileName);
+        return new ImportResult.Waiting();
+      }
       if (Files.notExists(file) && !claim(source, file)) {
         return new ImportResult.NotFound();
       }
@@ -288,6 +310,12 @@ class ClearingFileImports {
      * moved to {@code failed/}.
      */
     record Repeated(String earlierFileId) implements ImportResult {}
+
+    /**
+     * The platform's Authorization Copy hasn't caught up, or Kafka can't be reached: the file stays
+     * where it is, untouched, for the next check of the drop folder.
+     */
+    record Waiting() implements ImportResult {}
 
     /** An import of the file is running, or stopped without its end being recorded. */
     record Running(String fileId) implements ImportResult {}
