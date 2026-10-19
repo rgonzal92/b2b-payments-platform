@@ -1,5 +1,6 @@
 package dev.rgonz.payments.authorization.cards;
 
+import dev.rgonz.payments.authorization.outbox.Outbox;
 import io.r2dbc.spi.Readable;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -7,6 +8,7 @@ import java.time.ZoneOffset;
 import java.util.Currency;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Mono;
 
 /**
@@ -17,7 +19,8 @@ import reactor.core.publisher.Mono;
  * ACTIVE} or {@code AUTHORIZED} to {@code CANCELLED} or {@code EXPIRED}, both final. The service's
  * own answers move a card between {@code ACTIVE} and {@code AUTHORIZED}. A card that ends before
  * its {@code CardIssued} arrives is kept with its final status, and the {@code CardIssued} then
- * fills in its details without making it {@code ACTIVE}.
+ * fills in its details without making it {@code ACTIVE}. A card first stored with its details is on
+ * file: a {@link CardOnFile} goes to the {@link Outbox} in the same transaction.
  */
 @Repository
 public class CardCopies {
@@ -30,9 +33,11 @@ public class CardCopies {
       """;
 
   private final DatabaseClient db;
+  private final Outbox outbox;
 
-  CardCopies(DatabaseClient db) {
+  CardCopies(DatabaseClient db, Outbox outbox) {
     this.db = db;
+    this.outbox = outbox;
   }
 
   /** The copy of the card, or empty if no event for it has arrived. */
@@ -74,6 +79,7 @@ public class CardCopies {
   }
 
   /** Applies a card event to the copy; an event already applied changes nothing. */
+  @Transactional
   Mono<Void> apply(CardEvent event) {
     return switch (event) {
       case CardEvent.CardIssued issued -> insertUnlessPresent(issued);
@@ -83,6 +89,8 @@ public class CardCopies {
     };
   }
 
+  // The insert returns the row it wrote: ACTIVE for a card stored for the first time, which is now
+  // on file; the final status for one that ended first, which never is; nothing for a repeat.
   private Mono<Void> insertUnlessPresent(CardEvent.CardIssued issued) {
     var spec =
         db.sql(
@@ -100,6 +108,7 @@ public class CardCopies {
                        currency = excluded.currency,
                        acceptor_id = excluded.acceptor_id
                  where card_copy.pan_hash is null
+                returning status
                 """)
             .bind("cardToken", issued.cardToken())
             .bind("panHash", issued.panHash())
@@ -111,7 +120,10 @@ public class CardCopies {
         issued.acceptorId() == null
             ? spec.bindNull("acceptorId", String.class)
             : spec.bind("acceptorId", issued.acceptorId());
-    return spec.then();
+    return spec.map(row -> CardStatus.valueOf(row.get("status", String.class)))
+        .one()
+        .filter(status -> status == CardStatus.ACTIVE)
+        .flatMap(active -> outbox.append(issued.cardToken(), new CardOnFile(issued.cardToken())));
   }
 
   // CANCELLED and EXPIRED are final, so the first to arrive stays. A card not seen yet is kept
