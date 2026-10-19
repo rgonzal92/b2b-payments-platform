@@ -162,6 +162,12 @@
 			<artifactId>junit5</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- The consumer tests of the authorizations topic's events write the pact authorization-service verifies. -->
+		<dependency>
+			<groupId>au.com.dius.pact.consumer</groupId>
+			<artifactId>junit5</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 	<dependencyManagement>
 		<dependencies>
@@ -192,6 +198,10 @@
 				<artifactId>maven-surefire-plugin</artifactId>
 				<configuration>
 					<systemPropertyVariables>
+						<!-- The consumer tests write their pacts into the repository's pacts folder, where they are
+						     committed: authorization-service builds first and verifies the committed file
+						     (docs/learning/pact.md). -->
+						<pact.rootDir>${project.basedir}/../pacts</pact.rootDir>
 						<!-- Pact JVM otherwise reports anonymous usage statistics over the network on every run. -->
 						<pact_do_not_track>true</pact_do_not_track>
 					</systemPropertyVariables>

@@ -11,7 +11,7 @@ option java_multiple_files = true;
 option java_package = "dev.rgonz.payments.contracts.network";
 option java_outer_classname = "IssuerAuthorizationProto";
 
-// Served by the platform; only the Network may call it (a Keycloak token with the realm role
+// Served by authorization-service (M5); only the Network may call it (a Keycloak token with the realm role
 // `network`, sent as `authorization: Bearer <token>` metadata).
 service IssuerAuthorization {
   // Approve or decline a Charge, in real time.

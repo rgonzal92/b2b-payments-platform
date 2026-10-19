@@ -113,6 +113,13 @@
 			<artifactId>junit5</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- AuthorizationEventsPactVerificationTests checks the authorizations topic's events against the platform's
+		     committed pact. -->
+		<dependency>
+			<groupId>au.com.dius.pact.provider</groupId>
+			<artifactId>junit5</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
