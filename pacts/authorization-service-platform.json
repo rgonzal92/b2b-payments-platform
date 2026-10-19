@@ -64,6 +64,83 @@
     {
       "contents": {
         "content": {
+          "acceptorId": null,
+          "amountMinorUnits": 1240000,
+          "cardToken": "q2yJ0p8bX7mN4vL1sT6wZ3",
+          "currency": "USD",
+          "expiresAt": "2026-11-17T09:30:00.123456Z",
+          "panHash": "3q2+7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "securityCodeHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        },
+        "contentType": "application/json",
+        "encoded": false
+      },
+      "description": "a CardIssued for a card whose Supplier has no Acceptor ID",
+      "key": "2674f50e",
+      "matchingRules": {
+        "body": {
+          "$.amountMinorUnits": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "integer"
+              }
+            ]
+          },
+          "$.cardToken": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.currency": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "^[A-Z]{3}$"
+              }
+            ]
+          },
+          "$.expiresAt": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "regex",
+                "regex": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+              }
+            ]
+          },
+          "$.panHash": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          },
+          "$.securityCodeHash": {
+            "combine": "AND",
+            "matchers": [
+              {
+                "match": "type"
+              }
+            ]
+          }
+        }
+      },
+      "metadata": {
+        "contentType": "application/json",
+        "event-type": "CardIssued"
+      },
+      "pending": false,
+      "type": "Asynchronous/Messages"
+    },
+    {
+      "contents": {
+        "content": {
           "acceptorId": "ACCEPTOR-1",
           "amountMinorUnits": 1240000,
           "cardToken": "q2yJ0p8bX7mN4vL1sT6wZ3",

@@ -49,6 +49,24 @@ class CardEventsPactTests {
             .stringType("acceptorId", "ACCEPTOR-1"));
   }
 
+  // The platform sends no Acceptor ID when no Invoice gave the Supplier one; the service stores
+  // the card anyway, and will decline its Charges.
+  @Pact(consumer = CONSUMER)
+  V4Pact cardIssuedWithoutAcceptorId(PactBuilder builder) {
+    return message(
+        builder,
+        "a CardIssued for a card whose Supplier has no Acceptor ID",
+        "CardIssued",
+        new PactDslJsonBody()
+            .stringType("cardToken", CARD_TOKEN)
+            .stringType("panHash", "3q2+7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .stringType("securityCodeHash", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .stringMatcher("expiresAt", INSTANT, "2026-11-17T09:30:00.123456Z")
+            .integerType("amountMinorUnits", 1_240_000L)
+            .stringMatcher("currency", "^[A-Z]{3}$", "USD")
+            .nullValue("acceptorId"));
+  }
+
   @Pact(consumer = CONSUMER)
   V4Pact cardCancelled(PactBuilder builder) {
     return message(
@@ -80,6 +98,21 @@ class CardEventsPactTests {
                 1_240_000L,
                 Currency.getInstance("USD"),
                 "ACCEPTOR-1"));
+  }
+
+  @Test
+  @PactTestFor(pactMethod = "cardIssuedWithoutAcceptorId")
+  void readsCardIssuedWithoutAcceptorId(V4Interaction.AsynchronousMessage message) {
+    assertThat(read(message))
+        .isEqualTo(
+            new CardEvent.CardIssued(
+                CARD_TOKEN,
+                "3q2+7wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                Instant.parse("2026-11-17T09:30:00.123456Z"),
+                1_240_000L,
+                Currency.getInstance("USD"),
+                null));
   }
 
   @Test

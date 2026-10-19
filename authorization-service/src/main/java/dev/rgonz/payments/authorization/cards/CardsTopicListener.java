@@ -10,8 +10,9 @@ import org.springframework.stereotype.Component;
 /**
  * Keeps the service's copy of the cards up to date from the platform's {@code cards} topic. The
  * offset is committed only after the copy is written, so a crash redelivers the event, and {@link
- * CardCopies} ignores what it already applied. A message that keeps failing is logged and skipped
- * after Spring Kafka's retries.
+ * CardCopies} ignores what it already applied. A message with no {@code event-type} header, or one
+ * the service doesn't use, is logged and skipped; {@link CardsTopicErrorHandling} decides what a
+ * failure does.
  */
 @Component
 class CardsTopicListener {

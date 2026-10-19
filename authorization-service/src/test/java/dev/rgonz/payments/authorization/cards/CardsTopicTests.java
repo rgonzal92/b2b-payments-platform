@@ -5,17 +5,23 @@ import static org.awaitility.Awaitility.await;
 
 import dev.rgonz.payments.authorization.TestcontainersConfiguration;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Currency;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.OffsetSpec;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * The service's copy of the cards, fed from a real Kafka into its own PostgreSQL: the test plays
@@ -40,6 +47,7 @@ class CardsTopicTests {
 
   @Autowired CardCopies copies;
   @Autowired KafkaContainer kafka;
+  @Autowired PostgreSQLContainer postgres;
 
   private KafkaProducer<String, String> producer;
 
@@ -127,9 +135,60 @@ class CardsTopicTests {
     assertThat(copies.find(cardToken).block()).isEqualTo(cancelled);
   }
 
+  @Test
+  void aCardIssuedThatArrivesWhileTheDatabaseIsDownIsStoredOnceItIsBack() throws SQLException {
+    // The consumer is up and reading before the database goes down.
+    var earlierCard = newCardToken();
+    send(earlierCard, "CardIssued", cardIssuedJson(earlierCard));
+    awaitCopy(earlierCard, CardStatus.ACTIVE);
+    var cardToken = newCardToken();
+    // Connected to the server's postgres database: PostgreSQL won't refuse connections to the
+    // database the statement runs in.
+    try (var admin =
+        DriverManager.getConnection(
+            postgres.getJdbcUrl().replace("/" + postgres.getDatabaseName(), "/postgres"),
+            postgres.getUsername(),
+            postgres.getPassword())) {
+      refuseConnections(admin, postgres.getDatabaseName(), true);
+
+      send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+
+      // The partition waits on the event, retrying, instead of skipping it: longer than ten tries
+      // take, each failing to connect in about half a second.
+      await()
+          .during(Duration.ofSeconds(10))
+          .atMost(Duration.ofSeconds(12))
+          .until(() -> !allConsumed());
+      refuseConnections(admin, postgres.getDatabaseName(), false);
+    }
+
+    awaitCopy(cardToken, CardStatus.ACTIVE);
+  }
+
+  @Test
+  void messagesThatCanNeverBeReadAreSkippedAndTheEventsAfterThemStillArrive() {
+    var cardToken = newCardToken();
+    var otherCard = newCardToken();
+    var tokenOnly = "{\"cardToken\":\"" + cardToken + "\"}";
+    send(cardToken, "CardIssued", cardIssuedJson(cardToken));
+    awaitCopy(cardToken, CardStatus.ACTIVE);
+
+    send(cardToken, null, tokenOnly);
+    send(cardToken, "CardRevoked", tokenOnly);
+    send(cardToken, "CardCancelled", "{not json");
+    send(otherCard, "CardIssued", "{\"cardToken\":\"" + otherCard + "\"}");
+    send(cardToken, "CardExpired", tokenOnly);
+
+    awaitCopy(cardToken, CardStatus.EXPIRED);
+    awaitAllConsumed();
+    assertThat(copies.find(otherCard).blockOptional()).isEmpty();
+  }
+
   private void send(String cardToken, String eventType, String json) {
     var record = new ProducerRecord<>(TOPIC, cardToken, json);
-    record.headers().add("event-type", eventType.getBytes(StandardCharsets.UTF_8));
+    if (eventType != null) {
+      record.headers().add("event-type", eventType.getBytes(StandardCharsets.UTF_8));
+    }
     producer.send(record);
     producer.flush();
   }
@@ -149,33 +208,54 @@ class CardsTopicTests {
   // The service's consumer group has committed every message the topic holds: whatever was sent
   // has been handled, including a repeat that changed nothing.
   private void awaitAllConsumed() {
+    await().atMost(Duration.ofSeconds(30)).until(this::allConsumed);
+  }
+
+  private boolean allConsumed() throws Exception {
     try (var admin = Admin.create(Map.of("bootstrap.servers", kafka.getBootstrapServers()))) {
-      await()
-          .atMost(Duration.ofSeconds(30))
-          .untilAsserted(
-              () -> {
-                var committed =
-                    admin.listConsumerGroupOffsets(GROUP).partitionsToOffsetAndMetadata().get();
-                var ends =
-                    admin
-                        .listOffsets(
-                            committed.keySet().stream()
-                                .collect(
-                                    Collectors.toMap(
-                                        partition -> partition, partition -> OffsetSpec.latest())))
-                        .all()
-                        .get();
-                assertThat(committed).isNotEmpty();
-                committed.forEach(
-                    (partition, offset) ->
-                        assertThat(offset.offset())
-                            .as("committed offset of %s", partition)
-                            .isEqualTo(ends.get(partition).offset()));
+      var partitions =
+          admin
+              .describeTopics(List.of(TOPIC))
+              .allTopicNames()
+              .get()
+              .get(TOPIC)
+              .partitions()
+              .stream()
+              .map(info -> new TopicPartition(TOPIC, info.partition()))
+              .toList();
+      var ends =
+          admin
+              .listOffsets(
+                  partitions.stream()
+                      .collect(Collectors.toMap(partition -> partition, p -> OffsetSpec.latest())))
+              .all()
+              .get();
+      Map<TopicPartition, OffsetAndMetadata> committed =
+          admin.listConsumerGroupOffsets(GROUP).partitionsToOffsetAndMetadata().get();
+      return partitions.stream()
+          .allMatch(
+              partition -> {
+                var offset = committed.get(partition);
+                return (offset == null ? 0 : offset.offset()) == ends.get(partition).offset();
               });
     }
   }
 
-  // Each card's PAN hash is unique, as each card's PAN is.
+  // Stands in for the service's database going down: it ends every other connection and accepts
+  // no new one until allowed again.
+  private static void refuseConnections(Connection admin, String database, boolean refuse)
+      throws SQLException {
+    try (var statement = admin.createStatement()) {
+      statement.execute("alter database " + database + " allow_connections " + !refuse);
+      if (refuse) {
+        statement.execute(
+            "select pg_terminate_backend(pid) from pg_stat_activity where datname = '"
+                + database
+                + "'");
+      }
+    }
+  }
+
   private static String cardIssuedJson(String cardToken) {
     return """
         {"cardToken":"%1$s",

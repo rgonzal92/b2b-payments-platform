@@ -51,8 +51,9 @@ public class CardCopies {
   Mono<Void> apply(CardEvent event) {
     return switch (event) {
       case CardEvent.CardIssued issued -> insertUnlessPresent(issued);
-      case CardEvent.CardCancelled cancelled -> finish(cancelled.cardToken(), CardStatus.CANCELLED);
-      case CardEvent.CardExpired expired -> finish(expired.cardToken(), CardStatus.EXPIRED);
+      case CardEvent.CardCancelled cancelled ->
+          endUnlessFinal(cancelled.cardToken(), CardStatus.CANCELLED);
+      case CardEvent.CardExpired expired -> endUnlessFinal(expired.cardToken(), CardStatus.EXPIRED);
     };
   }
 
@@ -81,7 +82,7 @@ public class CardCopies {
   }
 
   // CANCELLED and EXPIRED are final, so the first to arrive stays.
-  private Mono<Void> finish(String cardToken, CardStatus status) {
+  private Mono<Void> endUnlessFinal(String cardToken, CardStatus status) {
     return db.sql(
             """
             update card_copy

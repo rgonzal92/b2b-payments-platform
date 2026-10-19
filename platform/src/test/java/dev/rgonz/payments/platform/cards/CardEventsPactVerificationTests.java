@@ -75,6 +75,12 @@ class CardEventsPactVerificationTests {
     return published(issue(Instant.now()).cardToken(), "CardIssued");
   }
 
+  // The saga passes no Acceptor ID when no Invoice gave the Supplier one.
+  @PactVerifyProvider("a CardIssued for a card whose Supplier has no Acceptor ID")
+  MessageAndMetadata cardIssuedWithoutAcceptorId() {
+    return published(issue(Instant.now(), null).cardToken(), "CardIssued");
+  }
+
   @PactVerifyProvider("a CardCancelled for a cancelled card")
   MessageAndMetadata cardCancelled() {
     var card = issue(Instant.now());
@@ -90,11 +96,15 @@ class CardEventsPactVerificationTests {
   }
 
   private SingleUseCard issue(Instant now) {
+    return issue(now, "ACCEPTOR-1");
+  }
+
+  private SingleUseCard issue(Instant now, String acceptorId) {
     return cards.issueSingleUse(
         UUID.randomUUID(),
         new BuyerId(UUID.randomUUID()),
         UUID.randomUUID(),
-        "ACCEPTOR-1",
+        acceptorId,
         AMOUNT,
         now);
   }
