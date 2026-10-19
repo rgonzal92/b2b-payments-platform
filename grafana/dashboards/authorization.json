@@ -289,7 +289,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (client_id) (kafka_consumer_fetch_manager_records_lag{topic=\"cards\"})",
+          "expr": "sum by (client_id) (kafka_consumer_fetch_manager_records_lag{job=\"authorization-service\", topic=\"cards\"})",
           "legendFormat": "{{client_id}}",
           "range": true
         }
@@ -336,7 +336,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (client_id) (kafka_consumer_fetch_manager_records_lag{topic=\"authorizations\"})",
+          "expr": "sum by (client_id) (kafka_consumer_fetch_manager_records_lag{job=\"platform\", topic=\"authorizations\"})",
           "legendFormat": "{{client_id}}",
           "range": true
         }

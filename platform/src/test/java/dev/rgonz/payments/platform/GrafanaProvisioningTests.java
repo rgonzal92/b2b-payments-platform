@@ -12,7 +12,10 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.yaml.snakeyaml.Yaml;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -36,9 +39,10 @@ class GrafanaProvisioningTests {
           "grpc_server_milliseconds_sum",
           "authorization_answers_total",
           // Both apps' Kafka consumers, through Spring Boot's Kafka client metrics: each
-          // partition's
-          // lag behind the topic's end, labelled by topic and client_id.
+          // partition's lag behind the topic's end, labelled by topic and client_id.
           "kafka_consumer_fetch_manager_records_lag",
+          // Every app's OTLP resource, one series per app, refreshed by each metrics export.
+          "target_info",
           // payables: Payments and PaymentSaga, and WaitingPaymentsMetric's gauges (the oldest
           // wait has the base unit seconds, so it gains _seconds).
           "payments_state_changes_total",
@@ -62,11 +66,10 @@ class GrafanaProvisioningTests {
   @Test
   void everyDashboardQueriesOnlyExportedMetrics() throws IOException {
     for (var name : List.of("authorization", "payments", "clearing", "breaks")) {
-      var dashboard = json.readTree(GRAFANA.resolve("dashboards").resolve(name + ".json").toFile());
+      var dashboard = dashboard(name);
 
       assertThat(dashboard.path("uid").asString()).as(name).isEqualTo(name);
       assertThat(dashboard.path("title").asString()).as(name).isNotBlank();
-      var expressions = new ArrayList<String>();
       for (var panel : dashboard.path("panels")) {
         for (var target : panel.path("targets")) {
           assertThat(target.path("datasource").path("uid").asString())
@@ -79,11 +82,9 @@ class GrafanaProvisioningTests {
                   "%s: %s is either a range or an instant query",
                   name, panel.path("title").asString())
               .isTrue();
-          expressions.add(target.path("expr").asString());
         }
       }
-      assertThat(expressions).as(name).isNotEmpty();
-      assertThat(expressions.stream().flatMap(GrafanaProvisioningTests::metricsIn))
+      assertThat(expressions(name).stream().flatMap(GrafanaProvisioningTests::metricsIn))
           .as(name)
           .isNotEmpty()
           .isSubsetOf(EXPORTED_METRICS);
@@ -109,12 +110,15 @@ class GrafanaProvisioningTests {
         .anySatisfy(
             expr ->
                 assertThat(expr)
-                    .contains("kafka_consumer_fetch_manager_records_lag{topic=\"cards\"}"))
+                    .contains(
+                        "kafka_consumer_fetch_manager_records_lag{job=\"authorization-service\","
+                            + " topic=\"cards\"}"))
         .anySatisfy(
             expr ->
                 assertThat(expr)
                     .contains(
-                        "kafka_consumer_fetch_manager_records_lag{topic=\"authorizations\"}"));
+                        "kafka_consumer_fetch_manager_records_lag{job=\"platform\","
+                            + " topic=\"authorizations\"}"));
   }
 
   @Test
@@ -160,6 +164,18 @@ class GrafanaProvisioningTests {
     assertThat(thresholdOf(rule)).containsEntry("type", "gt").containsEntry("params", List.of(300));
   }
 
+  // The p99 rule sees no data when the service is down, as when the Network is idle: a rule per app
+  // fires once it has exported nothing for 5 minutes. Each export refreshes the app's target_info.
+  @ParameterizedTest
+  @ValueSource(strings = {"authorization-service", "platform"})
+  void theAlertRuleFiresWhenAnAppHasExportedNothingFor5Minutes(String app) throws IOException {
+    var rule = rule(app + "-not-exporting");
+
+    assertThat(queryOf(rule)).isEqualTo("absent_over_time(target_info{job=\"" + app + "\"}[5m])");
+    assertThat(thresholdOf(rule)).containsEntry("type", "gt").containsEntry("params", List.of(0));
+    assertThat(rule.get("noDataState")).as("present: nothing absent").isEqualTo("OK");
+  }
+
   // The provisioned rule with this uid, from any group.
   private static Map<String, Object> rule(String uid) throws IOException {
     Map<String, Object> alerting = yaml(GRAFANA.resolve("provisioning/alerting.yaml"));
@@ -192,12 +208,14 @@ class GrafanaProvisioningTests {
     return map(map(list(threshold.get("conditions")).getFirst()).get("evaluator"));
   }
 
+  private JsonNode dashboard(String name) throws IOException {
+    return json.readTree(GRAFANA.resolve("dashboards").resolve(name + ".json").toFile());
+  }
+
   // Every query of the dashboard's panels.
   private List<String> expressions(String dashboard) throws IOException {
     var expressions = new ArrayList<String>();
-    for (var panel :
-        json.readTree(GRAFANA.resolve("dashboards").resolve(dashboard + ".json").toFile())
-            .path("panels")) {
+    for (var panel : dashboard(dashboard).path("panels")) {
       for (var target : panel.path("targets")) {
         expressions.add(target.path("expr").asString());
       }
