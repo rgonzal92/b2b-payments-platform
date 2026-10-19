@@ -15,6 +15,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
 import dev.rgonz.payments.platform.authorization.AuthorizationEvent;
+import dev.rgonz.payments.platform.authorization.CaughtUpAuthorizationCopy;
 import dev.rgonz.payments.platform.authorization.ServiceAuthorizations;
 import dev.rgonz.payments.platform.cards.CardExpired;
 import dev.rgonz.payments.platform.cards.CardExpiryJob;
@@ -78,7 +79,7 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
  * CLEARED}, and so does its Hold if still open. The cards are issued the way the Payment saga does
  * it, and charged the way authorization-service's approved Authorizations reach the platform.
  */
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, CaughtUpAuthorizationCopy.class})
 @SpringBootTest
 @AutoConfigureMockMvc
 class ClearingFileImportTests {

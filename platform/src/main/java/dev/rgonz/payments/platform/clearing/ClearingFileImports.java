@@ -1,6 +1,6 @@
 package dev.rgonz.payments.platform.clearing;
 
-import dev.rgonz.payments.platform.authorization.AuthorizationCopy;
+import dev.rgonz.payments.platform.authorization.AuthorizationCopyFreshness;
 import dev.rgonz.payments.platform.shared.Money;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
@@ -55,8 +56,7 @@ class ClearingFileImports {
   private final Job clearingFileImport;
   private final ClearingFiles files;
   private final MeterRegistry meters;
-  private final AuthorizationCopy authorizationCopy;
-  private final boolean waitForAuthorizationCopy;
+  private final AuthorizationCopyFreshness authorizationCopy;
 
   // A String, not a Path: Spring converts a Path setting through its resource loader, which
   // resolves a relative path against the classpath, and fails once the platform runs from a jar.
@@ -66,8 +66,7 @@ class ClearingFileImports {
       Job clearingFileImport,
       ClearingFiles files,
       MeterRegistry meters,
-      AuthorizationCopy authorizationCopy,
-      @Value("${clearing.wait-for-authorization-copy}") boolean waitForAuthorizationCopy) {
+      AuthorizationCopyFreshness authorizationCopy) {
     this.dropFolder = Path.of(dropFolder).toAbsolutePath().normalize();
     this.processingFolder = this.dropFolder.resolve("processing");
     this.failedFolder = this.dropFolder.resolve("failed");
@@ -76,7 +75,6 @@ class ClearingFileImports {
     this.files = files;
     this.meters = meters;
     this.authorizationCopy = authorizationCopy;
-    this.waitForAuthorizationCopy = waitForAuthorizationCopy;
     // Each series exists from startup at zero: Prometheus's rate() and increase() need a sample
     // before the first increment, or they miss it.
     List.of(IMPORTED, REFUSED, REPEATED).forEach(this::files);
@@ -103,7 +101,7 @@ class ClearingFileImports {
       if (Files.notExists(file) && Files.notExists(source)) {
         return new ImportResult.NotFound();
       }
-      if (waitForAuthorizationCopy && !authorizationCopy.caughtUp()) {
+      if (!authorizationCopy.caughtUp()) {
         log.warn(
             "Clearing File {} waits: the platform's Authorization Copy hasn't caught up, or Kafka"
                 + " can't be reached; see docs/runbooks/kafka-down.md",
@@ -127,32 +125,39 @@ class ClearingFileImports {
   }
 
   /**
-   * Imports each new file in the drop folder, one after another, in name order. A name starting
-   * with {@code .} is a file the Network is still writing, and waits for its rename (the layout's
-   * delivery rule). A file whose import fails is logged and left where it is; the next one still
-   * imports.
+   * Restarts each import waiting in {@code processing/}, then imports each new file in the drop
+   * folder, one after another, each folder in name order. A file waits in {@code processing/} when
+   * its import stopped partway, or when its restart waited for the Authorization Copy. A name
+   * starting with {@code .} is a file the Network is still writing, and waits for its rename (the
+   * layout's delivery rule). A file whose import fails is logged and left where it is; the next one
+   * still imports.
    */
   void importNewFiles() {
-    List<String> names;
-    try (var entries = Files.list(dropFolder)) {
-      names =
-          entries
-              .filter(Files::isRegularFile)
-              .map(file -> file.getFileName().toString())
-              .filter(name -> !name.startsWith("."))
-              .sorted()
-              .toList();
-    } catch (NoSuchFileException noFolderYet) {
-      return;
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
+    var names =
+        Stream.concat(fileNames(processingFolder).stream(), fileNames(dropFolder).stream())
+            .distinct()
+            .toList();
     for (var name : names) {
       try {
         importFile(name);
       } catch (RuntimeException e) {
         log.error("Couldn't import Clearing File {}", name, e);
       }
+    }
+  }
+
+  private static List<String> fileNames(Path folder) {
+    try (var entries = Files.list(folder)) {
+      return entries
+          .filter(Files::isRegularFile)
+          .map(file -> file.getFileName().toString())
+          .filter(name -> !name.startsWith("."))
+          .sorted()
+          .toList();
+    } catch (NoSuchFileException noFolderYet) {
+      return List.of();
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
   }
 

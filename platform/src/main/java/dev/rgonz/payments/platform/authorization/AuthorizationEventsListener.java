@@ -20,6 +20,7 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 class AuthorizationEventsListener {
 
+  static final String TOPIC = "authorizations";
   static final String GROUP_ID = "platform-authorization";
   private static final Logger log = LoggerFactory.getLogger(AuthorizationEventsListener.class);
   private static final String EVENT_TYPE_HEADER = "event-type";
@@ -33,7 +34,7 @@ class AuthorizationEventsListener {
 
   // The record's timestamp is when the service's relay sent the event: the card's 7 days to clear
   // count from it, not from when the platform caught up.
-  @KafkaListener(topics = "authorizations", groupId = GROUP_ID)
+  @KafkaListener(topics = TOPIC, groupId = GROUP_ID)
   void onAuthorizationsEvent(ConsumerRecord<String, String> record) {
     var header = record.headers().lastHeader(EVENT_TYPE_HEADER);
     if (header == null) {

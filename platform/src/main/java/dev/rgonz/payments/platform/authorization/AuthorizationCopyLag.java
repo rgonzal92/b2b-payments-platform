@@ -1,7 +1,10 @@
 package dev.rgonz.payments.platform.authorization;
 
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import org.apache.kafka.clients.admin.Admin;
@@ -20,10 +23,10 @@ import org.springframework.stereotype.Component;
  * after 5 seconds, so a Kafka outage answers "not caught up" without holding the drop-folder check.
  */
 @Component
-class AuthorizationCopyLag implements AuthorizationCopy, DisposableBean {
+class AuthorizationCopyLag implements AuthorizationCopyFreshness, DisposableBean {
 
   private static final Logger log = LoggerFactory.getLogger(AuthorizationCopyLag.class);
-  private static final String TOPIC = "authorizations";
+  private static final String TOPIC = AuthorizationEventsListener.TOPIC;
   private static final int TIMEOUT_MS = 5_000;
 
   private final Admin admin;
@@ -39,15 +42,15 @@ class AuthorizationCopyLag implements AuthorizationCopy, DisposableBean {
   @Override
   public boolean caughtUp() {
     try {
-      var lag = lag();
-      if (lag > 0) {
+      var lags = lags();
+      if (!lags.isEmpty()) {
         log.info(
-            "The Authorization Copy lags {} events behind the {} topic (group {})",
-            lag,
+            "The Authorization Copy lags behind the {} topic (group {}), by partition: {}",
             TOPIC,
-            AuthorizationEventsListener.GROUP_ID);
+            AuthorizationEventsListener.GROUP_ID,
+            lags);
       }
-      return lag == 0;
+      return lags.isEmpty();
     } catch (ExecutionException e) {
       log.warn(
           "Couldn't read the Authorization Copy's lag from Kafka: {}", e.getCause().toString());
@@ -58,30 +61,63 @@ class AuthorizationCopyLag implements AuthorizationCopy, DisposableBean {
     }
   }
 
-  private long lag() throws ExecutionException, InterruptedException {
+  /**
+   * Each partition the group hasn't read to its end, with how many events it is behind: from the
+   * offset the group committed, or, on a partition it never committed on, from the partition's
+   * first retained offset, where the group would start (auto-offset-reset earliest). Partition by
+   * partition, so one partition can't offset another's lag.
+   */
+  static Map<TopicPartition, Long> lags(
+      Map<TopicPartition, Long> ends,
+      Map<TopicPartition, Long> committed,
+      Map<TopicPartition, Long> firsts) {
+    var lags =
+        new TreeMap<TopicPartition, Long>(Comparator.comparingInt(TopicPartition::partition));
+    ends.forEach(
+        (partition, end) -> {
+          var read =
+              committed.containsKey(partition) ? committed.get(partition) : firsts.get(partition);
+          if (read < end) {
+            lags.put(partition, end - read);
+          }
+        });
+    return lags;
+  }
+
+  private Map<TopicPartition, Long> lags() throws ExecutionException, InterruptedException {
     var partitions =
         admin.describeTopics(List.of(TOPIC)).allTopicNames().get().get(TOPIC).partitions().stream()
             .map(info -> new TopicPartition(TOPIC, info.partition()))
             .toList();
-    var ends =
-        admin
-            .listOffsets(
-                partitions.stream()
-                    .collect(Collectors.toMap(partition -> partition, _ -> OffsetSpec.latest())))
-            .all()
-            .get();
-    var committed =
-        admin
-            .listConsumerGroupOffsets(AuthorizationEventsListener.GROUP_ID)
-            .partitionsToOffsetAndMetadata()
-            .get();
-    var lag = 0L;
-    for (var partition : partitions) {
-      // A partition the group never committed on lags by all it holds.
-      var read = committed.get(partition);
-      lag += ends.get(partition).offset() - (read == null ? 0 : read.offset());
-    }
-    return lag;
+    var ends = offsets(partitions, OffsetSpec.latest());
+    var committed = new HashMap<TopicPartition, Long>();
+    admin
+        .listConsumerGroupOffsets(AuthorizationEventsListener.GROUP_ID)
+        .partitionsToOffsetAndMetadata()
+        .get()
+        .forEach(
+            (partition, offset) -> {
+              if (offset != null) {
+                committed.put(partition, offset.offset());
+              }
+            });
+    var uncommitted = partitions.stream().filter(p -> !committed.containsKey(p)).toList();
+    var firsts =
+        uncommitted.isEmpty()
+            ? Map.<TopicPartition, Long>of()
+            : offsets(uncommitted, OffsetSpec.earliest());
+    return lags(ends, committed, firsts);
+  }
+
+  private Map<TopicPartition, Long> offsets(List<TopicPartition> partitions, OffsetSpec spec)
+      throws ExecutionException, InterruptedException {
+    return admin
+        .listOffsets(partitions.stream().collect(Collectors.toMap(p -> p, _ -> spec)))
+        .all()
+        .get()
+        .entrySet()
+        .stream()
+        .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().offset()));
   }
 
   @Override

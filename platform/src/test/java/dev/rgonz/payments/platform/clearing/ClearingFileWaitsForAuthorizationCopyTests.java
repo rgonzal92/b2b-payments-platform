@@ -43,8 +43,7 @@ import org.testcontainers.kafka.KafkaContainer;
     properties = {
       "payables.payment-worker.enabled=false",
       "cards.expiry-job.enabled=false",
-      "spring.kafka.listener.auto-startup=true",
-      "clearing.wait-for-authorization-copy=true"
+      "spring.kafka.listener.auto-startup=true"
     })
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
@@ -102,6 +101,40 @@ class ClearingFileWaitsForAuthorizationCopyTests {
             });
   }
 
+  // An import that stopped left its file in processing/: its restart waits there the same way, and
+  // the drop-folder check restarts it once the copy has caught up.
+  @Test
+  void aRestartInProcessingWaitsWhileTheCopyLagsAndTheCheckImportsItOnceCaughtUp(
+      CapturedOutput output) throws Exception {
+    var topic = new TestAuthorizationsTopic(kafka);
+    var fileId = newId("F", 16);
+    var fileName = dropOneClearing(fileId, 33);
+    var processing = DROP_FOLDER.resolve("processing");
+    Files.createDirectories(processing);
+    Files.move(DROP_FOLDER.resolve(fileName), processing.resolve(fileName));
+    var copyListener = copyListener();
+    copyListener.stop();
+    try {
+      topic.send("card-token-2", "CardOnFile", "{\"cardToken\":\"card-token-2\"}");
+
+      imports.importNewFiles();
+
+      assertThat(processing.resolve(fileName)).exists();
+      assertThat(files.find(fileId)).isEmpty();
+      assertThat(output).contains("Clearing File " + fileName + " waits");
+    } finally {
+      copyListener.start();
+    }
+    topic.awaitConsumed(COPY_GROUP);
+
+    imports.importNewFiles();
+
+    assertThat(processing.resolve(fileName)).doesNotExist();
+    assertThat(files.find(fileId))
+        .hasValueSatisfying(
+            file -> assertThat(file.status()).isEqualTo(ClearingFileSummary.Status.IMPORTED));
+  }
+
   @Test
   void aFileWaitsWhileKafkaIsDownAndTheImportAnswersWithinSeconds(CapturedOutput output) {
     var fileId = newId("F", 16);
@@ -109,6 +142,14 @@ class ClearingFileWaitsForAuthorizationCopyTests {
     var docker = kafka.getDockerClient();
     docker.pauseContainerCmd(kafka.getContainerId()).exec();
     try {
+      // The drop-folder check leaves it where it is.
+      imports.importNewFiles();
+
+      assertThat(DROP_FOLDER.resolve(fileName)).exists();
+      assertThat(files.find(fileId)).isEmpty();
+      assertThat(output).contains("Clearing File " + fileName + " waits");
+
+      // So does an import through the endpoint, answering within seconds.
       var started = Instant.now();
 
       var response =
@@ -124,7 +165,6 @@ class ClearingFileWaitsForAuthorizationCopyTests {
       assertThat(response.getResponse().getContentType()).isEqualTo("application/problem+json");
       assertThat(DROP_FOLDER.resolve(fileName)).exists();
       assertThat(files.find(fileId)).isEmpty();
-      assertThat(output).contains("Clearing File " + fileName + " waits");
     } finally {
       docker.unpauseContainerCmd(kafka.getContainerId()).exec();
     }
