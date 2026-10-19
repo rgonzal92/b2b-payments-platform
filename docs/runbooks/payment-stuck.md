@@ -28,25 +28,32 @@ select id, publication_date, status, completion_attempts
 ```
 
 1. Look in the platform's logs for `Unexpected exception occurred invoking async method` naming `PaymentSaga.start`, and fix its cause (usually the database).
-2. Restart the platform. It delivers incomplete publications again at startup (`spring.modulith.events.republish-outstanding-events-on-restart=true`). Starting a Payment twice is harmless: the second delivery finds the Invoice's Payment and does nothing.
+2. Wait a minute: the platform delivers every publication still incomplete after a minute again, once a minute (`EventResubmissionSchedule`), and at startup (`spring.modulith.events.republish-outstanding-events-on-restart=true`). Starting a Payment twice is harmless: the second delivery finds the Invoice's Payment and does nothing.
 
 ## A Payment stays `CARD_ISSUED`: its card isn't on file
 
 A `CARD_ISSUED` Payment has no step due: it waits, its Hold placed, until `authorization-service` has copied the card from the `cards` topic and said so on the `authorizations` topic. The wait has no time limit; the card's expiry after 30 days ends it (`EXPIRED`, its Hold released). Nothing is lost while it waits, so fix the link and the Payments move on by themselves, oldest first:
 
 ```sql
-select p.id, p.invoice_id, c.card_token, c.issued_at
-  from payables.payment p
-  join cards.card c on c.payment_id = p.id
- where p.state = 'CARD_ISSUED'
- order by c.issued_at;
+select id, invoice_id, card_issued_at
+  from payables.payment
+ where state = 'CARD_ISSUED'
+ order by card_issued_at;
 ```
 
+Then each one's card, in its own module's schema (ADR-0009):
+
+```sql
+select card_token, issued_at from cards.card where payment_id = '<payment id>';
+```
+
+The gauges `payments.waiting.card.on.file` and `payments.waiting.card.on.file.oldest` (seconds) show the same in Grafana, refreshed every 30 seconds.
+
 1. **The service isn't running**, or is failing: <http://localhost:8082/actuator/health> should answer `UP`. Start it beside the platform (README, step 2).
-2. **Kafka is down**, or the card never left the platform: see [`kafka-down.md`](kafka-down.md). An incomplete `CardIssued` in `modulith.event_publication` means the platform hasn't sent it yet.
+2. **Kafka is down**, or the card never left the platform: see [`kafka-down.md`](kafka-down.md). An incomplete `CardIssued` in `modulith.event_publication` means the platform hasn't sent it yet; it sends it again every minute while it stays incomplete.
 3. **The service hasn't stored the card:** in its database (`docker compose exec authorization-postgres psql -U authorization`), `select status from card_copy where card_token = '<token>';`. No row, with its consumer's lag at 0 (`kafka-consumer-groups.sh --describe --group authorization-service`), means it skipped the message (its log says why), or the card was cancelled or expired before its `CardIssued` arrived, which is never put on file. An unsent `CardOnFile` row in its `outbox` means its relay is stuck: [`kafka-down.md`](kafka-down.md#the-services-outbox).
-4. **The platform isn't reading the topic:** `docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group platform-payables` shows each partition's lag. A lag that doesn't fall means the platform's listener is retrying a message it can't apply, usually because the platform's database is down: its log repeats the failure, and the partition resumes once the cause is fixed. No group, or no member, means the platform's listener isn't running (`spring.kafka.listener.auto-startup=false`?). A message the platform can't read is skipped and logged by partition and offset, and so is a card it never issued (`Skipped CardOnFile for card …`).
-5. **A partition is never assigned:** if `kafka-topics.sh --describe --topic authorizations` shows fewer than 3 partitions, or the group shows partitions with no owner, restart the platform: its consumer was assigned the topic as it was when it subscribed.
+4. **The platform isn't reading the topic:** `docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group platform-payables` shows each partition's lag. A lag that doesn't fall means the platform's listener is retrying a message it can't apply, usually because the platform's database is down: its log repeats the failure, and the partition resumes once the cause is fixed. No group, or no member, means the platform's listener isn't running (`spring.kafka.listener.auto-startup=false`?). A message the platform can't read (malformed JSON, no `cardToken`, no value, no `event-type` header) is skipped and logged by partition and offset, and a card it never issued is skipped too (`Skipped CardOnFile for card …`).
+5. **A partition is never assigned:** if `kafka-topics.sh --describe --topic authorizations` shows fewer than 3 partitions, or the group shows partitions with no owner, restart the platform: its consumer was assigned the topic as it was when it subscribed. Both apps declare both topics with 3 partitions, so this happens only if something else created a topic first.
 
 ## A Payment stays `STARTED`, `HOLD_PLACED` or `CARD_ON_FILE`
 
