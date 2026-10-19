@@ -24,10 +24,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -56,10 +53,10 @@ import org.testcontainers.utility.DockerImageName;
  * ask the platform over gRPC, signed in as the network client, and the platform approves the
  * Charge. Then the demo's second call has the Network write its Clearing File into the platform's
  * drop folder and Issuer staff import it, and its third has Issuer staff run today's
- * Reconciliation, which finds no Break.
+ * Reconciliation, which finds no Break. Last, the simulator seeds a few load-test cards through the
+ * same path.
  */
 @Testcontainers
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class CorePathEndToEndTests {
 
   // TEST-ONLY client secret for every client in the realm file, not a secret.
@@ -121,6 +118,8 @@ class CorePathEndToEndTests {
     var platformGrpcPort = TestSocketUtils.findAvailableTcpPort();
     simulatorPort = TestSocketUtils.findAvailableTcpPort();
     var issuerUri = keycloak.getAuthServerUrl() + "/realms/payments";
+    // Before the platform: either may start first, as each declares both topics.
+    authorizationService = startAuthorizationService(issuerUri);
 
     platform =
         start(
@@ -143,9 +142,6 @@ class CorePathEndToEndTests {
             "clearing.drop-folder-check.enabled=false",
             // The cards topic out to the service, and its authorizations topic back.
             "spring.kafka.bootstrap-servers=" + kafka.getBootstrapServers());
-    // After the platform, as the README starts them: the platform creates the cards topic with its
-    // three partitions before the service subscribes to it.
-    authorizationService = startAuthorizationService(issuerUri);
     // Returns once BuyerSeeder has created Acme and Initech and their Credit Lines through the
     // platform.
     simulator =
@@ -297,9 +293,9 @@ class CorePathEndToEndTests {
   }
 
   @Test
-  @Order(1)
-  // The demo itself waits up to 30 seconds for the worker to pay the Invoice.
-  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  // The demo itself waits up to 30 seconds for the worker to pay the Invoice, and the seeding up
+  // to two minutes for each of its Payments, though they take seconds.
+  @Timeout(value = 90, unit = TimeUnit.SECONDS)
   void theDemoInvoiceIsPaidItsChargeApprovedClearedFromTheNetworksFileAndReconciledWithoutABreak()
       throws IOException {
     var summary =
@@ -423,14 +419,9 @@ class CorePathEndToEndTests {
                 .formatted(
                     JsonPath.<String>read(reconciled, "$.run.runId"),
                     LocalDate.now(ZoneOffset.UTC)));
-  }
 
-  // The load test's cards are paid through the same path, Initech's instead of Acme's, after the
-  // core path so its Reconciliation sees only the demo's Charge.
-  @Test
-  @Order(2)
-  @Timeout(value = 60, unit = TimeUnit.SECONDS)
-  void theLoadTestSeedingWritesACardForEveryInvoiceItPays() throws IOException {
+    // Last, after the Reconciliation it would change: the load test's cards, Initech's Invoices
+    // paid through the same path, a card written for each.
     var seeded =
         RestClient.create()
             .post()
