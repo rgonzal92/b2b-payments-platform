@@ -1,5 +1,6 @@
 package dev.rgonz.payments.authorization.cards;
 
+import io.r2dbc.spi.Readable;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -13,12 +14,20 @@ import reactor.core.publisher.Mono;
  * at least once, so every write is keyed on the event's natural ID, the Card Token and the event
  * type, and does nothing the second time. The platform may also send one card's events out of
  * order, so they apply in any order to the same result: a status only moves forward, from {@code
- * ACTIVE} to {@code CANCELLED} or {@code EXPIRED}, both final. A card that ends before its {@code
- * CardIssued} arrives is kept with its final status, and the {@code CardIssued} then fills in its
- * details without making it {@code ACTIVE}.
+ * ACTIVE} or {@code AUTHORIZED} to {@code CANCELLED} or {@code EXPIRED}, both final. The service's
+ * own answers move a card between {@code ACTIVE} and {@code AUTHORIZED}. A card that ends before
+ * its {@code CardIssued} arrives is kept with its final status, and the {@code CardIssued} then
+ * fills in its details without making it {@code ACTIVE}.
  */
 @Repository
 public class CardCopies {
+
+  private static final String SELECT =
+      """
+      select card_token, pan_hash, security_code_hash, expires_at, amount_minor, currency,
+             acceptor_id, status
+        from card_copy
+      """;
 
   private final DatabaseClient db;
 
@@ -28,26 +37,40 @@ public class CardCopies {
 
   /** The copy of the card, or empty if no event for it has arrived. */
   public Mono<CardCopy> find(String cardToken) {
-    return db.sql(
-            """
-            select card_token, pan_hash, security_code_hash, expires_at, amount_minor, currency,
-                   acceptor_id, status
-              from card_copy
-             where card_token = :cardToken
-            """)
+    return db.sql(SELECT + " where card_token = :cardToken")
         .bind("cardToken", cardToken)
-        .map(
-            row ->
-                new CardCopy(
-                    row.get("card_token", String.class),
-                    row.get("pan_hash", String.class),
-                    row.get("security_code_hash", String.class),
-                    instant(row.get("expires_at", OffsetDateTime.class)),
-                    row.get("amount_minor", Long.class),
-                    currency(row.get("currency", String.class)),
-                    row.get("acceptor_id", String.class),
-                    CardStatus.valueOf(row.get("status", String.class))))
+        .map(CardCopies::copy)
         .one();
+  }
+
+  /**
+   * The copy of the card whose PAN has this keyed hash ({@link CardHashing}), or empty if none has.
+   * A card that ended before its {@code CardIssued} arrived has no hash yet, so it's never found.
+   */
+  public Mono<CardCopy> findByPanHash(String panHash) {
+    return db.sql(SELECT + " where pan_hash = :panHash")
+        .bind("panHash", panHash)
+        .map(CardCopies::copy)
+        .one();
+  }
+
+  /**
+   * Moves the card from {@code ACTIVE} to {@code AUTHORIZED} for an approved Charge, in the
+   * caller's transaction. False when it isn't {@code ACTIVE} any more: another Charge moved it
+   * first, or the platform ended it, since the caller read it. The update takes the row's lock, so
+   * of two approvals at once the second waits, then finds it {@code AUTHORIZED}.
+   */
+  public Mono<Boolean> authorize(String cardToken) {
+    return move(cardToken, CardStatus.ACTIVE, CardStatus.AUTHORIZED);
+  }
+
+  /**
+   * Moves the card back from {@code AUTHORIZED} to {@code ACTIVE} when its Authorization is
+   * reversed, in the caller's transaction. Only an {@code AUTHORIZED} card moves, so a card the
+   * platform ended since stays ended.
+   */
+  public Mono<Void> reverse(String cardToken) {
+    return move(cardToken, CardStatus.AUTHORIZED, CardStatus.ACTIVE).then();
   }
 
   /** Applies a card event to the copy; an event already applied changes nothing. */
@@ -105,6 +128,29 @@ public class CardCopies {
         .bind("status", status.name())
         .bind("cardToken", cardToken)
         .then();
+  }
+
+  private Mono<Boolean> move(String cardToken, CardStatus from, CardStatus to) {
+    return db.sql(
+            "update card_copy set status = :to where card_token = :cardToken and status = :from")
+        .bind("to", to.name())
+        .bind("cardToken", cardToken)
+        .bind("from", from.name())
+        .fetch()
+        .rowsUpdated()
+        .map(rows -> rows == 1);
+  }
+
+  private static CardCopy copy(Readable row) {
+    return new CardCopy(
+        row.get("card_token", String.class),
+        row.get("pan_hash", String.class),
+        row.get("security_code_hash", String.class),
+        instant(row.get("expires_at", OffsetDateTime.class)),
+        row.get("amount_minor", Long.class),
+        currency(row.get("currency", String.class)),
+        row.get("acceptor_id", String.class),
+        CardStatus.valueOf(row.get("status", String.class)));
   }
 
   private static Instant instant(OffsetDateTime timestamp) {

@@ -2,6 +2,7 @@ package dev.rgonz.payments.authorization.cards;
 
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.util.Base64;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -16,7 +17,7 @@ import org.springframework.stereotype.Component;
  * or put in an exception message.
  */
 @Component
-class CardHashing {
+public class CardHashing {
 
   private static final String PROPERTY = "vault.hash-key";
   private static final String HMAC = "HmacSHA256";
@@ -28,7 +29,8 @@ class CardHashing {
     this.key = new SecretKeySpec(decode(hashKey), HMAC);
   }
 
-  String hash(String value) {
+  /** The value's keyed hash, base64-encoded, as the copy of a card holds its PAN's. */
+  public String hash(String value) {
     try {
       var mac = Mac.getInstance(HMAC);
       mac.init(key);
@@ -37,6 +39,15 @@ class CardHashing {
     } catch (GeneralSecurityException e) {
       throw new IllegalStateException("Hashing with " + PROPERTY + " failed.", e);
     }
+  }
+
+  /**
+   * Whether the value hashes to this hash, compared in constant time so the comparison's duration
+   * says nothing of how much of it matched.
+   */
+  public boolean matches(String value, String hash) {
+    return MessageDigest.isEqual(
+        hash(value).getBytes(StandardCharsets.UTF_8), hash.getBytes(StandardCharsets.UTF_8));
   }
 
   private static byte[] decode(String base64) {
