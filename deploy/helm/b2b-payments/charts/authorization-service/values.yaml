@@ -1,0 +1,26 @@
+httpPort: 8082
+extraPorts:
+  - name: grpc
+    containerPort: 9090
+secret: authorization-service-secrets
+# The Network reaches gRPC here, past the Gateway (M6 design, Traffic).
+service:
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http
+    - name: grpc
+      port: 9090
+      targetPort: grpc
+# Every address the service connects to (docs/architecture.md, Runtime).
+env:
+  # Every interface, so the simulator's pod reaches it; development stays on loopback.
+  SPRING_GRPC_SERVER_ADDRESS: 0.0.0.0
+  SPRING_R2DBC_URL: r2dbc:postgresql://authorization-postgres:5432/authorization
+  SPRING_FLYWAY_URL: jdbc:postgresql://authorization-postgres:5432/authorization
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://lgtm:4318/v1/traces
+  MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT: http://lgtm:4318/v1/logs
+  MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://lgtm:4318/v1/metrics
+  # Tokens name http://localhost:8180 as their issuer, which pods can't reach: the keys come from Keycloak's Service.
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8180/realms/payments/protocol/openid-connect/certs

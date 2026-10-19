@@ -1,0 +1,6 @@
+# The platform, behind the Gateway. Renders only inside the b2b-payments chart, whose templates/_app.tpl it uses.
+apiVersion: v2
+name: platform
+description: The Issuer's platform, its REST API on 8080
+type: application
+version: 0.1.0

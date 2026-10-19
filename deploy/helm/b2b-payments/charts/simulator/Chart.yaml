@@ -1,0 +1,7 @@
+# The simulator: every party on the core path but the Issuer. Renders only inside the b2b-payments chart, whose
+# templates/_app.tpl it uses.
+apiVersion: v2
+name: simulator
+description: The ERP, Approvers, Supplier, Acquirer and Network, with the demo on 8081
+type: application
+version: 0.1.0

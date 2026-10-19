@@ -1,0 +1,7 @@
+# The Gateway in front of the platform's REST API. Renders only inside the b2b-payments chart, whose
+# templates/_app.tpl it uses.
+apiVersion: v2
+name: gateway
+description: Spring Cloud Gateway in front of the platform's REST API
+type: application
+version: 0.1.0
