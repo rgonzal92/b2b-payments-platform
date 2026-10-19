@@ -33,11 +33,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.testcontainers.kafka.KafkaContainer;
 
 /**
- * The card events on the {@code cards} topic, read back from a real Kafka: each issued, cancelled
- * or expired card is published, keyed by its Card Token, names its event type in a header, and
- * carries no PAN or security code. The platform doesn't promise to send one card's events in the
- * order they were published (docs/learning/kafka.md), so the tests don't check it. Externalization
- * is off in every other test context.
+ * The card events on the {@code cards} topic, read back from a real Kafka: each issued, cancelled,
+ * expired or cleared card is published, keyed by its Card Token, names its event type in a header,
+ * and carries no PAN or security code. The platform doesn't promise to send one card's events in
+ * the order they were published (docs/learning/kafka.md), so the tests don't check it.
+ * Externalization is off in every other test context.
  */
 @Import({TestcontainersConfiguration.class, TestKafka.class})
 @SpringBootTest(
@@ -175,8 +175,53 @@ class CardEventsTests {
         .isEqualTo(card.cardToken());
   }
 
+  @Test
+  void clearingACardPublishesCardClearedOnce() {
+    var card = issue();
+    cards.clear(card.cardToken());
+    // A Clearing of a card already CLEARED doesn't clear it, so it publishes nothing.
+    cards.clear(card.cardToken());
+
+    var records = awaitRecords(card.cardToken(), 2);
+
+    assertThat(records)
+        .extracting(record -> header(record, EVENT_TYPE))
+        .containsExactlyInAnyOrder("CardIssued", "CardCleared");
+    assertThat(records).allMatch(record -> record.key().equals(card.cardToken()));
+    assertThat(JsonPath.<String>read(ofType(records, "CardCleared").value(), "$.cardToken"))
+        .isEqualTo(card.cardToken());
+    // The registry holds every event published, sent or not, so a second one would show here.
+    assertThat(publications("CardCleared", card.cardToken())).isOne();
+  }
+
+  // The Issuer pays what clears, so a card that expired first ends CLEARED too.
+  @Test
+  void clearingAnExpiredCardPublishesCardCleared() {
+    var card = issue(Instant.parse("2020-01-01T00:00:00Z"));
+    expiry.expireDue(card.expiresAt().plusSeconds(1));
+    cards.clear(card.cardToken());
+
+    var records = awaitRecords(card.cardToken(), 3);
+
+    assertThat(records)
+        .extracting(record -> header(record, EVENT_TYPE))
+        .containsExactlyInAnyOrder("CardIssued", "CardExpired", "CardCleared");
+  }
+
   private SingleUseCard issue() {
     return issue(Instant.now());
+  }
+
+  private long publications(String type, String cardToken) {
+    return jdbc.sql(
+            """
+            select count(*) from modulith.event_publication
+             where event_type = :eventType and serialized_event like :cardToken
+            """)
+        .param("eventType", "dev.rgonz.payments.platform.cards." + type)
+        .param("cardToken", "%" + cardToken + "%")
+        .query(Long.class)
+        .single();
   }
 
   private SingleUseCard issue(Instant now) {

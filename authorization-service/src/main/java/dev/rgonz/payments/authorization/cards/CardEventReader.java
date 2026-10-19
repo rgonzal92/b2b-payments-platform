@@ -22,6 +22,7 @@ class CardEventReader {
           case "CardIssued" -> CardEvent.CardIssued.class;
           case "CardCancelled" -> CardEvent.CardCancelled.class;
           case "CardExpired" -> CardEvent.CardExpired.class;
+          case "CardCleared" -> CardEvent.CardCleared.class;
           case null, default -> null;
         };
     return Optional.ofNullable(type).map(eventClass -> JSON.readValue(json, eventClass));

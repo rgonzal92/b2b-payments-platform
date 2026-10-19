@@ -38,9 +38,9 @@ import org.testcontainers.kafka.KafkaContainer;
 /**
  * The platform's side of the card events' contract: each pact {@code authorization-service} wrote
  * into the repository's {@code pacts} folder is checked against a real event, made by issuing,
- * cancelling or expiring a card and read back from the {@code cards} topic on a real Kafka, with
- * its headers as the message's metadata. Same context as {@link CardEventsTests}, so the two share
- * it.
+ * cancelling, expiring or clearing a card and read back from the {@code cards} topic on a real
+ * Kafka, with its headers as the message's metadata. Same context as {@link CardEventsTests}, so
+ * the two share it.
  */
 @Provider("platform")
 @PactFolder("../pacts")
@@ -93,6 +93,13 @@ class CardEventsPactVerificationTests {
     var card = issue(Instant.parse("2020-01-01T00:00:00Z"));
     expiry.expireDue(card.expiresAt().plusSeconds(1));
     return published(card.cardToken(), "CardExpired");
+  }
+
+  @PactVerifyProvider("a CardCleared for a cleared card")
+  MessageAndMetadata cardCleared() {
+    var card = issue(Instant.now());
+    cards.clear(card.cardToken());
+    return published(card.cardToken(), "CardCleared");
   }
 
   private SingleUseCard issue(Instant now) {

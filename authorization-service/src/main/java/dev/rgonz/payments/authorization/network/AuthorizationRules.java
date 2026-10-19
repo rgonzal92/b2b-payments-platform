@@ -51,18 +51,18 @@ final class AuthorizationRules {
     if (!withinAmount(card, charge)) {
       return ResponseCode.EXCEEDS_AMOUNT;
     }
-    // A Single-Use Card takes one Charge: once approved it takes no other. The service hears of no
-    // Clearing, so a cleared card stays AUTHORIZED here and declines the same way.
-    if (card.status() == CardStatus.AUTHORIZED) {
+    // A Single-Use Card takes one Charge: once approved, and once cleared, it takes no other.
+    if (card.status() == CardStatus.AUTHORIZED || card.status() == CardStatus.CLEARED) {
       return ResponseCode.NOT_PERMITTED;
     }
     return ResponseCode.APPROVED;
   }
 
-  // An AUTHORIZED card is still chargeable here: a second Charge on it is a 57, not a 54. Only an
-  // ACTIVE or AUTHORIZED card has every detail (V2__card_copy_ended_before_issued.sql).
+  // An AUTHORIZED or CLEARED card is still chargeable here: a second Charge on it is a 57, not a
+  // 54. A CLEARED card found by its PAN's hash has every detail: its CardIssued filled them in.
   private static boolean chargeable(CardCopy card, String expirationDate, Instant now) {
-    return (card.status() == CardStatus.ACTIVE || card.status() == CardStatus.AUTHORIZED)
+    return card.status() != CardStatus.CANCELLED
+        && card.status() != CardStatus.EXPIRED
         && EXPIRATION_DATE.format(card.expiresAt()).equals(expirationDate)
         && now.isBefore(card.expiresAt());
   }

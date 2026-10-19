@@ -174,13 +174,25 @@ class SingleUseCards implements Cards {
   }
 
   // Any status moves, and the row is updated even when already CLEARED, so every Clearing of the
-  // card takes its row lock: Clearings of one card in two imports at once take turns.
+  // card takes its row lock: Clearings of one card in two imports at once take turns. The status
+  // it had before (PostgreSQL 18's RETURNING old) says whether this Clearing cleared it, so only
+  // that one publishes the event, which commits with the update.
   @Override
+  @Transactional
   public void clear(String cardToken) {
-    jdbc.sql("update cards.card set status = :cleared where card_token = :cardToken")
-        .param("cleared", SingleUseCard.Status.CLEARED.name())
-        .param("cardToken", cardToken)
-        .update();
+    var before =
+        jdbc.sql(
+                """
+                update cards.card set status = :cleared where card_token = :cardToken
+                returning old.status
+                """)
+            .param("cleared", SingleUseCard.Status.CLEARED.name())
+            .param("cardToken", cardToken)
+            .query(String.class)
+            .optional();
+    if (before.isPresent() && !before.get().equals(SingleUseCard.Status.CLEARED.name())) {
+      events.publishEvent(new CardCleared(cardToken));
+    }
   }
 
   /**

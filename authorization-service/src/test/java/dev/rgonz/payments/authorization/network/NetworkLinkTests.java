@@ -254,6 +254,21 @@ class NetworkLinkTests {
     assertThat(statusOf(card)).isEqualTo(CardStatus.CANCELLED);
   }
 
+  // As the platform declined a Charge on a CLEARED card: a Single-Use Card takes one Charge. The
+  // CardCleared may reach the copy before the service's own approval of the card's Charge is
+  // applied; the card stays CLEARED either way.
+  @Test
+  void aClearedCardIsDeclinedAsNotPermittedAndStaysCleared() {
+    var card = issuedCard();
+    send(card.cardToken(), "CardCleared", "{\"cardToken\":\"" + card.cardToken() + "\"}");
+    awaitStatus(card, CardStatus.CLEARED);
+
+    var response = authorize(chargeOn(card));
+
+    assertThat(response.getResponseCode()).isEqualTo("57");
+    assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
+  }
+
   @Test
   void aCardCopiedWithoutAnAcceptorIdIsDeclinedAsNotPermitted() {
     var card = issuedCard(null);
@@ -516,6 +531,23 @@ class NetworkLinkTests {
           .isEqualTo(
               authorizationJson(
                   next.getRetrievalReferenceNumber(), card, nextApproved.getAuthorizationCode()));
+    }
+
+    // The Network may still reverse an Authorization whose Charge already cleared: the
+    // Reversal is acknowledged, but the cleared card takes no new Charge.
+    @Test
+    void aReversalAfterItsCardClearedLeavesTheCardClearedAndTheNextChargeIsDeclined() {
+      var card = issuedCard();
+      var charge = chargeOn(card);
+      assertThat(authorize(charge).getResponseCode()).isEqualTo("00");
+      send(card.cardToken(), "CardCleared", "{\"cardToken\":\"" + card.cardToken() + "\"}");
+      awaitStatus(card, CardStatus.CLEARED);
+
+      var requestId = charge.getRetrievalReferenceNumber();
+      assertThat(reverse(requestId)).isEqualTo(acknowledgement(requestId));
+
+      assertThat(statusOf(card)).isEqualTo(CardStatus.CLEARED);
+      assertThat(authorize(chargeOn(card)).getResponseCode()).isEqualTo("57");
     }
 
     @Test
