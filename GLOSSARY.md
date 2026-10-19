@@ -104,6 +104,10 @@ _Avoid_: Transaction, purchase, swipe
 The Issuer's real-time approve-or-decline answer to a Charge.
 _Avoid_: Auth, approval
 
+**Authorization Copy**:
+The platform's copy of the approved and reversed Authorizations the authorization service answered, fed by the `authorizations` topic. Clearing matches against it, and it moves the platform's card in step. Not the Card Copy, which is the service's copy of the cards.
+_Avoid_: Platform authorizations, authorization mirror
+
 **Hold**:
 The part of a Buyer's Available Credit reserved for a Virtual Card, placed when a Single-Use Card is issued or when a Charge is authorized, and kept until the Charge clears or the Hold is released.
 _Avoid_: Pending amount, block, reservation

@@ -17,7 +17,7 @@
       "id": 1,
       "type": "timeseries",
       "title": "Authorize calls per second",
-      "description": "Every Authorize call the platform's gRPC server finished, by gRPC status. A status other than OK is a call refused before any answer, such as one without a retrieval reference number.",
+      "description": "Every Authorize call authorization-service's gRPC server finished, by gRPC status; the panel shows data once the service exports to Grafana (#96). A status other than OK is a call refused before any answer, such as one without a retrieval reference number.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -63,7 +63,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "Authorize latency (server side)",
-      "description": "p50, p95 and p99 of the platform's own time to answer Authorize, from Spring gRPC's grpc.server timing. The red line is the 100 ms target the p99 must stay under (ADR-0010); the Authorization p99 alert fires when it stays above it for 5 minutes.",
+      "description": "p50, p95 and p99 of authorization-service's own time to answer Authorize, from Spring gRPC's grpc.server timing; the panel shows data once the service exports to Grafana (#96). The red line is the 100 ms target the p99 must stay under (ADR-0010); the Authorization p99 alert fires when it stays above it for 5 minutes.",
       "gridPos": {
         "h": 8,
         "w": 12,
