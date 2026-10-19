@@ -71,8 +71,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * The Network asks the service for an Authorization, or cancels one with a Reversal, over gRPC with
  * a stand-in Network token, on the service's own PostgreSQL: the test plays the platform, issuing
  * each card on a real Kafka's {@code cards} topic, and the Network, calling the service's gRPC
- * server. The answers are the platform's (its {@code AuthorizeTests}), from the service's copy of
- * the card.
+ * server. The answers are the ones the platform gave until the cutover (#92), from the service's
+ * copy of the card.
  */
 @Import({TestcontainersConfiguration.class, NetworkLinkTests.NetworkTokens.class})
 @SpringBootTest
