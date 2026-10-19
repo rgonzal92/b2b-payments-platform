@@ -6,6 +6,7 @@ import dev.rgonz.payments.authorization.network.Authorization.ResponseCode;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Set;
 
 /**
  * The Authorization rules (M2 design, Q19), in the order of its table, as the platform applies
@@ -15,6 +16,11 @@ import java.time.format.DateTimeFormatter;
  * once.
  */
 final class AuthorizationRules {
+
+  // An AUTHORIZED or CLEARED card is still chargeable here: a second Charge on it is a 57, not a
+  // 54. Any other status, and any status added later, declines as an expired card.
+  private static final Set<CardStatus> CHARGEABLE =
+      Set.of(CardStatus.ACTIVE, CardStatus.AUTHORIZED, CardStatus.CLEARED);
 
   // DE 14 as printed on the card: the expiry's year and month, in UTC like every stored time.
   private static final DateTimeFormatter EXPIRATION_DATE =
@@ -58,11 +64,9 @@ final class AuthorizationRules {
     return ResponseCode.APPROVED;
   }
 
-  // An AUTHORIZED or CLEARED card is still chargeable here: a second Charge on it is a 57, not a
-  // 54. A CLEARED card found by its PAN's hash has every detail: its CardIssued filled them in.
+  // A CLEARED card found by its PAN's hash has every detail: its CardIssued filled them in.
   private static boolean chargeable(CardCopy card, String expirationDate, Instant now) {
-    return card.status() != CardStatus.CANCELLED
-        && card.status() != CardStatus.EXPIRED
+    return CHARGEABLE.contains(card.status())
         && EXPIRATION_DATE.format(card.expiresAt()).equals(expirationDate)
         && now.isBefore(card.expiresAt());
   }

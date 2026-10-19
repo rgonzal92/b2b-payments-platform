@@ -194,6 +194,15 @@ class CardEventsTests {
     assertThat(publications("CardCleared", card.cardToken())).isOne();
   }
 
+  @Test
+  void clearingACardThatDoesntExistPublishesNothing() {
+    var cardToken = "no-such-card-" + UUID.randomUUID();
+
+    cards.clear(cardToken);
+
+    assertThat(publications("CardCleared", cardToken)).isZero();
+  }
+
   // The Issuer pays what clears, so a card that expired first ends CLEARED too.
   @Test
   void clearingAnExpiredCardPublishesCardCleared() {

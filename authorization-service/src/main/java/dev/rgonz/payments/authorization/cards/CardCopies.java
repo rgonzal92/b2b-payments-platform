@@ -139,11 +139,12 @@ public class CardCopies {
             values (:cardToken, :status)
             on conflict (card_token) do update
                set status = excluded.status
-             where card_copy.status not in (:finals)
+             -- CLEARED replaces CANCELLED and EXPIRED; nothing replaces CLEARED
+             where card_copy.status not in (:statusesNotReplaced)
             """)
         .bind("status", status.name())
         .bind(
-            "finals",
+            "statusesNotReplaced",
             status == CardStatus.CLEARED
                 ? List.of(CardStatus.CLEARED.name())
                 : List.of(

@@ -188,9 +188,9 @@ class SingleUseCards implements Cards {
                 """)
             .param("cleared", SingleUseCard.Status.CLEARED.name())
             .param("cardToken", cardToken)
-            .query(String.class)
+            .query((row, rowNum) -> SingleUseCard.Status.valueOf(row.getString(1)))
             .optional();
-    if (before.isPresent() && !before.get().equals(SingleUseCard.Status.CLEARED.name())) {
+    if (before.isPresent() && before.get() != SingleUseCard.Status.CLEARED) {
       events.publishEvent(new CardCleared(cardToken));
     }
   }
