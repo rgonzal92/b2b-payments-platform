@@ -84,7 +84,7 @@ The `load-test` module's Gatling simulation measures the platform's answer to th
 
 How to read the report and what tripped us up: [`docs/learning/gatling.md`](docs/learning/gatling.md).
 
-Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own throwaway PostgreSQL, Kafka and Keycloak. Among them, the end-to-end test starts the platform and the simulator in one JVM and `authorization-service` beside them from its executable jar, then runs the demo and a small load-test seeding through them; `./mvnw -B -pl e2e -am verify` builds and tests the three apps, then runs it.
+Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own throwaway PostgreSQL, Kafka and Keycloak. Among them, the end-to-end test starts the platform and the simulator in one JVM and `authorization-service` beside them from its executable jar, then runs the demo and a small load-test seeding through them; a second test stops the platform, charges cards through the service alone and checks the platform catches up once restarted; `./mvnw -B -pl e2e -am verify` builds and tests the three apps, then runs it.
 
 ## Roadmap
 

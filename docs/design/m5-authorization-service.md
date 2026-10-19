@@ -10,7 +10,7 @@ The force is availability, not latency (ADR-0016). M4 measured the monolith's se
 
 ## Done when
 
-1. With the platform stopped, the Network still gets approvals for cards already on file with the service; an automated test stops the platform mid-run and proves it.
+1. With the platform stopped, the Network still gets approvals for cards already on file with the service; an automated test stops the platform mid-run and proves it ([`PlatformStoppedEndToEndTests`](../../e2e/src/test/java/dev/rgonz/payments/e2e/PlatformStoppedEndToEndTests.java)).
 2. M4's Gatling simulation runs unchanged against the service, and its p50/p95/p99, errors and achieved rate are recorded in this document beside M4's.
 3. One more run with both PostgreSQL data folders bind-mounted on a folder with copy-on-write off (`chattr +C`) is recorded beside it, separating the disk's effect from the code's.
 4. Grafana's Authorization dashboard reads the service's metrics, with new panels for Kafka consumer lag and Payments waiting for the card to be on file, and an alert fires when a Payment waits more than 5 minutes.
