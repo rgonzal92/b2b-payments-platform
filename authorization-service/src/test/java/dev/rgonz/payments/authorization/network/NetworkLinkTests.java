@@ -17,9 +17,11 @@ import dev.rgonz.payments.contracts.network.ReversalRequest;
 import dev.rgonz.payments.contracts.network.ReversalResponse;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.netty.NettyChannelBuilder;
+import io.grpc.stub.MetadataUtils;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -202,6 +204,30 @@ class NetworkLinkTests {
         .containsExactly("CardOnFile", "AuthorizationApproved");
     assertThat(records.get(1).value())
         .isEqualTo(authorizationJson(requestId, card, response.getAuthorizationCode()));
+  }
+
+  // One trace from the Network's call to the platform's consumer (#96): the call's W3C trace
+  // context reaches the approved Authorization's message, through the outbox and the relay, so the
+  // platform's consumer span joins the Charge's trace.
+  @Test
+  void anApprovedAuthorizationIsPublishedInTheTraceOfTheNetworksCall() {
+    var card = issuedCard();
+    var traceId = "00000000000000000000000000000096";
+    var metadata = new Metadata();
+    metadata.put(
+        Metadata.Key.of("traceparent", Metadata.ASCII_STRING_MARSHALLER),
+        "00-" + traceId + "-0000000000000096-01");
+
+    network()
+        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
+        .authorize(chargeOn(card).build());
+
+    var approved = authorizationsOf(card, 2).get(1);
+    assertThat(AuthorizationsTopic.eventType(approved)).isEqualTo("AuthorizationApproved");
+    var traceparent = approved.headers().lastHeader("traceparent");
+    assertThat(traceparent).as("traceparent header").isNotNull();
+    assertThat(new String(traceparent.value(), StandardCharsets.UTF_8))
+        .matches("00-" + traceId + "-[0-9a-f]{16}-[0-9a-f]{2}");
   }
 
   // Had the decline written an event, it would have reached the card's partition before the

@@ -1,8 +1,13 @@
 package dev.rgonz.payments.authorization.outbox;
 
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.observation.transport.ReceiverContext;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +31,10 @@ import reactor.core.scheduler.Schedulers;
  * that first takes a PostgreSQL advisory lock, and a pass that can't take it does nothing. {@code
  * FOR UPDATE SKIP LOCKED} was the alternative, but it would let two instances send disjoint batches
  * at once, and so one card's events out of order.
+ *
+ * <p>Each row is sent in the trace it was written in ({@link Outbox}): the relay continues that
+ * trace for the send, and Spring Kafka's observation puts it in the message's {@code traceparent}
+ * header, so the platform's consumer span joins the Network's call's trace (#96).
  */
 @Component
 class OutboxRelay {
@@ -37,10 +46,13 @@ class OutboxRelay {
 
   private final DatabaseClient db;
   private final KafkaTemplate<String, String> kafka;
+  private final ObservationRegistry observations;
 
-  OutboxRelay(DatabaseClient db, KafkaTemplate<String, String> kafka) {
+  OutboxRelay(
+      DatabaseClient db, KafkaTemplate<String, String> kafka, ObservationRegistry observations) {
     this.db = db;
     this.kafka = kafka;
+    this.observations = observations;
   }
 
   /** Runs one pass and gives how many rows it sent: none while another pass holds the lock. */
@@ -55,7 +67,7 @@ class OutboxRelay {
   private Mono<Long> sendUnsent() {
     return db.sql(
             """
-            select id, card_token, event_type, payload, created_at
+            select id, card_token, event_type, payload, created_at, trace_parent
               from outbox
              where sent_at is null
              order by id
@@ -69,7 +81,8 @@ class OutboxRelay {
                     row.get("card_token", String.class),
                     row.get("event_type", String.class),
                     row.get("payload", String.class),
-                    row.get("created_at", OffsetDateTime.class).toInstant()))
+                    row.get("created_at", OffsetDateTime.class).toInstant(),
+                    row.get("trace_parent", String.class)))
         .all()
         // Read every row before the first send, so the select's results are done with before the
         // same connection runs the updates.
@@ -93,7 +106,7 @@ class OutboxRelay {
     record
         .headers()
         .add(Outbox.EVENT_TYPE_HEADER, row.eventType().getBytes(StandardCharsets.UTF_8));
-    return Mono.fromFuture(() -> kafka.send(record))
+    return Mono.fromFuture(() -> sendInItsTrace(record, row.traceParent()))
         .subscribeOn(Schedulers.boundedElastic())
         .doOnError(
             error ->
@@ -106,6 +119,20 @@ class OutboxRelay {
         .onErrorReturn(false);
   }
 
+  // The row's trace, read from its traceparent as a consumer reads a message's, is the parent of
+  // the template's own send observation, which writes the header.
+  private CompletableFuture<?> sendInItsTrace(
+      ProducerRecord<String, String> record, String traceParent) {
+    if (traceParent == null) {
+      return kafka.send(record);
+    }
+    var context = new ReceiverContext<Map<String, String>>(Map::get);
+    context.setCarrier(Map.of(Outbox.TRACE_PARENT, traceParent));
+    return Observation.createNotStarted("outbox.relay", () -> context, observations)
+        .contextualName("outbox relay")
+        .observe(() -> kafka.send(record));
+  }
+
   private Mono<Boolean> markSent(long id) {
     return db.sql("update outbox set sent_at = clock_timestamp() where id = :id")
         .bind("id", id)
@@ -114,5 +141,10 @@ class OutboxRelay {
   }
 
   private record Row(
-      long id, String cardToken, String eventType, String payload, Instant createdAt) {}
+      long id,
+      String cardToken,
+      String eventType,
+      String payload,
+      Instant createdAt,
+      String traceParent) {}
 }

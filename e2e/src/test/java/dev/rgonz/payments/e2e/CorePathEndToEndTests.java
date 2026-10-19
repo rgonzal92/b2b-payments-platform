@@ -5,19 +5,30 @@ import static org.awaitility.Awaitility.await;
 
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.platform.authorization.AuthorizationCopyFreshness;
+import io.micrometer.core.instrument.binder.grpc.GrpcClientObservationContext;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.handler.TracingObservationHandler;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.kafka.support.micrometer.KafkaRecordReceiverContext;
 import org.springframework.test.json.JsonContent;
 import org.springframework.web.client.RestClient;
 
@@ -35,7 +46,8 @@ import org.springframework.web.client.RestClient;
  * the approved Authorization, the demo's second call has the Network write its Clearing File into
  * the platform's drop folder and Issuer staff import it, and its third has Issuer staff run today's
  * Reconciliation, which finds no Break. Last, the simulator seeds a few load-test cards through the
- * same path.
+ * same path. The Charge runs in one trace (#96): from the Network's call, through the service, its
+ * outbox and Kafka, to the platform's consumers.
  */
 class CorePathEndToEndTests extends EndToEndHarness {
 
@@ -45,6 +57,20 @@ class CorePathEndToEndTests extends EndToEndHarness {
   @Timeout(value = 90, unit = TimeUnit.SECONDS)
   void theDemoInvoiceIsPaidItsChargeApprovedClearedFromTheNetworksFileAndReconciledWithoutABreak()
       throws IOException {
+    var authorizeCalls =
+        traceIdsOf(
+            simulator,
+            context ->
+                context instanceof GrpcClientObservationContext call
+                    && "Authorize".equals(call.getMethodName()));
+    var approvedAuthorizationsReceived =
+        traceIdsOf(
+            platform,
+            context ->
+                context instanceof KafkaRecordReceiverContext received
+                    && "authorizations".equals(received.getRecord().topic())
+                    && "AuthorizationApproved".equals(eventType(received)));
+
     var summary =
         RestClient.create()
             .post()
@@ -80,6 +106,12 @@ class CorePathEndToEndTests extends EndToEndHarness {
             () ->
                 platformHasApprovedAuthorization(authorizationCode)
                     && platform.getBean(AuthorizationCopyFreshness.class).caughtUp());
+    // One trace: the simulator's Network's call, and both of the platform's consumers of the
+    // service's approved Authorization (the copy's and payables'). The trace ID reaches the
+    // platform
+    // only through the service's gRPC server, its outbox row and its relay's message.
+    assertThat(authorizeCalls).hasSize(1).doesNotContain("no span");
+    assertThat(approvedAuthorizationsReceived).hasSize(2).containsOnly(authorizeCalls.peek());
     // Until the Charge clears, its Hold reserves Acme's credit.
     assertThat(acmesCredit())
         .isLenientlyEqualTo(
@@ -195,6 +227,38 @@ class CorePathEndToEndTests extends EndToEndHarness {
             """);
     // The header, then one line per card.
     assertThat(Files.readAllLines(loadTestFolder.resolve("cards.csv"))).hasSize(6);
+  }
+
+  // The trace ID of every observation in the app that matches, as its span starts. Tracing runs in
+  // the test, though nothing is exported.
+  private static Queue<String> traceIdsOf(
+      ConfigurableApplicationContext app, Predicate<Observation.Context> matching) {
+    var traceIds = new ConcurrentLinkedQueue<String>();
+    app.getBean(ObservationRegistry.class)
+        .observationConfig()
+        .observationHandler(
+            new ObservationHandler<>() {
+              @Override
+              public boolean supportsContext(Observation.Context context) {
+                return matching.test(context);
+              }
+
+              @Override
+              public void onStart(Observation.Context context) {
+                TracingObservationHandler.TracingContext tracing =
+                    context.get(TracingObservationHandler.TracingContext.class);
+                traceIds.add(
+                    tracing == null || tracing.getSpan() == null
+                        ? "no span"
+                        : tracing.getSpan().context().traceId());
+              }
+            });
+    return traceIds;
+  }
+
+  private static String eventType(KafkaRecordReceiverContext received) {
+    var header = received.getRecord().headers().lastHeader("event-type");
+    return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
   }
 
   // Each kind of Account's balance in the platform's journal, its debits less its credits.
