@@ -24,7 +24,10 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -56,6 +59,7 @@ import org.testcontainers.utility.DockerImageName;
  * Reconciliation, which finds no Break.
  */
 @Testcontainers
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class CorePathEndToEndTests {
 
   // TEST-ONLY client secret for every client in the realm file, not a secret.
@@ -95,6 +99,9 @@ class CorePathEndToEndTests {
 
   // The service's working directory: away from the repository, so it reads no developer's .env.
   @TempDir static Path serviceDirectory;
+
+  // Where the load-test seeding writes its cards: not the repository's var/load-test.
+  @TempDir static Path loadTestFolder;
 
   // TEST-ONLY hash key, not a secret: the same all-0x02 bytes as the platform's own tests. The
   // platform and the service must share it (ADR-0016).
@@ -167,6 +174,7 @@ class CorePathEndToEndTests {
             // demo asks: not at midnight.
             "simulator.network.drop-folder=" + dropFolder,
             "simulator.network.clearing-file-cron=-",
+            "simulator.load-test.cards-file=" + loadTestFolder.resolve("cards.csv"),
             // The platform's dependencies are on this classpath too: the simulator has no database.
             "spring.autoconfigure.exclude="
                 + "org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,"
@@ -289,6 +297,7 @@ class CorePathEndToEndTests {
   }
 
   @Test
+  @Order(1)
   // The demo itself waits up to 30 seconds for the worker to pay the Invoice.
   @Timeout(value = 60, unit = TimeUnit.SECONDS)
   void theDemoInvoiceIsPaidItsChargeApprovedClearedFromTheNetworksFileAndReconciledWithoutABreak()
@@ -414,6 +423,28 @@ class CorePathEndToEndTests {
                 .formatted(
                     JsonPath.<String>read(reconciled, "$.run.runId"),
                     LocalDate.now(ZoneOffset.UTC)));
+  }
+
+  // The load test's cards are paid through the same path, Initech's instead of Acme's, after the
+  // core path so its Reconciliation sees only the demo's Charge.
+  @Test
+  @Order(2)
+  @Timeout(value = 60, unit = TimeUnit.SECONDS)
+  void theLoadTestSeedingWritesACardForEveryInvoiceItPays() throws IOException {
+    var seeded =
+        RestClient.create()
+            .post()
+            .uri("http://localhost:{port}/demo/load-test-cards?count=5", simulatorPort)
+            .retrieve()
+            .body(String.class);
+
+    assertThat(new JsonContent(seeded))
+        .isLenientlyEqualTo(
+            """
+            {"requested": 5, "written": 5}
+            """);
+    // The header, then one line per card.
+    assertThat(Files.readAllLines(loadTestFolder.resolve("cards.csv"))).hasSize(6);
   }
 
   // Each kind of Account's balance in the platform's journal, its debits less its credits.
