@@ -60,7 +60,7 @@ public class CardCopies {
    * first, or the platform ended it, since the caller read it. The update takes the row's lock, so
    * of two approvals at once the second waits, then finds it {@code AUTHORIZED}.
    */
-  public Mono<Boolean> authorize(String cardToken) {
+  public Mono<Boolean> moveToAuthorized(String cardToken) {
     return move(cardToken, CardStatus.ACTIVE, CardStatus.AUTHORIZED);
   }
 
@@ -69,7 +69,7 @@ public class CardCopies {
    * reversed, in the caller's transaction. Only an {@code AUTHORIZED} card moves, so a card the
    * platform ended since stays ended.
    */
-  public Mono<Void> reverse(String cardToken) {
+  public Mono<Void> moveToActive(String cardToken) {
     return move(cardToken, CardStatus.AUTHORIZED, CardStatus.ACTIVE).then();
   }
 

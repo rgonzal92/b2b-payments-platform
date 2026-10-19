@@ -103,7 +103,7 @@ class Authorizations {
         authorization.status() != Authorization.Status.APPROVED
             ? Mono.just(authorization)
             : cards
-                .authorize(decision.cardToken())
+                .moveToAuthorized(decision.cardToken())
                 .flatMap(
                     moved -> {
                       if (moved) {
@@ -122,14 +122,16 @@ class Authorizations {
   private Mono<Void> reverseIfApproved(String requestId) {
     return db.sql(
             """
-            update authorizations set status = 'REVERSED'
-             where request_id = :requestId and status = 'APPROVED'
+            update authorizations set status = :reversed
+             where request_id = :requestId and status = :approved
             returning card_token
             """)
+        .bind("reversed", Authorization.Status.REVERSED.name())
         .bind("requestId", requestId)
+        .bind("approved", Authorization.Status.APPROVED.name())
         .map(row -> row.get("card_token", String.class))
         .one()
-        .flatMap(cards::reverse);
+        .flatMap(cards::moveToActive);
   }
 
   // Claims the request ID for a Reversal the way an Authorization claims it: whichever insert
@@ -140,11 +142,12 @@ class Authorizations {
     return db.sql(
             """
             insert into authorizations (request_id, response_code, status)
-            values (:requestId, :responseCode, 'REVERSED')
+            values (:requestId, :responseCode, :reversed)
             on conflict (request_id) do nothing
             """)
         .bind("requestId", requestId)
         .bind("responseCode", ResponseCode.DO_NOT_HONOUR.code())
+        .bind("reversed", Authorization.Status.REVERSED.name())
         .fetch()
         .rowsUpdated()
         .map(rows -> rows == 1);
