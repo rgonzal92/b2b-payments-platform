@@ -1,7 +1,12 @@
 package dev.rgonz.payments.platform.authorization;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doThrow;
 
 import dev.rgonz.payments.platform.TestAuthorizationsTopic;
 import dev.rgonz.payments.platform.TestKafka;
@@ -24,6 +29,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.testcontainers.kafka.KafkaContainer;
 
 /**
@@ -43,7 +49,8 @@ class AuthorizationCopyTests {
   private static final Money AMOUNT = new Money(1_240_000, Currency.getInstance("USD"));
 
   @Autowired ApprovedAuthorizations approvedAuthorizations;
-  @Autowired Cards cards;
+  @MockitoSpyBean Cards cards;
+  @Autowired Authorizations authorizations;
   @Autowired KafkaContainer kafka;
   @Autowired ApplicationContext context;
 
@@ -173,6 +180,63 @@ class AuthorizationCopyTests {
         .contains("Skipped a message with no event-type header");
   }
 
+  // The record's timestamp is when the service approved the Charge: the card's 7 days to clear
+  // count from it, however late the platform reads the event.
+  @Test
+  void theCardsSevenDaysToClearCountFromWhenTheServiceApprovedTheCharge() throws Exception {
+    var card = issuedCard();
+    var approvedAt = Instant.now().minus(Duration.ofDays(8));
+
+    topic.send(card.cardToken(), "AuthorizationApproved", json(newRequestId(), card), approvedAt);
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .until(() -> statusOf(card) == SingleUseCard.Status.AUTHORIZED);
+    CardExpiryJob.runAt(context, Instant.now());
+
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.EXPIRED);
+  }
+
+  // The copy and the card's move commit together: a failure moving the card stores nothing, so the
+  // redelivered event isn't taken for a repeat and moves the card then.
+  @Test
+  void aFailureMovingTheCardStoresNothingAndTheRetryAppliesTheEvent() {
+    var card = issuedCard();
+    var event =
+        new AuthorizationEvent(
+            newRequestId(), card.cardToken(), 1_240_000L, "USD", "ABC123", "ACCEPTOR-1");
+    doThrow(new IllegalStateException("Stand-in database failure."))
+        .when(cards)
+        .authorize(eq(card.cardToken()), any());
+
+    assertThatThrownBy(() -> authorizations.approved(event, Instant.now()))
+        .isInstanceOf(IllegalStateException.class);
+    assertThat(approvedAuthorizations.find(card.cardToken(), "ABC123")).isEmpty();
+
+    doCallRealMethod().when(cards).authorize(eq(card.cardToken()), any());
+    authorizations.approved(event, Instant.now());
+
+    assertThat(approvedAuthorizations.find(card.cardToken(), "ABC123")).isPresent();
+    assertThat(statusOf(card)).isEqualTo(SingleUseCard.Status.AUTHORIZED);
+  }
+
+  // The service only approves cards the platform issued, so this can't happen in practice: the
+  // Authorization is stored, no card moves, and the next event isn't held back.
+  @Test
+  void anApprovedAuthorizationForAnUnknownCardIsStoredAndTheNextEventStillArrives()
+      throws Exception {
+    var unknownCardToken = "card-token-nobody-issued-" + UUID.randomUUID();
+    var card = issuedCard();
+
+    send("AuthorizationApproved", newRequestId(), unknownCardToken);
+    send("AuthorizationApproved", newRequestId(), card.cardToken());
+
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .until(() -> statusOf(card) == SingleUseCard.Status.AUTHORIZED);
+    assertThat(approvedAuthorizations.find(unknownCardToken, "ABC123")).isPresent();
+    assertThat(cards.find(unknownCardToken)).isEmpty();
+  }
+
   private boolean isReversed(SingleUseCard card) {
     return approvedAuthorizations
         .find(card.cardToken(), "ABC123")
@@ -200,14 +264,19 @@ class AuthorizationCopyTests {
 
   // The service's event as its outbox relay sends it.
   private void send(String eventType, String requestId, String cardToken) throws Exception {
-    topic.send(
-        cardToken,
-        eventType,
-        """
+    topic.send(cardToken, eventType, json(requestId, cardToken));
+  }
+
+  private static String json(String requestId, SingleUseCard card) {
+    return json(requestId, card.cardToken());
+  }
+
+  private static String json(String requestId, String cardToken) {
+    return """
         {"requestId": "%s", "cardToken": "%s", "amountMinorUnits": 1240000, "currency": "USD",
          "authorizationCode": "ABC123", "acceptorId": "ACCEPTOR-1"}
         """
-            .formatted(requestId, cardToken));
+        .formatted(requestId, cardToken);
   }
 
   private static String newRequestId() {

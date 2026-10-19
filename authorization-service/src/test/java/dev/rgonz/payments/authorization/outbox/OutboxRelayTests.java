@@ -8,6 +8,9 @@ import dev.rgonz.payments.authorization.TestcontainersConfiguration;
 import java.nio.charset.StandardCharsets;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -127,6 +130,22 @@ class OutboxRelayTests {
         .isEqualTo("{\"cardToken\":\"" + cardToken + "\",\"amountMinorUnits\":1240000}");
   }
 
+  // The platform counts a card's 7 days to clear from the record's timestamp: the time the event
+  // was written with the approved Authorization, not when a pass got it out, perhaps hours later
+  // after Kafka was down.
+  @Test
+  void aRelayPassSendsTheTimeTheEventWasWrittenAsTheRecordsTimestamp() {
+    var cardToken = newCardToken();
+    outbox.append(cardToken, new First(cardToken)).block();
+    var writtenAt = Instant.now().minus(3, ChronoUnit.HOURS).truncatedTo(ChronoUnit.MILLIS);
+    backdate(cardToken, writtenAt);
+
+    relay.relay().block();
+
+    assertThat(Instant.ofEpochMilli(awaitRecords(cardToken, 1).getFirst().timestamp()))
+        .isEqualTo(writtenAt);
+  }
+
   // Rows a crashed service committed but never sent wait for any later pass, and the events of a
   // pass that stopped at a failed send follow in order, each once.
   @Test
@@ -195,6 +214,20 @@ class OutboxRelayTests {
 
     assertThat(lockFreeDuringSend).hasValue(false);
     assertThat(awaitRecords(cardToken, 1)).hasSize(1);
+  }
+
+  private void backdate(String cardToken, Instant writtenAt) {
+    try (var connection =
+            DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        var statement =
+            connection.prepareStatement("update outbox set created_at = ? where card_token = ?")) {
+      statement.setObject(1, writtenAt.atOffset(ZoneOffset.UTC));
+      statement.setString(2, cardToken);
+      assertThat(statement.executeUpdate()).isEqualTo(1);
+    } catch (SQLException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   // Takes the lock from another connection and lets it go at once, as another relay would try.

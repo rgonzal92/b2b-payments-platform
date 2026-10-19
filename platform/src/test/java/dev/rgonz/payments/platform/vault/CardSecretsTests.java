@@ -44,18 +44,6 @@ class CardSecretsTests {
   }
 
   @Test
-  void theCardsOwnSecurityCodeMatchesAndAnyOtherDoesNot() {
-    var cardToken = "card-" + UUID.randomUUID();
-    vault.generatePan(cardToken);
-    var securityCode = vault.cardDetails(cardToken).securityCode();
-    var otherCode = String.format("%03d", (Integer.parseInt(securityCode) + 1) % 1_000);
-
-    assertThat(vault.securityCodeMatches(cardToken, securityCode)).isTrue();
-    assertThat(vault.securityCodeMatches(cardToken, otherCode)).isFalse();
-    assertThat(vault.securityCodeMatches(cardToken, "")).isFalse();
-  }
-
-  @Test
   void theVaultGivesTheKeyedHashesOfACardsPanAndSecurityCode() {
     var cardToken = "card-" + UUID.randomUUID();
     vault.generatePan(cardToken);

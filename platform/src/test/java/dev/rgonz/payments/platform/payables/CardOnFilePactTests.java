@@ -14,11 +14,13 @@ import au.com.dius.pact.consumer.junit5.ProviderType;
 import au.com.dius.pact.core.model.V4Interaction;
 import au.com.dius.pact.core.model.V4Pact;
 import au.com.dius.pact.core.model.annotations.Pact;
+import dev.rgonz.payments.platform.FreshPactFile;
 import java.time.Instant;
 import java.util.Map;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 /**
  * What payables needs from authorization-service's {@code CardOnFile} on the {@code authorizations}
@@ -29,6 +31,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @ExtendWith(PactConsumerTestExt.class)
 @PactTestFor(providerName = "authorization-service", providerType = ProviderType.ASYNCH)
 class CardOnFilePactTests {
+
+  @RegisterExtension
+  static final FreshPactFile FRESH_PACT = new FreshPactFile("platform", "authorization-service");
 
   private final PaymentSaga saga = mock(PaymentSaga.class);
   private final CardOnFileListener listener = new CardOnFileListener(saga);

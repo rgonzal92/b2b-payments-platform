@@ -1,6 +1,8 @@
 package dev.rgonz.payments.authorization.outbox;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,7 +55,7 @@ class OutboxRelay {
   private Mono<Long> sendUnsent() {
     return db.sql(
             """
-            select id, card_token, event_type, payload
+            select id, card_token, event_type, payload, created_at
               from outbox
              where sent_at is null
              order by id
@@ -66,7 +68,8 @@ class OutboxRelay {
                     row.get("id", Long.class),
                     row.get("card_token", String.class),
                     row.get("event_type", String.class),
-                    row.get("payload", String.class)))
+                    row.get("payload", String.class),
+                    row.get("created_at", OffsetDateTime.class).toInstant()))
         .all()
         // Read every row before the first send, so the select's results are done with before the
         // same connection runs the updates.
@@ -79,10 +82,14 @@ class OutboxRelay {
         .count();
   }
 
+  // The record's timestamp is the row's created_at, the time of the transaction that wrote the
+  // event, so a consumer reading when it happened isn't misled by a late send after Kafka was down.
   // The template may block, up to max.block.ms while Kafka is unreachable, so the send starts on a
   // thread that may wait, never on R2DBC's event loop, which the hot path shares.
   private Mono<Boolean> send(Row row) {
-    var record = new ProducerRecord<>(TOPIC, row.cardToken(), row.payload());
+    var record =
+        new ProducerRecord<>(
+            TOPIC, null, row.createdAt().toEpochMilli(), row.cardToken(), row.payload());
     record
         .headers()
         .add(Outbox.EVENT_TYPE_HEADER, row.eventType().getBytes(StandardCharsets.UTF_8));
@@ -106,5 +113,6 @@ class OutboxRelay {
         .thenReturn(true);
   }
 
-  private record Row(long id, String cardToken, String eventType, String payload) {}
+  private record Row(
+      long id, String cardToken, String eventType, String payload, Instant createdAt) {}
 }

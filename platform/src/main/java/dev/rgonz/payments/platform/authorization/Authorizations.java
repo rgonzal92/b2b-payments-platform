@@ -28,8 +28,6 @@ import org.springframework.transaction.annotation.Transactional;
 class Authorizations implements ApprovedAuthorizations {
 
   private static final Logger log = LoggerFactory.getLogger(Authorizations.class);
-  private static final String APPROVED = "APPROVED";
-  private static final String REVERSED = "REVERSED";
   // The copy keeps the table's DE 39 column: every Authorization in it was approved.
   private static final String APPROVED_RESPONSE_CODE = "00";
 
@@ -49,7 +47,7 @@ class Authorizations implements ApprovedAuthorizations {
    */
   @Transactional
   void approved(AuthorizationEvent event, Instant authorizedAt) {
-    if (!insert(event, APPROVED)) {
+    if (!insert(event, Status.APPROVED)) {
       log.info("Authorization {} already stored, nothing changed", event.requestId());
       return;
     }
@@ -77,15 +75,15 @@ class Authorizations implements ApprovedAuthorizations {
                  where request_id = :requestId and status = :approved
                 returning card_token
                 """)
-            .param("reversed", REVERSED)
+            .param("reversed", Status.REVERSED.name())
             .param("requestId", event.requestId())
-            .param("approved", APPROVED)
+            .param("approved", Status.APPROVED.name())
             .query(String.class)
             .optional();
     if (cardToken.isPresent()) {
       cards.reverse(cardToken.get());
       log.info("Authorization {} reversed", event.requestId());
-    } else if (insert(event, REVERSED)) {
+    } else if (insert(event, Status.REVERSED)) {
       log.warn(
           "Authorization {} reversed before its approved Authorization arrived", event.requestId());
     } else {
@@ -112,7 +110,7 @@ class Authorizations implements ApprovedAuthorizations {
                     new Money(
                         row.getLong("amount_minor"),
                         Currency.getInstance(row.getString("currency"))),
-                    REVERSED.equals(row.getString("status"))))
+                    Status.REVERSED == Status.valueOf(row.getString("status"))))
         .optional();
   }
 
@@ -136,7 +134,7 @@ class Authorizations implements ApprovedAuthorizations {
                and authorization_code is not null
             """)
         .param("cardToken", card.cardToken())
-        .param("approved", APPROVED)
+        .param("approved", Status.APPROVED.name())
         .query(
             (row, rowNumber) ->
                 new NeverClearedAuthorization(
@@ -150,7 +148,7 @@ class Authorizations implements ApprovedAuthorizations {
   }
 
   // The primary key decides, not a read first: a repeat inserts nothing.
-  private boolean insert(AuthorizationEvent event, String status) {
+  private boolean insert(AuthorizationEvent event, Status status) {
     return jdbc.sql(
                 """
                 insert into "authorization".authorizations
@@ -167,8 +165,15 @@ class Authorizations implements ApprovedAuthorizations {
             .param("acceptorId", event.acceptorId())
             .param("responseCode", APPROVED_RESPONSE_CODE)
             .param("authorizationCode", event.authorizationCode())
-            .param("status", status)
+            .param("status", status.name())
             .update()
         == 1;
+  }
+
+  /** An Authorization's status in the copy, as the table stores it. */
+  enum Status {
+    APPROVED,
+    /** The Network cancelled it with a Reversal; it keeps its authorization code. */
+    REVERSED
   }
 }

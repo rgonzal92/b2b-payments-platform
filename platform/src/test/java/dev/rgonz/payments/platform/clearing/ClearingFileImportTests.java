@@ -14,6 +14,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.authorization.AuthorizationEvent;
 import dev.rgonz.payments.platform.authorization.ServiceAuthorizations;
 import dev.rgonz.payments.platform.cards.CardExpired;
 import dev.rgonz.payments.platform.cards.CardExpiryJob;
@@ -1199,13 +1200,7 @@ class ClearingFileImportTests {
     var charged =
         new ChargedCard(
             card, vault.cardDetails(card.cardToken()).pan(), newId("Q", 12), newId("A", 6));
-    ServiceAuthorizations.approve(
-        context,
-        charged.requestId(),
-        card.cardToken(),
-        new Money(CARD_AMOUNT, USD),
-        charged.authorizationCode(),
-        ACCEPTOR_ID);
+    ServiceAuthorizations.approve(context, authorizationEvent(charged));
     return charged;
   }
 
@@ -1230,15 +1225,20 @@ class ClearingFileImportTests {
 
   // The Network cancels the Charge's Authorization: the card is ACTIVE again.
   private void reverse(ChargedCard charged) {
-    ServiceAuthorizations.reverse(
-        context,
-        charged.requestId(),
-        charged.card().cardToken(),
-        new Money(CARD_AMOUNT, USD),
-        charged.authorizationCode(),
-        ACCEPTOR_ID);
+    ServiceAuthorizations.reverse(context, authorizationEvent(charged));
     assertThat(cards.find(charged.card().cardToken()).orElseThrow().status())
         .isEqualTo(SingleUseCard.Status.ACTIVE);
+  }
+
+  // The service's event for the Charge of the card's whole amount.
+  private static AuthorizationEvent authorizationEvent(ChargedCard charged) {
+    return new AuthorizationEvent(
+        charged.requestId(),
+        charged.card().cardToken(),
+        CARD_AMOUNT,
+        "USD",
+        charged.authorizationCode(),
+        ACCEPTOR_ID);
   }
 
   private record ChargedCard(

@@ -11,17 +11,16 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
+import dev.rgonz.payments.platform.authorization.AuthorizationEvent;
 import dev.rgonz.payments.platform.authorization.ServiceAuthorizations;
 import dev.rgonz.payments.platform.clearing.TestClearingFiles;
 import dev.rgonz.payments.platform.payables.CardOnFile;
-import dev.rgonz.payments.platform.shared.Money;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.io.UnsupportedEncodingException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Currency;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -150,11 +149,8 @@ class CorePathTests {
     var authorizationCode = "ABC123";
     ServiceAuthorizations.approve(
         context,
-        requestId,
-        cardToken,
-        new Money(AMOUNT, Currency.getInstance("USD")),
-        authorizationCode,
-        GLOBEX_ACCEPTOR_ID);
+        new AuthorizationEvent(
+            requestId, cardToken, AMOUNT, "USD", authorizationCode, GLOBEX_ACCEPTOR_ID));
     // The Network clears the Charge in its Clearing File, PAN and all; Issuer staff import it, and
     // the PAN passes through clearing on its way to the vault.
     var fileId = TestClearingFiles.newId("F", 16);

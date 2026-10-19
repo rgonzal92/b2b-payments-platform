@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -36,7 +37,17 @@ public final class TestAuthorizationsTopic {
 
   /** Sends the message; a null event type sends no header. */
   public void send(String key, String eventType, String json) throws Exception {
-    var record = new ProducerRecord<>(TOPIC, key, json);
+    send(key, eventType, json, null);
+  }
+
+  /**
+   * Sends the message with this record timestamp, as the service's relay sets it to when the event
+   * was written; a null timestamp lets the producer set the time of sending.
+   */
+  public void send(String key, String eventType, String json, Instant timestamp) throws Exception {
+    var record =
+        new ProducerRecord<>(
+            TOPIC, null, timestamp == null ? null : timestamp.toEpochMilli(), key, json);
     if (eventType != null) {
       record.headers().add("event-type", eventType.getBytes(UTF_8));
     }

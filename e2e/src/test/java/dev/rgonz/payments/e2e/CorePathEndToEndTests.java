@@ -447,22 +447,30 @@ class CorePathEndToEndTests {
     assertThat(Files.readAllLines(loadTestFolder.resolve("cards.csv"))).hasSize(6);
   }
 
-  // The platform's copy holds the service's approved Authorization with this code, and its card
-  // moved to AUTHORIZED in the same transaction.
+  // The platform's Authorization Copy holds the service's approved Authorization with this code,
+  // and its card moved to AUTHORIZED in the same transaction. One module's schema per query
+  // (ADR-0009): the copy's, then cards'.
   private static boolean platformHasApprovedAuthorization(String authorizationCode) {
-    return platform
-        .getBean(JdbcClient.class)
-        .sql(
-            """
-            select exists (select 1
-                             from "authorization".authorizations a
-                             join cards.card c using (card_token)
-                            where a.authorization_code = :code and a.status = 'APPROVED'
-                              and c.status = 'AUTHORIZED')
-            """)
-        .param("code", authorizationCode)
-        .query(Boolean.class)
-        .single();
+    var jdbc = platform.getBean(JdbcClient.class);
+    var cardToken =
+        jdbc.sql(
+                """
+                select card_token from "authorization".authorizations
+                 where authorization_code = :code and status = 'APPROVED'
+                """)
+            .param("code", authorizationCode)
+            .query(String.class)
+            .optional();
+    return cardToken
+        .map(
+            token ->
+                jdbc.sql("select status from cards.card where card_token = :cardToken")
+                    .param("cardToken", token)
+                    .query(String.class)
+                    .optional()
+                    .filter("AUTHORIZED"::equals)
+                    .isPresent())
+        .orElse(false);
   }
 
   // Each kind of Account's balance in the platform's journal, its debits less its credits.

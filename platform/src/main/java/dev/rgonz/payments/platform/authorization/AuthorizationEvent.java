@@ -17,7 +17,7 @@ import java.util.Objects;
  * @param acceptorId the Card Acceptor ID (DE 42)
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-record AuthorizationEvent(
+public record AuthorizationEvent(
     String requestId,
     String cardToken,
     Long amountMinorUnits,
@@ -25,7 +25,7 @@ record AuthorizationEvent(
     String authorizationCode,
     String acceptorId) {
 
-  AuthorizationEvent {
+  public AuthorizationEvent {
     Objects.requireNonNull(requestId, "requestId");
     Objects.requireNonNull(cardToken, "cardToken");
     Objects.requireNonNull(amountMinorUnits, "amountMinorUnits");

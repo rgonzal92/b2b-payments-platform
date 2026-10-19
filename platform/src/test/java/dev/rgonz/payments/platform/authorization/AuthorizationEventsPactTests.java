@@ -14,11 +14,13 @@ import au.com.dius.pact.consumer.junit5.ProviderType;
 import au.com.dius.pact.core.model.V4Interaction;
 import au.com.dius.pact.core.model.V4Pact;
 import au.com.dius.pact.core.model.annotations.Pact;
+import dev.rgonz.payments.platform.FreshPactFile;
 import java.time.Instant;
 import java.util.Map;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 /**
  * What the platform's copy of Authorizations needs from authorization-service's approved and
@@ -30,6 +32,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @ExtendWith(PactConsumerTestExt.class)
 @PactTestFor(providerName = "authorization-service", providerType = ProviderType.ASYNCH)
 class AuthorizationEventsPactTests {
+
+  @RegisterExtension
+  static final FreshPactFile FRESH_PACT = new FreshPactFile("platform", "authorization-service");
 
   private static final String CONSUMER = "platform";
   private static final AuthorizationEvent EVENT =
