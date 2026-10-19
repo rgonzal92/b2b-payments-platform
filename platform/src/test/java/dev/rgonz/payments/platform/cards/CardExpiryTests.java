@@ -91,7 +91,7 @@ class CardExpiryTests {
 
   private SingleUseCard issuedAt(Instant now) {
     return cards.issueSingleUse(
-        UUID.randomUUID(), new BuyerId(UUID.randomUUID()), UUID.randomUUID(), AMOUNT, now);
+        UUID.randomUUID(), new BuyerId(UUID.randomUUID()), UUID.randomUUID(), null, AMOUNT, now);
   }
 
   private SingleUseCard.Status statusOf(SingleUseCard card) {

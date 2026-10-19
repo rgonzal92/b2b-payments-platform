@@ -104,7 +104,9 @@ class CorePathEndToEndTests {
             // Not the repository's var/clearing, where a developer's own Clearing Files may wait.
             "clearing.drop-folder=" + dropFolder,
             // The demo has Issuer staff import its file at once.
-            "clearing.drop-folder-check.enabled=false");
+            "clearing.drop-folder-check.enabled=false",
+            // No Kafka runs here, and the demo doesn't read the cards topic (M5's Kafka tests do).
+            "spring.modulith.events.externalization.enabled=false");
     // Returns once BuyerSeeder has created Acme and Initech and their Credit Lines through the
     // platform.
     simulator =

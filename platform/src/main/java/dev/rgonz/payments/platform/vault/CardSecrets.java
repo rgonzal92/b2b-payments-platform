@@ -3,6 +3,7 @@ package dev.rgonz.payments.platform.vault;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Optional;
 import java.util.random.RandomGenerator;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -89,6 +90,33 @@ class CardSecrets implements Vault {
                     crypto.decrypt(storedCode, cardToken).getBytes(StandardCharsets.UTF_8),
                     securityCode.getBytes(StandardCharsets.UTF_8)))
         .orElse(false);
+  }
+
+  // The stored PAN hash is the one the vault finds a card by; the security code is hashed now,
+  // because only its ciphertext is stored.
+  @Override
+  public CardHashes hashes(String cardToken) {
+    return jdbc.sql(
+            """
+            select pan_hash, security_code_ciphertext
+              from vault.card_secret
+             where card_token = :cardToken
+            """)
+        .param("cardToken", cardToken)
+        .query(
+            (row, rowNumber) ->
+                new CardHashes(
+                    encode(row.getBytes("pan_hash")),
+                    encode(
+                        crypto.hash(
+                            crypto.decrypt(row.getBytes("security_code_ciphertext"), cardToken)))))
+        .optional()
+        .orElseThrow(
+            () -> new IllegalStateException("The vault has no card data for card " + cardToken));
+  }
+
+  private static String encode(byte[] hash) {
+    return Base64.getEncoder().encodeToString(hash);
   }
 
   // The unique PAN hash rejects a PAN another card already has; `on conflict` reports that as no

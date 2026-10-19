@@ -224,7 +224,7 @@ class RemittanceLinksTests {
                 new SupplierOnInvoice(
                     "TAX-" + UUID.randomUUID(), "Globex", GLOBEX, "GLOBEX-01", null))
             .supplier();
-    return cards.issueSingleUse(UUID.randomUUID(), buyerId, supplier.id(), AMOUNT, now);
+    return cards.issueSingleUse(UUID.randomUUID(), buyerId, supplier.id(), null, AMOUNT, now);
   }
 
   // Delivers the card's Remittance Advice as of now and returns the link the Supplier received.

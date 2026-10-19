@@ -5,6 +5,7 @@ import dev.rgonz.payments.platform.cards.Cards;
 import dev.rgonz.payments.platform.ledger.Holds;
 import dev.rgonz.payments.platform.suppliers.RemittanceAdvice;
 import dev.rgonz.payments.platform.suppliers.RemittanceAdvices;
+import dev.rgonz.payments.platform.suppliers.Suppliers;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
@@ -33,6 +34,7 @@ class PaymentSaga {
   private final Invoices invoices;
   private final Holds holds;
   private final Cards cards;
+  private final Suppliers suppliers;
   private final RemittanceAdvices remittanceAdvices;
   private final TransactionTemplate transaction;
   private final MeterRegistry meters;
@@ -42,6 +44,7 @@ class PaymentSaga {
       Invoices invoices,
       Holds holds,
       Cards cards,
+      Suppliers suppliers,
       RemittanceAdvices remittanceAdvices,
       TransactionTemplate transaction,
       MeterRegistry meters) {
@@ -49,6 +52,7 @@ class PaymentSaga {
     this.invoices = invoices;
     this.holds = holds;
     this.cards = cards;
+    this.suppliers = suppliers;
     this.remittanceAdvices = remittanceAdvices;
     this.transaction = transaction;
     this.meters = meters;
@@ -158,10 +162,16 @@ class PaymentSaga {
     };
   }
 
-  // Keyed by the Payment's ID too, so issuing again finds the same card.
+  // Keyed by the Payment's ID too, so issuing again finds the same card. The Acceptor ID travels
+  // with the card because cards can't call suppliers (ADR-0016).
   private Payment issueCard(Payment payment, Instant now) {
     cards.issueSingleUse(
-        payment.id(), payment.buyerId(), payment.supplierId(), payment.amount(), now);
+        payment.id(),
+        payment.buyerId(),
+        payment.supplierId(),
+        suppliers.acceptorId(payment.supplierId()).orElse(null),
+        payment.amount(),
+        now);
     return payment.cardIssued(now);
   }
 

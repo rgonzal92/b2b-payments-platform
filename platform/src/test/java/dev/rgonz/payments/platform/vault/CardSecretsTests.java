@@ -2,8 +2,10 @@ package dev.rgonz.payments.platform.vault;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.rgonz.payments.platform.TestHashes;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
 import java.util.ArrayDeque;
+import java.util.Base64;
 import java.util.List;
 import java.util.Queue;
 import java.util.UUID;
@@ -51,6 +53,25 @@ class CardSecretsTests {
     assertThat(vault.securityCodeMatches(cardToken, securityCode)).isTrue();
     assertThat(vault.securityCodeMatches(cardToken, otherCode)).isFalse();
     assertThat(vault.securityCodeMatches(cardToken, "")).isFalse();
+  }
+
+  @Test
+  void theVaultGivesTheKeyedHashesOfACardsPanAndSecurityCode() {
+    var cardToken = "card-" + UUID.randomUUID();
+    vault.generatePan(cardToken);
+    var details = vault.cardDetails(cardToken);
+
+    var hashes = vault.hashes(cardToken);
+
+    assertThat(hashes.panHash()).isEqualTo(TestHashes.keyedHash(details.pan()));
+    assertThat(hashes.securityCodeHash()).isEqualTo(TestHashes.keyedHash(details.securityCode()));
+    // The PAN's hash is the one the vault stores and finds the card by.
+    assertThat(Base64.getDecoder().decode(hashes.panHash()))
+        .isEqualTo(
+            jdbc.sql("select pan_hash from vault.card_secret where card_token = :cardToken")
+                .param("cardToken", cardToken)
+                .query(byte[].class)
+                .single());
   }
 
   @Test

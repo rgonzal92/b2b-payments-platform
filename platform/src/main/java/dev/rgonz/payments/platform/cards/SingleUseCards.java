@@ -17,6 +17,7 @@ import java.util.Currency;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,11 +37,13 @@ class SingleUseCards implements Cards {
 
   private final JdbcClient jdbc;
   private final Vault vault;
+  private final ApplicationEventPublisher events;
   private final SecureRandom random = new SecureRandom();
 
-  SingleUseCards(JdbcClient jdbc, Vault vault) {
+  SingleUseCards(JdbcClient jdbc, Vault vault, ApplicationEventPublisher events) {
     this.jdbc = jdbc;
     this.vault = vault;
+    this.events = events;
   }
 
   // The saga runs one Payment's steps one at a time (its row lock), so nothing issues the same
@@ -48,7 +51,12 @@ class SingleUseCards implements Cards {
   @Override
   @Transactional
   public SingleUseCard issueSingleUse(
-      UUID paymentId, BuyerId buyerId, UUID supplierId, Money amount, Instant now) {
+      UUID paymentId,
+      BuyerId buyerId,
+      UUID supplierId,
+      String acceptorId,
+      Money amount,
+      Instant now) {
     var issued = findForPayment(paymentId);
     if (issued.isPresent()) {
       return issued.get();
@@ -86,6 +94,16 @@ class SingleUseCards implements Cards {
         .param("expiresAt", card.expiresAt().atOffset(ZoneOffset.UTC))
         .param("status", card.status().name())
         .update();
+    var hashes = vault.hashes(cardToken);
+    events.publishEvent(
+        new CardIssued(
+            cardToken,
+            hashes.panHash(),
+            hashes.securityCodeHash(),
+            card.expiresAt(),
+            card.amount().minorUnits(),
+            card.amount().currency().getCurrencyCode(),
+            acceptorId));
     return card;
   }
 
@@ -106,17 +124,23 @@ class SingleUseCards implements Cards {
   }
 
   // Only an ACTIVE card moves, so a card charged, expired or cleared meanwhile keeps its status.
+  // Its event commits with the update, so the registry delivers it only if the card is cancelled.
   @Override
+  @Transactional
   public void cancel(String cardToken) {
-    jdbc.sql(
-            """
-            update cards.card set status = :cancelled
-             where card_token = :cardToken and status = :active
-            """)
-        .param("cancelled", SingleUseCard.Status.CANCELLED.name())
-        .param("cardToken", cardToken)
-        .param("active", SingleUseCard.Status.ACTIVE.name())
-        .update();
+    var cancelled =
+        jdbc.sql(
+                """
+                update cards.card set status = :cancelled
+                 where card_token = :cardToken and status = :active
+                """)
+            .param("cancelled", SingleUseCard.Status.CANCELLED.name())
+            .param("cardToken", cardToken)
+            .param("active", SingleUseCard.Status.ACTIVE.name())
+            .update();
+    if (cancelled == 1) {
+      events.publishEvent(new CardCancelled(cardToken));
+    }
   }
 
   // Only an ACTIVE card moves, so of two Charges at once exactly one finds it ACTIVE.

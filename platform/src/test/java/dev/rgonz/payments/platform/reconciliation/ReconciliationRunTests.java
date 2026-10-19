@@ -340,7 +340,7 @@ class ReconciliationRunTests {
     var cardToken =
         cards
             .issueSingleUse(
-                paymentId, buyerId, UUID.randomUUID(), new Money(AUTHORIZED, USD), chargedAt)
+                paymentId, buyerId, UUID.randomUUID(), null, new Money(AUTHORIZED, USD), chargedAt)
             .cardToken();
     var requestId = "N" + UUID.randomUUID().toString().replace("-", "").substring(0, 11);
     jdbc.sql(
@@ -436,7 +436,7 @@ class ReconciliationRunTests {
   private String card(BuyerId buyerId, UUID paymentId) {
     return cards
         .issueSingleUse(
-            paymentId, buyerId, UUID.randomUUID(), new Money(AUTHORIZED, USD), Instant.now())
+            paymentId, buyerId, UUID.randomUUID(), null, new Money(AUTHORIZED, USD), Instant.now())
         .cardToken();
   }
 
