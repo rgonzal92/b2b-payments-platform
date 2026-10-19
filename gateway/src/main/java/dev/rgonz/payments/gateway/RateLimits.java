@@ -73,9 +73,10 @@ class RateLimits {
 
   /**
    * RedisRateLimiter, counting what it lets through unlimited. It already fails open: on any Redis
-   * error it logs "Error calling rate limiter lua" under this class's name, allows the request and
-   * reports -1 tokens remaining, a count its token bucket never returns. Grafana alerts on the
-   * counter (alerting.yaml).
+   * error it logs "Error calling rate limiter lua" under this class's name (turned off in
+   * application.properties: a stack trace per request), allows the request and reports -1 tokens
+   * remaining, a count its token bucket never returns. Grafana alerts on the counter
+   * (alerting.yaml).
    */
   static class FailOpenCountingRateLimiter extends RedisRateLimiter {
 

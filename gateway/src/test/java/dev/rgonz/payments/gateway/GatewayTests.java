@@ -22,8 +22,11 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webtestclient.autoconfigure.AutoConfigureWebTestClient;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -402,6 +405,7 @@ class GatewayTests {
   // ADR-0017: the limiter fails open. This Redis is the nested context's own, so stopping it leaves
   // the other tests theirs; the Gateway has connected to it before it stops, as in production.
   @Nested
+  @ExtendWith(OutputCaptureExtension.class)
   class WithRedisStopped {
 
     static final GenericContainer<?> doomedRedis =
@@ -418,7 +422,7 @@ class GatewayTests {
     @Autowired MeterRegistry meters;
 
     @Test
-    void requestsStillReachThePlatformAndTheGatewayCountsThem() {
+    void requestsStillReachThePlatformAndTheGatewayCountsThem(CapturedOutput output) {
       var acme = "Bearer " + clientCredentialsToken("acme-erp");
       http.get()
           .uri("/v1/invoices")
@@ -443,6 +447,8 @@ class GatewayTests {
           .as("six requests without Redis")
           .isLessThan(Duration.ofSeconds(1));
       assertThat(meters.get("gateway.rate.limiter.failed.open").counter().count()).isEqualTo(6);
+      // The counter carries the signal; a stack trace per request would flood the log.
+      assertThat(output).doesNotContain("Error calling rate limiter lua");
     }
   }
 
