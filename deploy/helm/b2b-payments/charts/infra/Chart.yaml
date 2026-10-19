@@ -1,0 +1,7 @@
+# The infrastructure the apps use, as in compose.yaml and with the same images: both PostgreSQL databases, Kafka,
+# Keycloak and otel-lgtm, each a single-replica StatefulSet. Not highly available (M6 design, What runs where).
+apiVersion: v2
+name: infra
+description: PostgreSQL, Kafka, Keycloak and otel-lgtm for the b2b-payments chart
+type: application
+version: 0.1.0

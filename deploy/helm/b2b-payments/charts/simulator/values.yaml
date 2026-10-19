@@ -1,0 +1,28 @@
+httpPort: 8081
+secret: simulator-secrets
+# The Network writes Clearing Files into the platform's drop folder; the load test's cards file is written here and
+# read by the load test.
+hostFolders:
+  - var/clearing
+  - var/load-test
+# One replica only, ever: its Network holds the Clearing File sequence number in memory (M6 design, What runs where).
+# The demo is on 127.0.0.1:8081 of the host (scripts/k3d-cluster.sh); the platform delivers Globex's Remittance
+# Advice here.
+service:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+# Every address the simulator connects to (docs/architecture.md, Runtime).
+env:
+  # The platform's REST API through the Gateway, as every client outside the platform reaches it.
+  SIMULATOR_PLATFORM_URL: http://gateway:8080
+  SIMULATOR_PLATFORM_GRPC_ADDRESS: authorization-service:9090
+  SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_TOKEN_URI: http://keycloak:8180/realms/payments/protocol/openid-connect/token
+  SIMULATOR_GLOBEX_URL: http://simulator:8081
+  SIMULATOR_NETWORK_DROP_FOLDER: "{{ .Values.global.repoRoot }}/var/clearing"
+  SIMULATOR_LOAD_TEST_CARDS_FILE: "{{ .Values.global.repoRoot }}/var/load-test/cards.csv"
+  MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://lgtm:4318/v1/traces
+  MANAGEMENT_OPENTELEMETRY_LOGGING_EXPORT_OTLP_ENDPOINT: http://lgtm:4318/v1/logs
+  MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://lgtm:4318/v1/metrics

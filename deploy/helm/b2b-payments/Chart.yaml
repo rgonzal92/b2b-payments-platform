@@ -1,0 +1,18 @@
+# The whole stack on one k3d cluster (M6): one subchart per app and one for the infrastructure, each under charts/,
+# which Helm installs with this chart. See docs/learning/helm.md and the README's "Run it on Kubernetes".
+apiVersion: v2
+name: b2b-payments
+description: The Issuer's B2B virtual-card platform, its simulator, Gateway and infrastructure
+type: application
+version: 0.1.0
+dependencies:
+  - name: infra
+    version: 0.1.0
+  - name: platform
+    version: 0.1.0
+  - name: authorization-service
+    version: 0.1.0
+  - name: simulator
+    version: 0.1.0
+  - name: gateway
+    version: 0.1.0

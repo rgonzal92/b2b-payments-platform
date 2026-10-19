@@ -88,6 +88,19 @@ How to read the report and what tripped us up: [`docs/learning/gatling.md`](docs
 
 Tests need Docker but not the stack or `.env`: `./mvnw verify` starts its own throwaway PostgreSQL, Kafka and Keycloak. Among them, the end-to-end test starts the platform and the simulator in one JVM and `authorization-service` beside them from its executable jar, then runs the demo and a small load-test seeding through them; a second test stops the platform, charges cards through the service alone and checks the platform catches up once restarted; `./mvnw -B -pl e2e -am verify` builds and tests the three apps, then runs it.
 
+## Run it on Kubernetes
+
+The same stack, run as a platform (M6): everything on a single-node [k3d](https://k3d.io) cluster from one Helm chart, with the Gateway in front of the platform ([Deployment](docs/architecture.md#deployment)). Compose and `spring-boot:run` above stay the development loop. You need Java 25, Docker, OpenSSL, k3d 5.8, Helm and kubectl, and ports 8080, 8081 and 8180 free: stop the apps and `docker compose down` first. From the repository root:
+
+1. Generate local secrets, if you haven't: `./scripts/init-env.sh` (step 1 above).
+2. Build the apps' images with buildpacks (the first build pulls the builder, a few minutes): `./mvnw -pl platform,authorization-service,simulator,gateway -am -DskipTests spring-boot:build-image`. It makes `b2b-payments/platform:local` and the like in your Docker.
+3. Create the cluster and import the images: `./scripts/k3d-cluster.sh`. It creates the k3d cluster `b2b-payments` (k3s's Traefik off, this repository mounted into its node, the host's `127.0.0.1:8080`, `8081` and `8180` mapped to it), switches `kubectl` to it and imports the four images. After rebuilding an image, run it again and `kubectl rollout restart deployment/<app>`.
+4. Turn `.env` into Kubernetes Secrets: `./scripts/k8s-secrets.sh`. Each app gets a Secret with only the variables it reads, and Keycloak one with the admin password and every client secret, for its realm; nothing secret is in the chart.
+5. Install the chart, running the apps that write under `var/` as you: `helm upgrade --install b2b-payments deploy/helm/b2b-payments --set global.hostUser.uid=$(id -u) --set global.hostUser.gid=$(id -g)`. `kubectl get pods -w` shows them start; wait until all nine are `1/1 Running`; an app that starts before its database restarts once or twice (if one isn't: [`pod-not-ready.md`](docs/runbooks/pod-not-ready.md)).
+6. Run the demo as in steps 4 to 6 above, on the same addresses: `curl -s -X POST localhost:8081/demo/invoices`, then `curl -s -X POST localhost:8081/demo/clearing-file` and `curl -s -X POST localhost:8081/demo/reconciliation`. The simulator now reaches the platform through the Gateway, its Network reaches `authorization-service` over gRPC inside the cluster, and the Clearing File goes through `var/clearing` in this repository, which both pods mount.
+7. Call the platform through the Gateway on <http://localhost:8080> with a token from Keycloak on <http://localhost:8180>, as in step 6's Break resolution above: tokens name `http://localhost:8180` as their issuer, and the apps fetch Keycloak's keys inside the cluster. Grafana: `kubectl port-forward service/lgtm 3000`, then <http://localhost:3000>.
+8. `helm uninstall b2b-payments` removes the stack but keeps the databases' and Kafka's volumes; `k3d cluster delete b2b-payments` removes everything.
+
 ## Roadmap
 
 | # | What works at the end | Status |

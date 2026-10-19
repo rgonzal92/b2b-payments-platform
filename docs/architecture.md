@@ -44,12 +44,55 @@ Docker Compose runs PostgreSQL (one schema per module), `grafana/otel-lgtm` for 
 - **Identity:** Keycloak's `payments` realm (`keycloak/payments-realm.json`) defines the roles `approver`, `erp`, `issuer-admin`, `reconciler` (the `simulator-reconciler` client, which resolves Breaks) and `network` (the `network` client, which the Network signs in with), and puts them in a flat `roles` claim. Every Buyer-side client also carries its Buyer in a `buyer_id` claim (`acme-erp`, `acme-approver-1` and `acme-approver-2` carry Acme's; `initech-erp` and `initech-approver` carry Initech's), and the platform takes the Buyer only from that claim. An Approver is the token's subject (`sub`); its `preferred_username` is kept beside it to make the approval record readable. The platform is an OAuth2 resource server; client secrets live only in the gitignored `.env`, written by `scripts/init-env.sh`.
 - **API contract:** the OpenAPI document in the `contracts` module is the source of truth. The platform implements interfaces generated from it, and the simulator calls the platform through HTTP interfaces generated from it. The Network link's contract is a protobuf file in the same module (`src/main/proto`), from which both sides get generated messages and gRPC stubs.
 - **Ports:** the platform's REST on `8080`; `authorization-service`'s Network link (gRPC) on `127.0.0.1:9090`, where the platform answered until the cutover (#92), and its HTTP (actuator only) on `8082` (the simulator has `8081`). The platform runs no gRPC server.
-- **Addresses outside Compose (#120):** every address an app connects to is a Spring Boot property, which its environment variable overrides by relaxed binding (`spring.r2dbc.url` by `SPRING_R2DBC_URL`); with none set, Compose plus `spring-boot:run` runs as before. Docker Compose support is left out of the executable jars (an optional dependency), so where a jar runs, as the M6 chart will (#114), what Compose supplied comes from properties instead. The chart will set:
-  - **platform:** `spring.datasource.url`, `.username` and `.password`; `management.opentelemetry.tracing.export.otlp.endpoint`, `management.opentelemetry.logging.export.otlp.endpoint` and `management.otlp.metrics.export.url`; `spring.kafka.bootstrap-servers`; `platform.public-url`, the address in Remittance Advice card links, which Globex opens from the simulator's pod.
+- **Addresses outside Compose (#120):** every address an app connects to is a Spring Boot property, which its environment variable overrides by relaxed binding (`spring.r2dbc.url` by `SPRING_R2DBC_URL`); with none set, Compose plus `spring-boot:run` runs as before. Docker Compose support is left out of the executable jars (an optional dependency), so where a jar runs, as in the M6 chart ([Deployment](#deployment)), what Compose supplied comes from properties instead. The chart sets:
+  - **platform:** `spring.datasource.url` and `.username` (no password: the chart's PostgreSQL trusts every connection from inside the cluster, as in Compose); `management.opentelemetry.tracing.export.otlp.endpoint`, `management.opentelemetry.logging.export.otlp.endpoint` and `management.otlp.metrics.export.url`; `spring.kafka.bootstrap-servers`; `platform.public-url`, the address in Remittance Advice card links, which Globex opens from the simulator's pod.
   - **authorization-service:** `spring.grpc.server.address` (`127.0.0.1` by default; `0.0.0.0` in the chart); `spring.r2dbc.url`, `spring.flyway.url` and `spring.kafka.bootstrap-servers`; the same three OTLP properties as the platform.
   - **simulator:** the same three OTLP properties; `simulator.platform-url`, `simulator.platform-grpc-address`, Keycloak's `spring.security.oauth2.client.provider.keycloak.token-uri`, and `simulator.globex.url`, where the platform delivers Globex's Remittance Advice (by default `http://localhost:` plus `server.port`).
   - **gateway:** `gateway.platform-uri`, where it routes `/v1` ([The Gateway](#the-gateway)).
-  - **Tokens:** the three resource servers (platform, authorization-service, gateway) take an optional `spring.security.oauth2.resourceserver.jwt.jwk-set-uri`. Unset, they fetch the signing keys through `issuer-uri`'s discovery document, as before. Set, the keys come from it, `iss` is still checked against `issuer-uri`, and the issuer is never fetched; the chart will set it, because tokens name Keycloak's host address (`http://localhost:8180`), which the pods can't reach. The service builds its own blocking decoder for gRPC (`SecurityConfig`), and its `JwkSetUriTests` prove it from the application's configuration. The platform uses Spring Boot's decoder unchanged: its `JwkSetUriTests` run Boot's resource-server auto-configuration alone with both properties set, not the platform's full context.
+  - **Tokens:** the three resource servers (platform, authorization-service, gateway) take an optional `spring.security.oauth2.resourceserver.jwt.jwk-set-uri`. Unset, they fetch the signing keys through `issuer-uri`'s discovery document, as before. Set, the keys come from it, `iss` is still checked against `issuer-uri`, and the issuer is never fetched; the chart sets it, because tokens name Keycloak's host address (`http://localhost:8180`), which the pods can't reach. The service builds its own blocking decoder for gRPC (`SecurityConfig`), and its `JwkSetUriTests` prove it from the application's configuration. The platform uses Spring Boot's decoder unchanged: its `JwkSetUriTests` run Boot's resource-server auto-configuration alone with both properties set, not the platform's full context.
+
+## Deployment
+
+Compose plus `spring-boot:run` stays the development loop. To run it as a platform (M6, ADR-0017), the whole stack also runs on a single-node k3d cluster from one Helm chart, `deploy/helm/b2b-payments/` ([M6 design](design/m6-run-as-a-platform.md#what-runs-where-q2-q3-q9-q10-q13); how: [`learning/kubernetes.md`](learning/kubernetes.md), [`learning/helm.md`](learning/helm.md); steps: the README's "Run it on Kubernetes").
+
+```mermaid
+flowchart LR
+    host["Host: curl, the README's commands"]
+    subgraph node["k3d node (a Docker container), repository mounted at /b2b-payments"]
+        gateway["gateway<br/>Deployment, LoadBalancer :8080"]
+        platform["platform<br/>Deployment, :8080"]
+        service["authorization-service<br/>Deployment, :8082, gRPC :9090"]
+        simulator["simulator<br/>Deployment, LoadBalancer :8081"]
+        keycloak["keycloak<br/>StatefulSet, LoadBalancer :8180"]
+        pg[("postgres<br/>StatefulSet")]
+        apg[("authorization-postgres<br/>StatefulSet")]
+        kafka[("kafka<br/>StatefulSet")]
+        lgtm["lgtm<br/>StatefulSet, :3000 :4318"]
+        drop[/"var/clearing (hostPath)"/]
+    end
+    host -->|"127.0.0.1:8080"| gateway
+    host -->|"127.0.0.1:8081 demo"| simulator
+    host -->|"127.0.0.1:8180 tokens"| keycloak
+    simulator -->|"REST /v1"| gateway
+    gateway --> platform
+    simulator -->|"gRPC, skips the Gateway"| service
+    platform -->|"Remittance Advice"| simulator
+    platform --- pg
+    service --- apg
+    platform <--> kafka
+    service <--> kafka
+    simulator -->|"writes Clearing Files"| drop
+    platform -->|"imports"| drop
+    gateway & platform & service -.->|"signing keys"| keycloak
+    simulator -.->|"tokens"| keycloak
+```
+
+- **Images:** `./mvnw -pl platform,authorization-service,simulator,gateway -am -DskipTests spring-boot:build-image` builds `b2b-payments/<module>:local` with Cloud Native Buildpacks ([how](learning/buildpacks.md)) from each app's executable (`exec`) jar; no Dockerfiles, no registry. Only the four apps build one (`spring-boot.build-image.skip`, like `spring-boot.run.skip`). `scripts/k3d-cluster.sh` creates the cluster `b2b-payments` (k3s `v1.37.1-k3s1`, Traefik off, the repository root mounted into the node, host ports `127.0.0.1:8080`, `8081` and `8180`) and imports the images.
+- **Charts:** a subchart per app, rendering the umbrella's shared `b2b-payments.app` template (a Deployment and a Service), and an `infra` subchart with a hand-written StatefulSet and Service each for both PostgreSQL databases, Kafka (one KRaft broker; the apps create their topics as in Compose), Keycloak (realm imported from the mounted `keycloak/`, hostname `http://localhost:8180`) and otel-lgtm (dashboards and alert rule from the mounted `grafana/`), with the images `compose.yaml` pins. The databases and Kafka keep their data on local-path volumes. Every app runs one replica for now; readiness reads Spring Boot's `/actuator/health/readiness`.
+- **Addresses:** each app's environment points every address in [Runtime](#runtime) at a Service: the simulator reaches the platform's REST API through `gateway:8080`, as every client outside the platform does, and `authorization-service:9090` for gRPC, past the Gateway; Remittance Advice links name `http://gateway:8080`, and the platform delivers Globex's to `http://simulator:8081`. Tokens are issued for `http://localhost:8180` wherever they are asked for; the resource servers fetch Keycloak's keys from `keycloak:8180` inside the cluster.
+- **Files:** the platform and the simulator mount `var/clearing` from the repository as hostPath volumes, so the Network's files land in the folder the platform claims them from by atomic move; the simulator also mounts `var/load-test`. Both run as the installing user (`global.hostUser`), so they can write there. This ties the cluster to one node.
+- **Secrets:** `scripts/k8s-secrets.sh [env file]` turns `.env` into one Secret per component holding only the variables it reads (`platform-secrets`: the vault and link keys; `authorization-service-secrets`: `VAULT_HASH_KEY`; `simulator-secrets`: the secrets of the clients it signs in as; `keycloak-secrets`: every client secret, the Reconciler's too, and the admin password), which the pods read as the same environment variables as in development. Nothing secret is in the chart.
+- **Not yet:** the second replica, probes for rolling restarts and the headless gRPC Service (#116), Redis (#115), per-pod telemetry (#118).
 
 ## Modules
 
@@ -615,7 +658,8 @@ flowchart LR
 - **Tokens at the edge:** `SecurityConfig` makes it an OAuth2 resource server on the platform's `issuer-uri`. A request without a valid Keycloak token gets `401` Problem Details (RFC 9457) with `WWW-Authenticate: Bearer` from the Gateway and never reaches the platform. Open without a token: the Gateway's `/actuator/health/**` and `GET /v1/remittance-links/*`, whose link token the platform checks. The Gateway checks no roles: the platform stays the authority and keeps every check of its own, so a valid token without the role still gets the platform's `403`.
 - **The Gateway's own errors:** `GatewayProblems` renders them as Problem Details (`application/problem+json`): `404` for a path no route serves, `502` when the platform refuses the connection, and the status of any other error the Gateway raises. The platform's own answers pass through as it wrote them.
 - **Settings:** `gateway.platform-uri` (`GATEWAY_PLATFORM_URI`); `spring.security.oauth2.resourceserver.jwt.issuer-uri`, and optionally `jwk-set-uri` (`SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI`): set, Spring Boot's reactive decoder fetches the signing keys from it and still checks `iss` against `issuer-uri`, as the platform and `authorization-service` do.
-- **Not yet:** the per-client rate limit with Redis (#115) and the cluster's deployment.
+- **In the cluster:** a LoadBalancer Service on `127.0.0.1:8080` of the host and `gateway:8080` inside ([Deployment](#deployment)).
+- **Not yet:** the per-client rate limit with Redis (#115).
 - **Tests:** `GatewayTests` runs the Gateway between a real Keycloak (the repository's realm file, in Testcontainers) and a stub platform that records what reaches it: a valid token reaches the platform with the same `Authorization` header; no token and a token with its signature cut off get the Gateway's `401` Problem Details and reach nothing; the remittance link passes without a token; a token with the `erp` role gets the stub's `201` and one without it the stub's `403`, unchanged; the platform sees its own `Host` and none of the client's forwarding headers; a path no route serves gets `404` Problem Details, and with nothing listening at the platform's address a request gets `502` Problem Details; the Gateway's health is open.
 
 ## How the core path is proven
