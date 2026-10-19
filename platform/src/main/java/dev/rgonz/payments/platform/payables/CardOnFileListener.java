@@ -5,6 +5,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Objects;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.json.JsonMapper;
@@ -21,6 +23,7 @@ import tools.jackson.databind.json.JsonMapper;
 class CardOnFileListener {
 
   static final String GROUP_ID = "platform-payables";
+  private static final Logger log = LoggerFactory.getLogger(CardOnFileListener.class);
   private static final String EVENT_TYPE_HEADER = "event-type";
   private static final JsonMapper JSON = JsonMapper.builder().build();
 
@@ -33,9 +36,27 @@ class CardOnFileListener {
   @KafkaListener(topics = "authorizations", groupId = GROUP_ID)
   void onAuthorizationsEvent(ConsumerRecord<String, String> record) {
     var header = record.headers().lastHeader(EVENT_TYPE_HEADER);
-    if (header != null && "CardOnFile".equals(new String(header.value(), StandardCharsets.UTF_8))) {
-      saga.cardOnFile(JSON.readValue(record.value(), CardOnFile.class).cardToken(), Instant.now());
+    if (header == null) {
+      skip("a message with no event-type header", record);
+    } else if ("CardOnFile".equals(new String(header.value(), StandardCharsets.UTF_8))) {
+      if (record.value() == null) {
+        skip("a CardOnFile message with no value", record);
+      } else {
+        saga.cardOnFile(
+            JSON.readValue(record.value(), CardOnFile.class).cardToken(), Instant.now());
+      }
     }
+    // Another event type is another module's (#92): not one payables uses.
+  }
+
+  // Can never be read, so retrying would block the partition for good: logged by partition and
+  // offset, never its contents, as the error handler logs malformed JSON.
+  private static void skip(String what, ConsumerRecord<String, String> record) {
+    log.warn(
+        "Skipped {} on the authorizations topic, partition {} offset {}",
+        what,
+        record.partition(),
+        record.offset());
   }
 
   /**

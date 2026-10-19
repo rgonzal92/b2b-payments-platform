@@ -5,7 +5,6 @@ import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -29,7 +28,7 @@ class Payments implements InvoicePayments {
   private static final String COLUMNS =
       """
       id, invoice_id, buyer_id, supplier_id, amount_minor, currency, state, failure_reason,
-      attempts, next_attempt_at
+      attempts, next_attempt_at, card_issued_at
       """;
 
   private final JdbcClient jdbc;
@@ -45,18 +44,27 @@ class Payments implements InvoicePayments {
     for (var state : Payment.State.values()) {
       reached(state);
     }
-    // Read from the table at each export, once a minute: one indexed count. Grafana counts, and
-    // alerts on, Payments waiting for authorization-service to have their card on file.
-    Gauge.builder("payments.waiting.card.on.file", this, Payments::countWaitingForCardOnFile)
-        .description("Payments whose card is issued, waiting for it to be on file")
-        .register(meters);
   }
 
-  private long countWaitingForCardOnFile() {
-    return jdbc.sql("select count(*) from payables.payment where state = 'CARD_ISSUED'")
-        .query(Long.class)
+  /** How many Payments wait for their card to be on file, and since when the oldest has. */
+  WaitingForCardOnFile waitingForCardOnFile() {
+    return jdbc.sql(
+            """
+            select count(*), min(card_issued_at)
+              from payables.payment
+             where state = 'CARD_ISSUED'
+            """)
+        .query(
+            (row, rowNumber) -> {
+              var oldest = row.getObject(2, OffsetDateTime.class);
+              return new WaitingForCardOnFile(
+                  row.getLong(1), oldest == null ? null : oldest.toInstant());
+            })
         .single();
   }
+
+  /** {@code oldestSince} is null when none waits. */
+  record WaitingForCardOnFile(long count, Instant oldestSince) {}
 
   @Override
   public List<UnpaidPayment> endedUnpaidOn(LocalDate day) {
@@ -165,6 +173,7 @@ class Payments implements InvoicePayments {
                        failure_reason = :failureReason,
                        attempts = :attempts,
                        next_attempt_at = :nextAttemptAt,
+                       card_issued_at = :cardIssuedAt,
                        ended_at = case when :state in ('FAILED', 'EXPIRED')
                                        then coalesce(ended_at, now()) end
                  where id = :id
@@ -175,6 +184,7 @@ class Payments implements InvoicePayments {
                 .param("failureReason", next.failureReason())
                 .param("attempts", next.attempts())
                 .param("nextAttemptAt", toTimestamp(next.nextAttemptAt()))
+                .param("cardIssuedAt", toTimestamp(next.cardIssuedAt()))
                 .param("id", read.id())
                 .param("readState", read.state().name())
                 .param("readAttempts", read.attempts())
@@ -234,6 +244,7 @@ class Payments implements InvoicePayments {
 
   private static Payment toPayment(ResultSet row, int rowNumber) throws SQLException {
     var nextAttemptAt = row.getObject("next_attempt_at", OffsetDateTime.class);
+    var cardIssuedAt = row.getObject("card_issued_at", OffsetDateTime.class);
     return new Payment(
         row.getObject("id", UUID.class),
         row.getObject("invoice_id", UUID.class),
@@ -243,6 +254,7 @@ class Payments implements InvoicePayments {
         Payment.State.valueOf(row.getString("state")),
         row.getString("failure_reason"),
         row.getInt("attempts"),
-        nextAttemptAt == null ? null : nextAttemptAt.toInstant());
+        nextAttemptAt == null ? null : nextAttemptAt.toInstant(),
+        cardIssuedAt == null ? null : cardIssuedAt.toInstant());
   }
 }

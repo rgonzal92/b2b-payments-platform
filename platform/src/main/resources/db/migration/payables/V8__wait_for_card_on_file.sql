@@ -3,5 +3,8 @@
 -- (or retrying) its advice for a card the platform authorizes, so it moves to CARD_ON_FILE as it stands.
 update payment set state = 'CARD_ON_FILE' where state = 'CARD_ISSUED';
 
--- The metric of Payments waiting for their card to be on file counts these.
-create index payment_waiting_for_card_on_file_idx on payment (id) where state = 'CARD_ISSUED';
+-- When the Payment reached CARD_ISSUED, to tell how long it has waited for its card to be on file; null before.
+alter table payment add column card_issued_at timestamptz;
+
+-- The waiting Payments' metrics count these and read the oldest.
+create index payment_waiting_for_card_on_file_idx on payment (card_issued_at) where state = 'CARD_ISSUED';

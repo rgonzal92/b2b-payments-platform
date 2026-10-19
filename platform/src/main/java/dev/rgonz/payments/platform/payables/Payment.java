@@ -8,7 +8,9 @@ import java.util.UUID;
 
 /**
  * The Issuer's attempt to pay one approved Invoice, and where its saga stands (ADR-0013, ADR-0014).
- * {@code nextAttemptAt} is when the worker should run the next step; null while no step is left.
+ * {@code nextAttemptAt} is when the worker should run the next step; null while no step is due.
+ * {@code cardIssuedAt} is when it reached {@code CARD_ISSUED}, to tell how long it has waited for
+ * its card to be on file; null before.
  */
 record Payment(
     UUID id,
@@ -19,7 +21,8 @@ record Payment(
     State state,
     String failureReason,
     int attempts,
-    Instant nextAttemptAt) {
+    Instant nextAttemptAt,
+    Instant cardIssuedAt) {
 
   static final int MAX_ATTEMPTS = 5;
   private static final Duration FIRST_BACKOFF = Duration.ofSeconds(10);
@@ -35,7 +38,8 @@ record Payment(
         State.STARTED,
         null,
         0,
-        now);
+        now,
+        null);
   }
 
   /** The Hold is placed, so issuing the card is due at once. */
@@ -48,8 +52,9 @@ record Payment(
    * design, "The gaps"). The wait has no time limit and counts no attempts; the card's expiry ends
    * it if the confirmation never comes.
    */
-  Payment cardIssued() {
-    return moved(State.CARD_ISSUED, null, 0, null);
+  Payment cardIssued(Instant now) {
+    return new Payment(
+        id, invoiceId, buyerId, supplierId, amount, State.CARD_ISSUED, null, 0, null, now);
   }
 
   /**
@@ -115,7 +120,16 @@ record Payment(
 
   private Payment moved(State state, String failureReason, int attempts, Instant nextAttemptAt) {
     return new Payment(
-        id, invoiceId, buyerId, supplierId, amount, state, failureReason, attempts, nextAttemptAt);
+        id,
+        invoiceId,
+        buyerId,
+        supplierId,
+        amount,
+        state,
+        failureReason,
+        attempts,
+        nextAttemptAt,
+        cardIssuedAt);
   }
 
   enum State {
