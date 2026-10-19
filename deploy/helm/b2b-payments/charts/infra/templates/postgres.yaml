@@ -1,0 +1,61 @@
+{{- range .Values.postgres }}
+# No password, as in compose.yaml: only pods in the cluster reach it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .name }}
+spec:
+  serviceName: {{ .name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .name }}
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: {{ $.Values.images.postgres }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .database }}
+            - name: POSTGRES_USER
+              value: {{ .database }}
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: trust
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .database }}", "-d", "{{ .database }}"]
+            periodSeconds: 5
+          volumeMounts:
+            # PostgreSQL 18's image keeps its data under this folder, in a subfolder per major version.
+            - name: data
+              mountPath: /var/lib/postgresql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name }}
+spec:
+  selector:
+    app: {{ .name }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+{{- end }}

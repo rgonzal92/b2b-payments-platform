@@ -1,0 +1,75 @@
+# Grafana, Prometheus, Tempo and Loki behind one OTLP endpoint, with the repository's dashboards and alert rule
+# provisioned as in compose.yaml: each provisioning file is mounted on its own, so the image's own providers and data
+# sources stay. Grafana opens with kubectl port-forward service/lgtm 3000 (no login).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lgtm
+spec:
+  serviceName: lgtm
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lgtm
+  template:
+    metadata:
+      labels:
+        app: lgtm
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: lgtm
+          image: {{ .Values.images.lgtm }}
+          ports:
+            - name: grafana
+              containerPort: 3000
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: grafana
+            periodSeconds: 5
+          volumeMounts:
+            - name: dashboards
+              mountPath: /otel-lgtm/b2b-payments-dashboards
+              readOnly: true
+            - name: dashboard-provider
+              mountPath: /otel-lgtm/grafana/conf/provisioning/dashboards/b2b-payments.yaml
+              readOnly: true
+            - name: alerting
+              mountPath: /otel-lgtm/grafana/conf/provisioning/alerting/b2b-payments.yaml
+              readOnly: true
+      volumes:
+        - name: dashboards
+          hostPath:
+            path: {{ .Values.global.repoRoot }}/grafana/dashboards
+            type: Directory
+        - name: dashboard-provider
+          hostPath:
+            path: {{ .Values.global.repoRoot }}/grafana/provisioning/dashboards.yaml
+            type: File
+        - name: alerting
+          hostPath:
+            path: {{ .Values.global.repoRoot }}/grafana/provisioning/alerting.yaml
+            type: File
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lgtm
+spec:
+  selector:
+    app: lgtm
+  ports:
+    - name: grafana
+      port: 3000
+      targetPort: grafana
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http

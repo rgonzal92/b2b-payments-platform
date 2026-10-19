@@ -1,0 +1,9 @@
+global:
+  # The repository root as the k3d node sees it (scripts/k3d-cluster.sh mounts it there). The Clearing drop folder,
+  # the load test's cards file, Keycloak's realm and Grafana's provisioning are hostPath volumes under it.
+  repoRoot: /b2b-payments
+  # Who the platform and the simulator run as, so the files they write under var/ belong to you and they can write
+  # to the folders you own: pass your own with --set global.hostUser.uid=$(id -u) --set global.hostUser.gid=$(id -g).
+  hostUser:
+    uid: 1000
+    gid: 1000

@@ -1,0 +1,74 @@
+# Keycloak in development mode with the repository's realm, as in compose.yaml. Its hostname is the address clients
+# outside the cluster get tokens from, so every token's issuer is http://localhost:8180/realms/payments, wherever it was
+# asked for; the apps check iss against it and fetch the signing keys from keycloak:8180 inside the cluster (M6 design,
+# Traffic). The realm is imported only into a fresh pod: it keeps no volume, so a restart imports it again.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keycloak
+spec:
+  serviceName: keycloak
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: keycloak
+          image: {{ .Values.images.keycloak }}
+          args: ["start-dev", "--import-realm"]
+          env:
+            - name: KC_HOSTNAME
+              value: http://localhost:8180
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-secrets
+                  key: KEYCLOAK_ADMIN_PASSWORD
+          # The realm file reads the client secrets from these variables at import (scripts/k8s-secrets.sh).
+          envFrom:
+            - secretRef:
+                name: keycloak-secrets
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            periodSeconds: 5
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+      volumes:
+        - name: realm
+          hostPath:
+            path: {{ .Values.global.repoRoot }}/keycloak
+            type: Directory
+---
+# On 127.0.0.1:8180 of the host too (scripts/k3d-cluster.sh maps it), where the README's commands get tokens and the
+# admin console opens.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+spec:
+  type: LoadBalancer
+  selector:
+    app: keycloak
+  ports:
+    - name: http
+      port: 8180
+      targetPort: http
