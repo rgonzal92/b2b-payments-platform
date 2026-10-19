@@ -38,7 +38,7 @@ select outcome, count(*) from clearing.clearing where file_id = '<file ID>' grou
 
 1. Find the exception that rolled the chunk back: the platform's log has its stack trace under `Rolling back chunk transaction`, and the last `Caused by:` names it. The step's `exit_message` holds the same trace, cut at 2,500 characters. It names a line number of the file at most, never a field's value (ADR-0004).
    - **The database was unreachable, or a lock wait timed out:** nothing to fix in the file; go to step 2 once the database is back.
-   - **Anything else that fails on every attempt** stops the file at the same chunk each time. Raise it as a bug with the stack trace; the file waits safely in `processing/` meanwhile. The drop-folder check restarts it every 30 seconds (#94), and each try rolls back at the same chunk and logs the same failure, posting nothing twice.
+   - **Anything else that fails on every attempt** stops the file at the same chunk each time. Raise it as a bug with the stack trace; the file waits safely in `processing/` meanwhile.
 2. Import the file again, under the same name, as Issuer staff. From the repository root:
 
    ```sh
@@ -50,7 +50,7 @@ select outcome, count(*) from clearing.clearing where file_id = '<file ID>' grou
      -H 'Content-Type: application/json' -d '{"fileName": "<file name>"}'
    ```
 
-   The platform finds the file in `processing/` and restarts the job: `validate` is skipped once it completed, `import` resumes after its last committed chunk, and `settle` settles the file once, however often it ran. A `201` answer with `"status": "IMPORTED"` means every Clearing is recorded, and the file is deleted. Since #94 the drop-folder check also restarts every file waiting in `processing/`, every 30 seconds, so once the cause is gone the import finishes without this request; the request just doesn't wait for the next check. Either way the restart first waits for the platform's Authorization Copy to catch up: a `503` means it lags or Kafka can't be reached ([`kafka-down.md`](kafka-down.md)).
+   The platform finds the file in `processing/` and restarts the job: `validate` is skipped once it completed, `import` resumes after its last committed chunk, and `settle` settles the file once, however often it ran. A `201` answer with `"status": "IMPORTED"` means every Clearing is recorded, and the file is deleted. The drop-folder check every 30 seconds doesn't restart stopped imports by itself: only a request like this one does. A `503` means the platform's Authorization Copy lags behind the `authorizations` topic, or Kafka can't be reached (#94): nothing was imported and the file stays in `processing/`. Send the same request again once the copy has caught up ([`kafka-down.md`](kafka-down.md#before-trusting-zero-lag) shows how to read the lag).
 
 ## The run is `STARTED` but nothing is importing: the platform stopped mid-import
 

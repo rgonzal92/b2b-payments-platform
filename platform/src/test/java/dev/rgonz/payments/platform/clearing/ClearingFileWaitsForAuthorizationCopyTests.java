@@ -30,6 +30,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
+import org.springframework.test.web.servlet.assertj.MvcTestResult;
 import org.testcontainers.kafka.KafkaContainer;
 
 /**
@@ -101,11 +102,12 @@ class ClearingFileWaitsForAuthorizationCopyTests {
             });
   }
 
-  // An import that stopped left its file in processing/: its restart waits there the same way, and
-  // the drop-folder check restarts it once the copy has caught up.
+  // An import that stopped left its file in processing/. Only a request restarts it (M3): while the
+  // copy lags it answers 503 and leaves the file there, the drop-folder check doesn't touch it, and
+  // the same request sent again once the copy has caught up imports it.
   @Test
-  void aRestartInProcessingWaitsWhileTheCopyLagsAndTheCheckImportsItOnceCaughtUp(
-      CapturedOutput output) throws Exception {
+  void aRestartRequestAnswers503WhileTheCopyLagsAndImportsWhenSentAgainOnceCaughtUp()
+      throws Exception {
     var topic = new TestAuthorizationsTopic(kafka);
     var fileId = newId("F", 16);
     var fileName = dropOneClearing(fileId, 33);
@@ -117,18 +119,17 @@ class ClearingFileWaitsForAuthorizationCopyTests {
     try {
       topic.send("card-token-2", "CardOnFile", "{\"cardToken\":\"card-token-2\"}");
 
+      assertThat(importFile(fileName)).hasStatus(503);
       imports.importNewFiles();
 
       assertThat(processing.resolve(fileName)).exists();
       assertThat(files.find(fileId)).isEmpty();
-      assertThat(output).contains("Clearing File " + fileName + " waits");
     } finally {
       copyListener.start();
     }
     topic.awaitConsumed(COPY_GROUP);
 
-    imports.importNewFiles();
-
+    assertThat(importFile(fileName)).hasStatus(201);
     assertThat(processing.resolve(fileName)).doesNotExist();
     assertThat(files.find(fileId))
         .hasValueSatisfying(
@@ -152,13 +153,7 @@ class ClearingFileWaitsForAuthorizationCopyTests {
       // So does an import through the endpoint, answering within seconds.
       var started = Instant.now();
 
-      var response =
-          mvc.post()
-              .uri("/v1/clearing-files")
-              .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_issuer-admin")))
-              .contentType(MediaType.APPLICATION_JSON)
-              .content("{\"fileName\":\"" + fileName + "\"}")
-              .exchange();
+      var response = importFile(fileName);
 
       assertThat(Duration.between(started, Instant.now())).isLessThan(Duration.ofSeconds(15));
       assertThat(response).hasStatus(503);
@@ -168,6 +163,15 @@ class ClearingFileWaitsForAuthorizationCopyTests {
     } finally {
       docker.unpauseContainerCmd(kafka.getContainerId()).exec();
     }
+  }
+
+  private MvcTestResult importFile(String fileName) {
+    return mvc.post()
+        .uri("/v1/clearing-files")
+        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_issuer-admin")))
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("{\"fileName\":\"" + fileName + "\"}")
+        .exchange();
   }
 
   private MessageListenerContainer copyListener() {

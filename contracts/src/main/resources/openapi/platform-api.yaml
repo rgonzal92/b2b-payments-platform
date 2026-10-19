@@ -416,8 +416,9 @@ paths:
         the check, and nothing in it is posted; either file moves to the drop folder's `failed/` folder. An import that
         stopped partway keeps what it committed and answers `500`; importing the same file name again restarts it where
         it stopped. While the platform's copy of Authorizations lags behind the authorization service, or Kafka can't be
-        reached, nothing is imported and the call answers `503`: the file stays where it is, in the drop folder or its
-        `processing/` folder, and the next check of the folder imports it once the copy has caught up.
+        reached, nothing is imported and the call answers `503`, the file left where it is: a new file in the drop folder
+        is imported by the folder's next check once the copy has caught up, while the restart of a stopped import, its
+        file in `processing/`, must be requested again then.
       requestBody:
         required: true
         content:

@@ -10,7 +10,7 @@
 ## What waits
 
 - **Payments for their card to be on file.** New Payments wait at `CARD_ISSUED`, their Holds placed, until the service's `CardOnFile` reaches the platform (group `platform-payables`), so no Supplier gets a card the service would decline as unknown ([`payment-stuck.md`](payment-stuck.md#a-payment-stays-card_issued-its-card-isnt-on-file)). There is no time limit short of the card's 30-day expiry.
-- **Clearing Files.** Before each import the platform compares the offsets the group `platform-authorization` committed on the `authorizations` topic with the topic's end offsets (#94). While the platform's Authorization Copy lags, or Kafka doesn't answer within 5 seconds, the file stays in the drop folder untouched and the platform logs `Clearing File … waits`; the drop-folder check tries it again every 30 seconds. An import through `POST /v1/clearing-files` answers `503` and leaves the file in the folder the same way. A file already in `processing/` (an import that stopped) waits too.
+- **Clearing Files.** Before each import the platform compares the offsets the group `platform-authorization` committed on the `authorizations` topic with the topic's end offsets (#94). While the platform's Authorization Copy lags, or Kafka doesn't answer within 5 seconds, the file stays in the drop folder untouched and the platform logs `Clearing File … waits`; the drop-folder check tries it again every 30 seconds. An import through `POST /v1/clearing-files` answers `503` and leaves the file in the folder the same way. A restart of an import that stopped, its file in `processing/`, gets the same `503` and stays there; the drop-folder check doesn't restart it, so send the request again once the copy has caught up ([`clearing-import-stopped.md`](clearing-import-stopped.md)).
 - **The platform's Authorization Copy.** Approved and reversed Authorizations wait in the service's outbox (or, once sent, on the topic), and the cards they name stay `ACTIVE` on the platform instead of moving to `AUTHORIZED`. Meanwhile the 7-day expiry doesn't see those cards as `AUTHORIZED`, so it doesn't expire them on time.
 - **The service's copy of the cards.** Cards issued, cancelled, expired or cleared on the platform don't reach it yet. A card the platform cleared stays `AUTHORIZED` there: a Reversal of its Charge moves it back to `ACTIVE`, and a second Charge on it could get `00` until its `CardCleared` arrives (M5 design, Risks).
 
@@ -22,7 +22,7 @@ Once Kafka is back, nothing needs a restart:
 - The service's relay sends its outbox backlog in order on its next pass.
 - Each consumer group (`authorization-service`, `platform-payables`, `platform-authorization`) resumes from its committed offset, so neither copy loses an event. Waiting Payments move on to the Remittance Advice.
 - The Authorization Copy catches up, and each card's `authorized_at` is the time of the service's approving transaction (the record's timestamp is the outbox row's `created_at`), so a late send doesn't shift its 7 days.
-- The next drop-folder check after the lag reaches 0 imports the waiting Clearing Files, in name order.
+- The next drop-folder check after the lag reaches 0 imports the Clearing Files waiting in the drop folder, in name order. A restart of a stopped import that got a `503` doesn't drain: request it again.
 
 ## Before trusting zero lag
 

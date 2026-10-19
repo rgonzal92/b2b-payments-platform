@@ -13,7 +13,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.BatchStatus;
@@ -38,7 +37,8 @@ import org.springframework.stereotype.Component;
  * <p>Before an import starts, it waits for the platform's Authorization Copy to catch up with
  * authorization-service, so no Clearing is matched against a copy missing its approved
  * Authorization: while the copy lags, or Kafka can't be reached, the file stays where it is,
- * untouched, and the next check of the drop folder tries it again (M5 design, "The gaps").
+ * untouched. The next check of the drop folder tries a new file again; a restart of a file in
+ * {@code processing/} must be requested again once the copy has caught up (M5 design, "The gaps").
  */
 @Component
 class ClearingFileImports {
@@ -125,39 +125,32 @@ class ClearingFileImports {
   }
 
   /**
-   * Restarts each import waiting in {@code processing/}, then imports each new file in the drop
-   * folder, one after another, each folder in name order. A file waits in {@code processing/} when
-   * its import stopped partway, or when its restart waited for the Authorization Copy. A name
-   * starting with {@code .} is a file the Network is still writing, and waits for its rename (the
-   * layout's delivery rule). A file whose import fails is logged and left where it is; the next one
-   * still imports.
+   * Imports each new file in the drop folder, one after another, in name order. A name starting
+   * with {@code .} is a file the Network is still writing, and waits for its rename (the layout's
+   * delivery rule). A file whose import fails is logged and left where it is; the next one still
+   * imports. A file in {@code processing/} isn't touched: only a request restarts a stopped import.
    */
   void importNewFiles() {
-    var names =
-        Stream.concat(fileNames(processingFolder).stream(), fileNames(dropFolder).stream())
-            .distinct()
-            .toList();
+    List<String> names;
+    try (var entries = Files.list(dropFolder)) {
+      names =
+          entries
+              .filter(Files::isRegularFile)
+              .map(file -> file.getFileName().toString())
+              .filter(name -> !name.startsWith("."))
+              .sorted()
+              .toList();
+    } catch (NoSuchFileException noFolderYet) {
+      return;
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
+    }
     for (var name : names) {
       try {
         importFile(name);
       } catch (RuntimeException e) {
         log.error("Couldn't import Clearing File {}", name, e);
       }
-    }
-  }
-
-  private static List<String> fileNames(Path folder) {
-    try (var entries = Files.list(folder)) {
-      return entries
-          .filter(Files::isRegularFile)
-          .map(file -> file.getFileName().toString())
-          .filter(name -> !name.startsWith("."))
-          .sorted()
-          .toList();
-    } catch (NoSuchFileException noFolderYet) {
-      return List.of();
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
     }
   }
 
@@ -318,7 +311,8 @@ class ClearingFileImports {
 
     /**
      * The platform's Authorization Copy hasn't caught up, or Kafka can't be reached: the file stays
-     * where it is, untouched, for the next check of the drop folder.
+     * where it is, untouched: in the drop folder for its next check, or in {@code processing/} for
+     * the restart to be requested again.
      */
     record Waiting() implements ImportResult {}
 

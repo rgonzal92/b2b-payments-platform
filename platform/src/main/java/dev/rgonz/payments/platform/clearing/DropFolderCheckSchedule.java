@@ -6,9 +6,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Checks the drop folder every 30 seconds: restarts each import waiting in {@code processing/},
- * then imports each new Clearing File. Tests that import files by hand turn this off with {@code
- * clearing.drop-folder-check.enabled=false}.
+ * Checks the drop folder for new Clearing Files every 30 seconds. Tests that import files by hand
+ * turn this off with {@code clearing.drop-folder-check.enabled=false}.
  */
 @Component
 @ConditionalOnBooleanProperty(name = "clearing.drop-folder-check.enabled", matchIfMissing = true)
