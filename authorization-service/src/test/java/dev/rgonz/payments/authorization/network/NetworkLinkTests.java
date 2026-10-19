@@ -207,27 +207,54 @@ class NetworkLinkTests {
   }
 
   // One trace from the Network's call to the platform's consumer (#96): the call's W3C trace
-  // context reaches the approved Authorization's message, through the outbox and the relay, so the
-  // platform's consumer span joins the Charge's trace.
+  // context is stored on the outbox row the approved Authorization writes, under the service's
+  // own server span, and the relay sends the message from a span of its own in the same trace, so
+  // the platform's consumer span joins the Charge's trace.
   @Test
   void anApprovedAuthorizationIsPublishedInTheTraceOfTheNetworksCall() {
     var card = issuedCard();
     var traceId = "00000000000000000000000000000096";
+    var networkSpanId = "0000000000000096";
     var metadata = new Metadata();
     metadata.put(
         Metadata.Key.of("traceparent", Metadata.ASCII_STRING_MARSHALLER),
-        "00-" + traceId + "-0000000000000096-01");
+        "00-" + traceId + "-" + networkSpanId + "-01");
 
     network()
         .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata))
         .authorize(chargeOn(card).build());
 
+    var stored = TraceParent.of(storedTraceParent(card, "AuthorizationApproved"));
+    assertThat(stored.traceId()).isEqualTo(traceId);
+    assertThat(stored.spanId()).as("the service's server span").isNotEqualTo(networkSpanId);
     var approved = authorizationsOf(card, 2).get(1);
     assertThat(AuthorizationsTopic.eventType(approved)).isEqualTo("AuthorizationApproved");
-    var traceparent = approved.headers().lastHeader("traceparent");
-    assertThat(traceparent).as("traceparent header").isNotNull();
-    assertThat(new String(traceparent.value(), StandardCharsets.UTF_8))
-        .matches("00-" + traceId + "-[0-9a-f]{16}-[0-9a-f]{2}");
+    var header = approved.headers().lastHeader("traceparent");
+    assertThat(header).as("traceparent header").isNotNull();
+    var sent = TraceParent.of(new String(header.value(), StandardCharsets.UTF_8));
+    assertThat(sent.traceId()).isEqualTo(traceId);
+    assertThat(sent.spanId()).as("the relay's send span").isNotEqualTo(stored.spanId());
+  }
+
+  /** A W3C traceparent's trace ID and parent span ID. */
+  private record TraceParent(String traceId, String spanId) {
+
+    static TraceParent of(String traceparent) {
+      assertThat(traceparent).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}");
+      var parts = traceparent.split("-");
+      return new TraceParent(parts[1], parts[2]);
+    }
+  }
+
+  private String storedTraceParent(Card card, String eventType) {
+    return db.sql(
+            "select trace_parent from outbox where card_token = :cardToken"
+                + " and event_type = :eventType")
+        .bind("cardToken", card.cardToken())
+        .bind("eventType", eventType)
+        .map(row -> row.get("trace_parent", String.class))
+        .one()
+        .block();
   }
 
   // Had the decline written an event, it would have reached the card's partition before the

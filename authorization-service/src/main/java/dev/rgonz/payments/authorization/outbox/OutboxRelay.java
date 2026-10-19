@@ -120,7 +120,9 @@ class OutboxRelay {
   }
 
   // The row's trace, read from its traceparent as a consumer reads a message's, is the parent of
-  // the template's own send observation, which writes the header.
+  // the relay's span, and that span the parent of the template's own send observation, which
+  // writes the header. The span lasts until Kafka acknowledges the send or it fails, and records
+  // the failure.
   private CompletableFuture<?> sendInItsTrace(
       ProducerRecord<String, String> record, String traceParent) {
     if (traceParent == null) {
@@ -128,9 +130,25 @@ class OutboxRelay {
     }
     var context = new ReceiverContext<Map<String, String>>(Map::get);
     context.setCarrier(Map.of(Outbox.TRACE_PARENT, traceParent));
-    return Observation.createNotStarted("outbox.relay", () -> context, observations)
-        .contextualName("outbox relay")
-        .observe(() -> kafka.send(record));
+    var observation =
+        Observation.createNotStarted("outbox.relay", () -> context, observations)
+            .contextualName("outbox relay")
+            .start();
+    try (var scope = observation.openScope()) {
+      return kafka
+          .send(record)
+          .whenComplete(
+              (result, error) -> {
+                if (error != null) {
+                  observation.error(error);
+                }
+                observation.stop();
+              });
+    } catch (RuntimeException e) {
+      observation.error(e);
+      observation.stop();
+      throw e;
+    }
   }
 
   private Mono<Boolean> markSent(long id) {
