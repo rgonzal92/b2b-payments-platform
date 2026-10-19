@@ -198,7 +198,7 @@ class PaymentSaga {
         suppliers.acceptorId(payment.supplierId()).orElse(null),
         payment.amount(),
         now);
-    return payment.cardIssued(now);
+    return payment.cardIssued();
   }
 
   // The advice is the Payment's too, so delivering it again sends the same link, under the same

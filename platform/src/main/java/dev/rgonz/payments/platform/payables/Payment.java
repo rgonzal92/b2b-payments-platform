@@ -48,7 +48,7 @@ record Payment(
    * design, "The gaps"). The wait has no time limit and counts no attempts; the card's expiry ends
    * it if the confirmation never comes.
    */
-  Payment cardIssued(Instant now) {
+  Payment cardIssued() {
     return moved(State.CARD_ISSUED, null, 0, null);
   }
 
