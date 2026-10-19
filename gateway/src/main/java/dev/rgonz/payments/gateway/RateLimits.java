@@ -14,6 +14,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.http.HttpHeaders;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import reactor.core.publisher.Mono;
 
@@ -59,6 +60,18 @@ class RateLimits {
     return exchange ->
         Mono.justOrEmpty(exchange.getRequest().getRemoteAddress())
             .map(address -> address.getAddress().getHostAddress());
+  }
+
+  /**
+   * Seconds until a refused request would pass, from the headers RedisRateLimiter put on the
+   * response: the bucket holds {@code remaining} tokens, the request needed {@code requested}, and
+   * it gains {@code replenish} a second, so the wait is the shortfall over the rate, rounded up.
+   */
+  static String retryAfterSeconds(HttpHeaders headers) {
+    long remaining = Long.parseLong(headers.getFirst(RedisRateLimiter.REMAINING_HEADER));
+    long requested = Long.parseLong(headers.getFirst(RedisRateLimiter.REQUESTED_TOKENS_HEADER));
+    long replenish = Long.parseLong(headers.getFirst(RedisRateLimiter.REPLENISH_RATE_HEADER));
+    return String.valueOf(Math.max(1, Math.ceilDiv(requested - remaining, replenish)));
   }
 
   /** Replaces Spring Cloud Gateway's own RedisRateLimiter bean, which backs off for this one. */

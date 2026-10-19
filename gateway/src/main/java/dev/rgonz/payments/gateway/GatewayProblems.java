@@ -55,13 +55,17 @@ class GatewayProblems implements ErrorWebExceptionHandler {
     if (exchange.getResponse().isCommitted()) {
       return Mono.error(error);
     }
+    ProblemDetail problem;
     if (error instanceof HttpClientErrorException.TooManyRequests) {
-      exchange
-          .getResponse()
-          .getHeaders()
-          .set(HttpHeaders.RETRY_AFTER, retryAfterSeconds(exchange.getResponse().getHeaders()));
+      // RequestRateLimiter refused it (throwOnLimit) and left the bucket's headers on the response.
+      var headers = exchange.getResponse().getHeaders();
+      headers.set(HttpHeaders.RETRY_AFTER, RateLimits.retryAfterSeconds(headers));
+      problem =
+          ProblemDetail.forStatusAndDetail(
+              HttpStatus.TOO_MANY_REQUESTS, "Too many requests from this client; retry later.");
+    } else {
+      problem = problemFor(error);
     }
-    var problem = problemFor(error);
     if (problem.getStatus() >= 500) {
       log.warn(
           "{} {} answered {}",
@@ -82,24 +86,10 @@ class GatewayProblems implements ErrorWebExceptionHandler {
       return ProblemDetail.forStatusAndDetail(
           HttpStatus.BAD_GATEWAY, "The platform can't be reached.");
     }
-    if (error instanceof HttpClientErrorException.TooManyRequests) {
-      return ProblemDetail.forStatusAndDetail(
-          HttpStatus.TOO_MANY_REQUESTS, "Too many requests from this client; retry later.");
-    }
     if (error instanceof ErrorResponse response) {
       return ProblemDetail.forStatus(response.getStatusCode());
     }
     return ProblemDetail.forStatus(HttpStatus.INTERNAL_SERVER_ERROR);
-  }
-
-  // RequestRateLimiter refused the request and RedisRateLimiter's headers are on the response: the
-  // bucket holds `remaining` tokens, the request needed `requested`, and it gains `replenish` a
-  // second, so the wait is the shortfall over the rate, in whole seconds.
-  private static String retryAfterSeconds(HttpHeaders headers) {
-    long remaining = Long.parseLong(headers.getFirst("X-RateLimit-Remaining"));
-    long requested = Long.parseLong(headers.getFirst("X-RateLimit-Requested-Tokens"));
-    long replenish = Long.parseLong(headers.getFirst("X-RateLimit-Replenish-Rate"));
-    return String.valueOf(Math.max(1, Math.ceilDiv(requested - remaining, replenish)));
   }
 
   private static boolean refusedConnection(Throwable error) {
