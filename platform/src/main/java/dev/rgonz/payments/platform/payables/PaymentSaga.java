@@ -96,6 +96,32 @@ class PaymentSaga {
   }
 
   /**
+   * authorization-service has the card on file: its Payment, waiting at {@code CARD_ISSUED}, is due
+   * to deliver the Remittance Advice at {@code now}. The Payment is locked first, as the worker
+   * does. Kafka may deliver the event more than once; a repeat, or one for a Payment that has
+   * ended, finds nothing to move and changes nothing. A card the platform never issued is logged
+   * and skipped.
+   */
+  void cardOnFile(String cardToken, Instant now) {
+    transaction.executeWithoutResult(
+        status ->
+            cards
+                .find(cardToken)
+                .flatMap(card -> payments.lock(card.paymentId()))
+                .ifPresentOrElse(
+                    payment -> {
+                      var next = payment.cardOnFile(now);
+                      if (!next.equals(payment)) {
+                        payments.update(payment, next);
+                        log.info(
+                            "Payment {} is {}: its card is on file", payment.id(), next.state());
+                      }
+                    },
+                    () ->
+                        log.warn("Skipped CardOnFile for card {}: no Payment has it", cardToken)));
+  }
+
+  /**
    * Runs due Payments' next steps, one transaction each, until none is due at {@code now}. A step
    * that moves a Payment on leaves its next step due at {@code now}, so one pass usually completes
    * it. Several callers may run at once: SKIP LOCKED keeps them on different Payments. The
@@ -131,10 +157,10 @@ class PaymentSaga {
         switch (payment.state()) {
           case STARTED -> stepTimer(PLACE_HOLD).record(() -> placeHold(payment, now));
           case HOLD_PLACED -> stepTimer(ISSUE_CARD).record(() -> issueCard(payment, now));
-          case CARD_ISSUED ->
+          case CARD_ON_FILE ->
               stepTimer(DELIVER_REMITTANCE_ADVICE)
                   .record(() -> deliverRemittanceAdvice(payment, now));
-          case COMPLETED, FAILED, EXPIRED ->
+          case CARD_ISSUED, COMPLETED, FAILED, EXPIRED ->
               throw new IllegalStateException(
                   "Payment %s is %s: no step is left to run."
                       .formatted(payment.id(), payment.state()));
@@ -220,15 +246,16 @@ class PaymentSaga {
         holds.release(failed.id());
         log.info("Payment {} failed for good; released its Hold", failed.id());
       }
-      case CARD_ISSUED -> {
+      case CARD_ON_FILE -> {
         cards.findForPayment(failed.id()).ifPresent(card -> cards.cancel(card.cardToken()));
         holds.release(failed.id());
         log.info(
             "Payment {} failed for good; cancelled its card if still ACTIVE and released its Hold",
             failed.id());
       }
-      case STARTED, COMPLETED, FAILED, EXPIRED -> {
-        // Placing the Hold is the first step: nothing came before it to undo.
+      case STARTED, CARD_ISSUED, COMPLETED, FAILED, EXPIRED -> {
+        // Placing the Hold is the first step: nothing came before it to undo. A CARD_ISSUED
+        // Payment runs no step while it waits, so none fails.
       }
     }
   }

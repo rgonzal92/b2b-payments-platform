@@ -5,6 +5,7 @@ import dev.rgonz.payments.platform.cards.SingleUseCard;
 import dev.rgonz.payments.platform.shared.BuyerId;
 import dev.rgonz.payments.platform.shared.Money;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -44,6 +45,17 @@ class Payments implements InvoicePayments {
     for (var state : Payment.State.values()) {
       reached(state);
     }
+    // Read from the table at each export, once a minute: one indexed count. Grafana counts, and
+    // alerts on, Payments waiting for authorization-service to have their card on file.
+    Gauge.builder("payments.waiting.card.on.file", this, Payments::countWaitingForCardOnFile)
+        .description("Payments whose card is issued, waiting for it to be on file")
+        .register(meters);
+  }
+
+  private long countWaitingForCardOnFile() {
+    return jdbc.sql("select count(*) from payables.payment where state = 'CARD_ISSUED'")
+        .query(Long.class)
+        .single();
   }
 
   @Override
