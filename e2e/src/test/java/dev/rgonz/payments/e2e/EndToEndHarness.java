@@ -19,6 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.util.TestSocketUtils;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -230,18 +231,15 @@ abstract class EndToEndHarness {
     }
   }
 
-  private static void awaitHealthy(Process process, Path log) throws IOException {
-    var health =
-        HttpRequest.newBuilder(URI.create("http://localhost:" + servicePort + "/actuator/health"))
-            .build();
+  private static void awaitHealthy(Process process, Path log) {
     var deadline = Instant.now().plus(Duration.ofSeconds(60));
-    try (var http = HttpClient.newHttpClient()) {
+    try {
       while (Instant.now().isBefore(deadline)) {
         if (!process.isAlive()) {
           throw new IllegalStateException("authorization-service stopped; see " + log);
         }
         try {
-          if (http.send(health, HttpResponse.BodyHandlers.discarding()).statusCode() == 200) {
+          if (healthStatus(servicePort) == 200) {
             return;
           }
         } catch (IOException notListeningYet) {
@@ -255,6 +253,20 @@ abstract class EndToEndHarness {
     throw new IllegalStateException("authorization-service wasn't healthy in time; see " + log);
   }
 
+  /**
+   * The HTTP status of the app's health on the port; throws {@link java.net.ConnectException} while
+   * nothing listens there.
+   */
+  static int healthStatus(int port) throws IOException, InterruptedException {
+    try (var http = HttpClient.newHttpClient()) {
+      return http.send(
+              HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/actuator/health"))
+                  .build(),
+              HttpResponse.BodyHandlers.discarding())
+          .statusCode();
+    }
+  }
+
   // Both apps' jars hold an application.properties, and classpath:application.properties finds
   // only the first one on the classpath, for both apps: each gets the one beside its own classes.
   private static String ownApplicationProperties(Class<?> application) {
@@ -262,6 +274,16 @@ abstract class EndToEndHarness {
     return location.endsWith(".jar")
         ? "jar:" + location + "!/application.properties"
         : location + "application.properties";
+  }
+
+  /**
+   * The platform's database, read straight from its container: it answers whether the platform is
+   * running or not.
+   */
+  static JdbcClient platformDatabase() {
+    return JdbcClient.create(
+        new DriverManagerDataSource(
+            postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword()));
   }
 
   @AfterAll
@@ -281,7 +303,7 @@ abstract class EndToEndHarness {
   // and its card moved to AUTHORIZED in the same transaction. One module's schema per query
   // (ADR-0009): the copy's, then cards'.
   static boolean platformHasApprovedAuthorization(String authorizationCode) {
-    var jdbc = platform.getBean(JdbcClient.class);
+    var jdbc = platformDatabase();
     var cardToken =
         jdbc.sql(
                 """
