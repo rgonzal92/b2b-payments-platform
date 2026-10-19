@@ -6,6 +6,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 
 import com.jayway.jsonpath.JsonPath;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
+import dev.rgonz.payments.platform.authorization.CaughtUpAuthorizationCopy;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -30,7 +31,7 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
  * first, a page at a time, with the gaps in the Network's sequence numbers. The files are imported
  * through the endpoint, without Clearings, as the list doesn't depend on them.
  */
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, CaughtUpAuthorizationCopy.class})
 @SpringBootTest
 @AutoConfigureMockMvc
 class ClearingFilesApiTests {

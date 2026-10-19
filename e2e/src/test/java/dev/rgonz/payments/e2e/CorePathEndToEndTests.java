@@ -6,6 +6,7 @@ import static org.awaitility.Awaitility.await;
 import com.jayway.jsonpath.JsonPath;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
 import dev.rgonz.payments.platform.PlatformApplication;
+import dev.rgonz.payments.platform.authorization.AuthorizationCopyFreshness;
 import dev.rgonz.payments.simulator.SimulatorApplication;
 import java.io.IOException;
 import java.net.URI;
@@ -324,12 +325,17 @@ class CorePathEndToEndTests {
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
     assertThat(json).extractingPath("$.authorization.authorizationCode").asString().hasSize(6);
     // The service's approved Authorization reaches the platform's copy through its outbox and
-    // Kafka a moment after the Network's answer; the Clearing File must not come before it (#94
-    // makes the import wait on its own).
+    // Kafka a moment after the Network's answer. The demo imports once through the API, which
+    // answers 503 while the copy lags (#94), and no lag check sees an event still in the service's
+    // outbox: so the test waits until the copy has the Authorization and the platform's own check
+    // finds no lag, its offset committed.
     String authorizationCode = JsonPath.read(summary, "$.authorization.authorizationCode");
     await()
         .atMost(Duration.ofSeconds(30))
-        .until(() -> platformHasApprovedAuthorization(authorizationCode));
+        .until(
+            () ->
+                platformHasApprovedAuthorization(authorizationCode)
+                    && platform.getBean(AuthorizationCopyFreshness.class).caughtUp());
     // Until the Charge clears, its Hold reserves Acme's credit.
     assertThat(acmesCredit())
         .isLenientlyEqualTo(

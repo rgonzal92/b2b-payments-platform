@@ -50,7 +50,7 @@ select outcome, count(*) from clearing.clearing where file_id = '<file ID>' grou
      -H 'Content-Type: application/json' -d '{"fileName": "<file name>"}'
    ```
 
-   The platform finds the file in `processing/` and restarts the job: `validate` is skipped once it completed, `import` resumes after its last committed chunk, and `settle` settles the file once, however often it ran. A `201` answer with `"status": "IMPORTED"` means every Clearing is recorded, and the file is deleted. The drop-folder check every 30 seconds doesn't restart stopped imports by itself: only a request like this one does.
+   The platform finds the file in `processing/` and restarts the job: `validate` is skipped once it completed, `import` resumes after its last committed chunk, and `settle` settles the file once, however often it ran. A `201` answer with `"status": "IMPORTED"` means every Clearing is recorded, and the file is deleted. The drop-folder check every 30 seconds doesn't restart stopped imports by itself: only a request like this one does. A `503` means the platform's Authorization Copy lags behind the `authorizations` topic, or Kafka can't be reached (#94): nothing was imported and the file stays in `processing/`. Send the same request again once the copy has caught up ([`kafka-down.md`](kafka-down.md#before-trusting-zero-lag) shows how to read the lag).
 
 ## The run is `STARTED` but nothing is importing: the platform stopped mid-import
 

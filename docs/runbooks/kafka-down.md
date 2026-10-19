@@ -1,10 +1,39 @@
 # Kafka is down
 
-**Signals:** no new messages on the `cards` or `authorizations` topic; rows in `modulith.event_publication` for `CardIssued`, `CardCancelled`, `CardExpired` or `CardCleared` keep `completion_date` null, or the service's `outbox` rows keep `sent_at` null; the platform logs the externalizer's send failing (`Node is not available`, `TimeoutException`); `docker compose ps` doesn't show `kafka` as running.
+**Signals:** no new messages on the `cards` or `authorizations` topic; rows in `modulith.event_publication` for `CardIssued`, `CardCancelled`, `CardExpired` or `CardCleared` keep `completion_date` null, or the service's `outbox` rows keep `sent_at` null; the platform logs the externalizer's send failing (`Node is not available`, `TimeoutException`), `Couldn't read the Authorization Copy's lag from Kafka` and `Clearing File … waits`; `POST /v1/clearing-files` answers `503`; `docker compose ps` doesn't show `kafka` as running.
 
-The platform keeps working: issuing, cancelling, expiring and clearing cards commit as usual, and the in-process `CardExpired` listener still ends Payments and releases Holds. Only the externalization lags, because the event publication registry is the outbox (ADR-0008): a send that fails stays an incomplete publication, and the platform sends every publication still incomplete after a minute again, once a minute (`EventResubmissionSchedule`), so the events reach the topic within a minute or two of Kafka coming back, with no restart. A resent event may arrive twice, or after a later event for the same card; every consumer is idempotent and order-tolerant. New Payments wait at `CARD_ISSUED`, their Holds placed, until the service's `CardOnFile` reaches the platform; the platform's consumer (group `platform-payables`) resumes from its committed offset once Kafka is back, and they move on by themselves ([`payment-stuck.md`](payment-stuck.md#a-payment-stays-card_issued-its-card-isnt-on-file)). `authorization-service` keeps its copy of the cards as it was and keeps running; its consumer resumes from its group's committed offset once Kafka is back, so the copy catches up without losing an event. Meanwhile a card the platform cleared stays `AUTHORIZED` in the copy: a Reversal of its Charge moves it back to `ACTIVE`, and a second Charge on it could get `00` until its `CardCleared` arrives (M5 design, Risks).
+## What keeps working
 
-The platform's Authorization Copy falls behind: approved and reversed Authorizations wait in the service's outbox (or, once sent, on the `authorizations` topic for the consumer group `platform-authorization`), and the cards they name stay `ACTIVE` on the platform instead of moving to `AUTHORIZED`. Two things go wrong meanwhile. A Clearing File imported now finds no Authorization for those Charges and raises `NO_AUTHORIZATION` Breaks. The 7-day expiry doesn't see those cards as `AUTHORIZED`, so it doesn't expire them on time. Once Kafka is back the copy catches up by itself, and each card's `authorized_at` is the time of the service's approving transaction (the record's timestamp is the outbox row's `created_at`), so a late send doesn't shift its 7 days. Until #94 adds the import's wait on consumer lag, don't import a Clearing File until the outbox is drained (see [The service's outbox](#the-services-outbox)) and `kafka-consumer-groups.sh --describe --group platform-authorization` shows a lag of 0.
+- **Authorizations for cards on file.** `authorization-service` answers the Network from its own copy of the cards, which it keeps as it was, so a card already on file is charged and reversed as usual. Each answer writes its event to the service's outbox and commits; only the relay stops ([The service's outbox](#the-services-outbox)).
+- **The platform's own work.** Issuing, cancelling, expiring and clearing cards commit as usual, and the in-process `CardExpired` listener still ends Payments and releases Holds. Only the externalization stops, because the event publication registry is the outbox (ADR-0008): a send that fails stays an incomplete publication.
+
+## What waits
+
+- **Payments for their card to be on file.** New Payments wait at `CARD_ISSUED`, their Holds placed, until the service's `CardOnFile` reaches the platform (group `platform-payables`), so no Supplier gets a card the service would decline as unknown ([`payment-stuck.md`](payment-stuck.md#a-payment-stays-card_issued-its-card-isnt-on-file)). There is no time limit short of the card's 30-day expiry.
+- **Clearing Files.** Before each import the platform compares the offsets the group `platform-authorization` committed on the `authorizations` topic with the topic's end offsets (#94). While the platform's Authorization Copy lags, or Kafka doesn't answer within 5 seconds, the file stays in the drop folder untouched and the platform logs `Clearing File … waits`; the drop-folder check tries it again every 30 seconds. An import through `POST /v1/clearing-files` answers `503` and leaves the file in the folder the same way. A restart of an import that stopped, its file in `processing/`, gets the same `503` and stays there; the drop-folder check doesn't restart it, so send the request again once the copy has caught up ([`clearing-import-stopped.md`](clearing-import-stopped.md)).
+- **The platform's Authorization Copy.** Approved and reversed Authorizations wait in the service's outbox (or, once sent, on the topic), and the cards they name stay `ACTIVE` on the platform instead of moving to `AUTHORIZED`. Meanwhile the 7-day expiry doesn't see those cards as `AUTHORIZED`, so it doesn't expire them on time.
+- **The service's copy of the cards.** Cards issued, cancelled, expired or cleared on the platform don't reach it yet. A card the platform cleared stays `AUTHORIZED` there: a Reversal of its Charge moves it back to `ACTIVE`, and a second Charge on it could get `00` until its `CardCleared` arrives (M5 design, Risks).
+
+## What drains by itself
+
+Once Kafka is back, nothing needs a restart:
+
+- The platform resends every publication still incomplete after a minute, once a minute (`EventResubmissionSchedule`), so its card events reach the `cards` topic within a minute or two. A resent event may arrive twice, or after a later event for the same card; every consumer is idempotent and order-tolerant.
+- The service's relay sends its outbox backlog in order on its next pass.
+- Each consumer group (`authorization-service`, `platform-payables`, `platform-authorization`) resumes from its committed offset, so neither copy loses an event. Waiting Payments move on to the Remittance Advice.
+- The Authorization Copy catches up, and each card's `authorized_at` is the time of the service's approving transaction (the record's timestamp is the outbox row's `created_at`), so a late send doesn't shift its 7 days.
+- The next drop-folder check after the lag reaches 0 imports the Clearing Files waiting in the drop folder, in name order. A restart of a stopped import that got a `503` doesn't drain: request it again.
+
+## Before trusting zero lag
+
+The import's lag check sees only what reached the topic. An approved Authorization still in the service's outbox is invisible to it, so a Clearing File imported then finds no Authorization for that Charge and raises a `NO_AUTHORIZATION` Break. After an outage, check the service's outbox has no unsent rows ([The service's outbox](#the-services-outbox)) before you import a file by hand. Once Kafka is back the relay drains the outbox within seconds, well inside the drop-folder check's 30 seconds; but if the outbox count doesn't fall while the lag reads 0, the scheduled check will import files anyway, so set `clearing.drop-folder-check.enabled=false` and restart the platform until the relay is fixed. A file imported while rows were unsent leaves `NO_AUTHORIZATION` Breaks for a Reconciler to see (M5 design, Risks). To read the lag yourself:
+
+```sh
+docker compose exec kafka /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --group platform-authorization
+```
+
+Every partition's `LAG` should be 0.
 
 ## Local development
 
@@ -38,7 +67,7 @@ Kafka delivers at least once, and the registry may resend an event whose complet
 
 `authorization-service` keeps answering while Kafka is down: each approved Authorization, Reversal and new card writes its event to the service's `outbox` table and commits. Only the relay stops. Each pass's first send fails within about 5 seconds (the producer's `max.block.ms` and `delivery.timeout.ms`) and logs `Outbox row … wasn't sent`. The pass then ends and frees its database connection, and the next pass starts 100 ms later from the oldest unsent row. Once Kafka is back, the next pass sends the backlog in order, with no restart. If the service was stopped or crashed in the middle of a pass, the rows that pass had sent are sent again. That is harmless: the platform keys each event on its natural ID. A relay that logs `Outbox relay pass failed` can't reach the service's database instead: see the section above.
 
-The Clearing import's wait on consumer lag (#94, not built yet) won't see these rows either, so drain the outbox before importing a Clearing File. Count what waits, in the service's database (`docker compose exec authorization-postgres psql -U authorization`):
+The Clearing import's wait on consumer lag (#94) can't see these rows, so drain the outbox before importing a Clearing File by hand. Count what waits, in the service's database (`docker compose exec authorization-postgres psql -U authorization`):
 
 ```sql
 select event_type, count(*), min(created_at)

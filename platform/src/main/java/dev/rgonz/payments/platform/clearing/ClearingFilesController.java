@@ -84,6 +84,14 @@ class ClearingFilesController implements ClearingFilesApi {
                   + repeated.earlierFileId()
                   + ", imported or importing, so nothing in it was posted: see"
                   + " docs/runbooks/clearing-file-arrived-twice.md.");
+      case ImportResult.Waiting _ ->
+          throw problem(
+              HttpStatus.SERVICE_UNAVAILABLE,
+              "The platform's copy of Authorizations hasn't caught up with the authorization"
+                  + " service, or Kafka can't be reached, so nothing was imported and the file stays"
+                  + " where it is. A new file in the drop folder is imported by the folder's next"
+                  + " check; to restart a stopped import, send this request again once the copy has"
+                  + " caught up. See docs/runbooks/kafka-down.md.");
       case ImportResult.Running running ->
           throw problem(
               HttpStatus.CONFLICT,

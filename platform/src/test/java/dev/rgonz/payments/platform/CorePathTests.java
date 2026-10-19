@@ -12,6 +12,7 @@ import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
 import dev.rgonz.payments.platform.authorization.AuthorizationEvent;
+import dev.rgonz.payments.platform.authorization.CaughtUpAuthorizationCopy;
 import dev.rgonz.payments.platform.authorization.ServiceAuthorizations;
 import dev.rgonz.payments.platform.clearing.TestClearingFiles;
 import dev.rgonz.payments.platform.payables.CardOnFile;
@@ -54,7 +55,7 @@ import org.springframework.test.web.servlet.assertj.MvcTestResult;
  * link once. Only the Supplier's remittance address is stubbed. The PAN check goes on to the
  * Charge, which authorization-service approves (played here), and its Clearing File.
  */
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, CaughtUpAuthorizationCopy.class})
 @SpringBootTest
 @AutoConfigureMockMvc
 @AutoConfigureMockRestServiceServer
