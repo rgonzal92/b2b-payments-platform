@@ -260,7 +260,8 @@ class GatewayTests {
     var refused = firstRefused(() -> get("/v1/invoices", acme), 200);
 
     assertThat(refused.passedBefore()).isGreaterThanOrEqualTo(40);
-    assertTooManyRequests(refused.result());
+    // One token short at 20 a second: retry in a second.
+    assertTooManyRequests(refused.result(), "1");
     http.get()
         .uri("/v1/invoices")
         .header(HttpHeaders.AUTHORIZATION, "Bearer " + clientCredentialsToken("network"))
@@ -286,7 +287,10 @@ class GatewayTests {
             .expectBody()
             .returnResult();
 
-    assertTooManyRequests(eleventh);
+    // 6 tokens short at 1 a second. Redis's clock in the bucket's script counts whole seconds, so
+    // if
+    // one ticked during the ten requests a token came back, and the wait is 5.
+    assertTooManyRequests(eleventh, "6", "5");
     assertThat(platformSaw).hasSize(10);
     // A client's own limit is apart from the link's.
     assertThat(get("/v1/invoices", "Bearer " + clientCredentialsToken("acme-erp")).getStatus())
@@ -382,13 +386,14 @@ class GatewayTests {
     throw new AssertionError("No request of " + max + " was refused");
   }
 
-  private static void assertTooManyRequests(EntityExchangeResult<byte[]> result) {
+  private static void assertTooManyRequests(
+      EntityExchangeResult<byte[]> result, String... retryAfterSeconds) {
     assertThat(result.getStatus().value()).isEqualTo(429);
     assertThat(result.getResponseHeaders().getContentType())
         .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
     assertThat(result.getResponseHeaders().getFirst(HttpHeaders.RETRY_AFTER))
         .as("Retry-After in whole seconds")
-        .matches("[1-9][0-9]*");
+        .isIn((Object[]) retryAfterSeconds);
     assertThat(new String(result.getResponseBody(), StandardCharsets.UTF_8))
         .contains("\"title\":\"Too Many Requests\"")
         .contains("\"status\":429");
