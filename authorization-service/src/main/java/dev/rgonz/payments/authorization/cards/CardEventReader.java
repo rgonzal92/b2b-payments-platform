@@ -1,5 +1,6 @@
 package dev.rgonz.payments.authorization.cards;
 
+import dev.rgonz.payments.authorization.outbox.Outbox;
 import java.util.Optional;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -10,7 +11,7 @@ import tools.jackson.databind.json.JsonMapper;
  */
 class CardEventReader {
 
-  static final String EVENT_TYPE_HEADER = "event-type";
+  static final String EVENT_TYPE_HEADER = Outbox.EVENT_TYPE_HEADER;
 
   private static final JsonMapper JSON = JsonMapper.builder().build();
 

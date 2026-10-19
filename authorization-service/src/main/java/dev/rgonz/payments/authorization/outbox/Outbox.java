@@ -14,6 +14,9 @@ import tools.jackson.databind.json.JsonMapper;
 @Repository
 public class Outbox {
 
+  /** The header naming each message's event type, on both topics, as the platform names it. */
+  public static final String EVENT_TYPE_HEADER = "event-type";
+
   private static final JsonMapper JSON = JsonMapper.builder().build();
 
   private final DatabaseClient db;

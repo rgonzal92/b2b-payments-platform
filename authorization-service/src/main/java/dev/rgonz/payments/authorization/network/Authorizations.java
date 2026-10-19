@@ -22,8 +22,8 @@ import reactor.core.publisher.Mono;
  * every answer, and cancels an Authorization when the Network sends a Reversal for it: the
  * platform's rules and race safety (M2 design), through R2DBC, so no call waits on a thread for the
  * database. Each method returns a {@link Mono} that does nothing until subscribed; its statements
- * run in one transaction, which commits when it completes. An approval, and the Reversal of one,
- * also write their event to the {@link Outbox} in that transaction.
+ * run in one transaction, which commits when it completes. An approved Authorization, and its
+ * Reversal, also write their event to the {@link Outbox} in that transaction.
  */
 @Repository
 class Authorizations {
@@ -138,7 +138,7 @@ class Authorizations {
 
   // The request ID's row has committed, an Authorization's or an earlier Reversal's: the claim
   // waited for it. One conditional update locks the row and checks it is still APPROVED, so only
-  // the first Reversal of an approval publishes one.
+  // the first Reversal of an approved Authorization publishes one.
   private Mono<Void> reverseIfApproved(String requestId) {
     return db.sql(
             """

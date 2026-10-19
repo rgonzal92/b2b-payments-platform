@@ -7,11 +7,13 @@ import dev.rgonz.payments.authorization.AuthorizationsTopic;
 import dev.rgonz.payments.authorization.TestcontainersConfiguration;
 import java.nio.charset.StandardCharsets;
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -64,6 +66,8 @@ class OutboxRelayTests {
 
     final Set<String> failBeforeKafka = ConcurrentHashMap.newKeySet();
     final Set<String> failAfterKafka = ConcurrentHashMap.newKeySet();
+    // Runs before each send reaches Kafka: a test's look at the pass while it sends.
+    volatile Runnable beforeSend = () -> {};
 
     FlakyKafkaTemplate(ProducerFactory<String, String> producers) {
       super(producers);
@@ -72,6 +76,7 @@ class OutboxRelayTests {
     @Override
     public CompletableFuture<SendResult<String, String>> send(
         ProducerRecord<String, String> record) {
+      beforeSend.run();
       var send = record.key() + "/" + eventType(record);
       if (failBeforeKafka.contains(send)) {
         return CompletableFuture.failedFuture(new TimeoutException("Stand-in send failure."));
@@ -100,6 +105,7 @@ class OutboxRelayTests {
   void healKafka() {
     flakyKafka.failBeforeKafka.clear();
     flakyKafka.failAfterKafka.clear();
+    flakyKafka.beforeSend = () -> {};
   }
 
   @Test
@@ -174,6 +180,36 @@ class OutboxRelayTests {
 
     assertThat(relay.relay().block()).isOne();
     assertThat(awaitRecords(cardToken, 1)).hasSize(1);
+  }
+
+  // The scheduled pass, as the scheduler runs it, still holds the relay's lock while it sends:
+  // another instance's relay can't take it and send the same rows at once.
+  @Test
+  void theScheduledPassHoldsTheRelayLockWhileItSends() {
+    var cardToken = newCardToken();
+    append(cardToken, new First(cardToken));
+    var lockFreeDuringSend = new AtomicReference<Boolean>();
+    flakyKafka.beforeSend = () -> lockFreeDuringSend.set(relayLockIsFree());
+
+    new OutboxRelaySchedule(relay).relay();
+
+    assertThat(lockFreeDuringSend).hasValue(false);
+    assertThat(awaitRecords(cardToken, 1)).hasSize(1);
+  }
+
+  // Takes the lock from another connection and lets it go at once, as another relay would try.
+  private boolean relayLockIsFree() {
+    try (var otherRelay =
+            DriverManager.getConnection(
+                postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        var statement = otherRelay.createStatement();
+        var result =
+            statement.executeQuery("select pg_try_advisory_lock(hashtext('outbox-relay'))")) {
+      result.next();
+      return result.getBoolean(1);
+    } catch (SQLException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   private void append(String cardToken, Object... events) {

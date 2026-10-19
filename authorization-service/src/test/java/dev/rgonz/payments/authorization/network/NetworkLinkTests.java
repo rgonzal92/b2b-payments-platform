@@ -178,9 +178,10 @@ class NetworkLinkTests {
         .containsEntry("status", "APPROVED");
   }
 
-  // The card's events, in the order they reached the topic: its card on file, then the approval.
+  // The card's events, in the order they reached the topic: its card on file, then the approved
+  // Authorization.
   @Test
-  void anApprovalIsPublishedWithWhatThePlatformNeedsToMatchItsClearing() {
+  void anApprovedAuthorizationIsPublishedWithWhatThePlatformNeedsToMatchItsClearing() {
     var card = issuedCard();
     var request = chargeOn(card);
     var requestId = request.getRetrievalReferenceNumber();
@@ -196,7 +197,7 @@ class NetworkLinkTests {
   }
 
   // Had the decline written an event, it would have reached the card's partition before the
-  // approval that follows it.
+  // approved Authorization that follows it.
   @Test
   void aDeclineIsNotPublished() {
     var card = issuedCard();
@@ -490,15 +491,15 @@ class NetworkLinkTests {
     }
 
     @Test
-    void theReversalOfAnApprovedAuthorizationIsPublishedAfterItsApprovalAndOnlyOnce() {
+    void theReversalOfAnApprovedAuthorizationIsPublishedAfterItAndOnlyOnce() {
       var card = issuedCard();
       var charge = chargeOn(card);
       var requestId = charge.getRetrievalReferenceNumber();
-      var approval = authorize(charge);
+      var approved = authorize(charge);
       reverse(requestId);
       reverse(requestId);
       var next = chargeOn(card);
-      var nextApproval = authorize(next);
+      var nextApproved = authorize(next);
 
       var records = authorizationsOf(card, 4);
 
@@ -509,12 +510,12 @@ class NetworkLinkTests {
               "AuthorizationApproved",
               "AuthorizationReversed",
               "AuthorizationApproved");
-      var reversed = authorizationJson(requestId, card, approval.getAuthorizationCode());
+      var reversed = authorizationJson(requestId, card, approved.getAuthorizationCode());
       assertThat(records.get(2).value()).isEqualTo(reversed);
       assertThat(records.get(3).value())
           .isEqualTo(
               authorizationJson(
-                  next.getRetrievalReferenceNumber(), card, nextApproval.getAuthorizationCode()));
+                  next.getRetrievalReferenceNumber(), card, nextApproved.getAuthorizationCode()));
     }
 
     @Test
@@ -645,7 +646,7 @@ class NetworkLinkTests {
   }
 
   // An approved or reversed Authorization's event, as the platform will read it: the Charge as the
-  // Network sent it, the card it's on and the approval's authorization code.
+  // Network sent it, the card it's on and the authorization code it was approved with.
   private static String authorizationJson(String requestId, Card card, String authorizationCode) {
     return """
         {"requestId":"%s","cardToken":"%s","amountMinorUnits":%d,"currency":"USD",\

@@ -6,7 +6,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.r2dbc.core.DatabaseClient;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
@@ -31,7 +30,6 @@ class OutboxRelay {
 
   private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
   static final String TOPIC = "authorizations";
-  private static final String EVENT_TYPE_HEADER = "event-type";
   // Bounds one pass's transaction; whatever is left goes in the next pass, moments later.
   private static final int BATCH_SIZE = 500;
 
@@ -41,19 +39,6 @@ class OutboxRelay {
   OutboxRelay(DatabaseClient db, KafkaTemplate<String, String> kafka) {
     this.db = db;
     this.kafka = kafka;
-  }
-
-  // On the scheduler's own thread, which may block: it isn't on the hot path. A fixed delay never
-  // starts a pass before the last one ended. OutboxConfiguration turns scheduling on. A pass that
-  // fails, as every pass does while the database is down, logs one line, not a stack trace each
-  // time; the next pass tries again.
-  @Scheduled(fixedDelayString = "${outbox.relay.delay-ms:100}")
-  void relayOnSchedule() {
-    try {
-      relay().block();
-    } catch (RuntimeException e) {
-      log.warn("Outbox relay pass failed: {}", e.toString());
-    }
   }
 
   /** Runs one pass and gives how many rows it sent: none while another pass holds the lock. */
@@ -98,7 +83,9 @@ class OutboxRelay {
   // thread that may wait, never on R2DBC's event loop, which the hot path shares.
   private Mono<Boolean> send(Row row) {
     var record = new ProducerRecord<>(TOPIC, row.cardToken(), row.payload());
-    record.headers().add(EVENT_TYPE_HEADER, row.eventType().getBytes(StandardCharsets.UTF_8));
+    record
+        .headers()
+        .add(Outbox.EVENT_TYPE_HEADER, row.eventType().getBytes(StandardCharsets.UTF_8));
     return Mono.fromFuture(() -> kafka.send(record))
         .subscribeOn(Schedulers.boundedElastic())
         .doOnError(
