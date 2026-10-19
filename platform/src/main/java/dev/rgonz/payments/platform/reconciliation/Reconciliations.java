@@ -17,6 +17,9 @@ import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException
 import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.launch.JobRestartException;
 import org.springframework.batch.core.step.StepExecution;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import org.springframework.stereotype.Service;
 
 /** Runs the Reconciliation of a Business Date, and answers what it found. */
@@ -68,50 +71,90 @@ class Reconciliations {
    * holds the lock. Not transactional: each of the job's chunks commits on its own.
    */
   RunSummary run(LocalDate businessDate) {
-    // A session-level advisory lock on a connection of its own, outside the job's transactions and
-    // held for the whole run: one run at a time across pods. PostgreSQL drops it with the
-    // connection.
-    try (var connection = dataSource.getConnection()) {
-      if (!advisoryLock(connection, "pg_try_advisory_lock")) {
-        throw new RunInProgressException(businessDate);
-      }
-      try {
-        return runLocked(businessDate);
-      } finally {
-        unlock(connection, businessDate);
-      }
-    } catch (SQLException e) {
-      throw new IllegalStateException("Couldn't lock the Reconciliation of " + businessDate, e);
+    var connection = lock(businessDate);
+    try {
+      return runLocked(businessDate);
+    } finally {
+      release(connection, businessDate);
     }
   }
 
-  // The pool keeps the connection open, so without this the lock would outlive the run. When the
-  // unlock fails, the connection is aborted instead, out of the pool, which ends its session and so
-  // the lock; the run's own outcome stands.
-  private static void unlock(Connection connection, LocalDate businessDate) {
+  // A session-level advisory lock on a connection of its own, outside the job's transactions and
+  // held for the whole run: one run at a time across pods. PostgreSQL drops it with the connection.
+  private Connection lock(LocalDate businessDate) {
+    Connection connection;
     try {
-      advisoryLock(connection, "pg_advisory_unlock");
+      connection = dataSource.getConnection();
     } catch (SQLException e) {
+      throw new IllegalStateException("Couldn't lock the Reconciliation of " + businessDate, e);
+    }
+    var locked = false;
+    try {
+      locked = tryLock(connection);
+    } catch (DataAccessException e) {
+      throw new IllegalStateException("Couldn't lock the Reconciliation of " + businessDate, e);
+    } finally {
+      if (!locked) {
+        close(connection, businessDate);
+      }
+    }
+    if (!locked) {
+      throw new RunInProgressException(businessDate);
+    }
+    return connection;
+  }
+
+  // The pool keeps the connection open, so without the unlock the lock would outlive the run. When
+  // the unlock fails, the connection is aborted, which ends its session and so the lock. Either way
+  // the run's own outcome stands: failures here are only logged.
+  private static void release(Connection connection, LocalDate businessDate) {
+    try {
+      unlock(connection);
+    } catch (DataAccessException e) {
       log.warn(
-          "Couldn't release the Reconciliation lock after the run of {}; closing its connection",
+          "Couldn't release the Reconciliation lock after the run of {}; aborting its connection",
           businessDate,
           e);
       try {
         connection.abort(Runnable::run);
-      } catch (SQLException ignored) {
-        // Already closed: its session, and the lock, ended with it.
+      } catch (SQLException abortFailed) {
+        log.warn("Couldn't abort the Reconciliation lock's connection", abortFailed);
       }
+    }
+    close(connection, businessDate);
+  }
+
+  private static void close(Connection connection, LocalDate businessDate) {
+    try {
+      connection.close();
+    } catch (SQLException e) {
+      log.warn(
+          "Couldn't close the Reconciliation lock's connection after the run of {}",
+          businessDate,
+          e);
     }
   }
 
-  private static boolean advisoryLock(Connection connection, String function) throws SQLException {
-    try (var statement = connection.prepareStatement("select " + function + "(hashtext(?))")) {
-      statement.setString(1, LOCK);
-      try (var result = statement.executeQuery()) {
-        result.next();
-        return result.getBoolean(1);
-      }
-    }
+  private static boolean tryLock(Connection connection) {
+    return Boolean.TRUE.equals(
+        on(connection)
+            .sql("select pg_try_advisory_lock(hashtext(:lock))")
+            .param("lock", LOCK)
+            .query(Boolean.class)
+            .single());
+  }
+
+  private static void unlock(Connection connection) {
+    on(connection)
+        .sql("select pg_advisory_unlock(hashtext(:lock))")
+        .param("lock", LOCK)
+        .query(Boolean.class)
+        .single();
+  }
+
+  // The lock's own connection, which closing the JdbcClient's statements leaves open.
+  private static JdbcClient on(Connection connection) {
+    return JdbcClient.create(new SingleConnectionDataSource(connection, true));
   }
 
   private RunSummary runLocked(LocalDate businessDate) {

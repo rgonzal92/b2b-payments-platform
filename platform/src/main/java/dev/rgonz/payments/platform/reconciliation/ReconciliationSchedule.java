@@ -32,10 +32,8 @@ class ReconciliationSchedule {
     try {
       reconciliations.run(yesterday);
     } catch (Reconciliations.RunInProgressException e) {
-      log.info(
-          "Another Reconciliation is running, on this pod or another, so this pod skipped the"
-              + " Reconciliation of {}",
-          yesterday);
+      // Another pod's daily run, most likely, which took the lock first.
+      log.info("This pod skipped the daily run: {}", e.getMessage());
     }
   }
 }
