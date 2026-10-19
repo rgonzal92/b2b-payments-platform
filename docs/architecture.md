@@ -592,6 +592,23 @@ A Spring Boot app in its own Maven module and package, `dev.rgonz.payments.autho
 
   The tests that hold locks to order a race (`HeldOnLocks`, `Reversals`) run in a nested context with a long time limit. One test holds more Charges on a locked `card_copy` than there are call threads and still gets a Reversal answered: a handler that waited for the database would have held every call thread. `AuthorizationRulesTests` unit-tests the rules on a `CardCopy`. `CardsTopicTests` runs PostgreSQL and Kafka in Testcontainers, sends each event as the platform does and reads the copy back: `CardIssued` stores every field, `CardCancelled`, `CardExpired` and `CardCleared` move the status, `CardCleared` wins over `CardCancelled` or `CardExpired` in either order, and a repeated event, a `CardIssued` after a cancellation included, changes nothing (the test waits until the consumer group has committed every offset). A `CardCancelled`, `CardExpired` or `CardCleared` before its `CardIssued` leaves the card ended with its details. A `CardIssued` sent while the database refuses connections waits, unconsumed, for longer than the default handler's ten tries, and is stored once the database is back; messages with no or an unknown `event-type`, malformed JSON or a missing field are skipped and the card's later events still arrive. `CardHashingTests` checks the hash against `openssl`'s for the test key, and the key checks. `CardEventsPactTests`: see [The cards topic](#the-cards-topic); `AuthorizationEventsPactVerificationTests`: see [The authorizations topic](#the-authorizations-topic).
 
+## The Gateway
+
+A Spring Boot app in its own Maven module and package, `dev.rgonz.payments.gateway`, on Spring Cloud Gateway's WebFlux server (M6, ADR-0017, [M6 design](design/m6-run-as-a-platform.md#traffic-q4-q7-q8-q11-q16-q20)). It stands in front of the platform's REST API: the ERP, Approvers, the Supplier's remittance link, Issuer staff and Reconcilers reach `/v1` through it. The Network's gRPC skips it and goes straight to `authorization-service`. How it works: [`learning/spring-cloud-gateway.md`](learning/spring-cloud-gateway.md).
+
+```mermaid
+flowchart LR
+    clients["ERP, Approvers, Supplier, Issuer staff, Reconcilers"] -->|"HTTPS /v1, bearer token"| gateway
+    gateway -->|"same request, same Authorization header"| platform
+    gateway -.->|"signing keys"| keycloak[Keycloak]
+    platform -.->|"signing keys"| keycloak
+```
+
+- **Routing:** one route, `platform`: `Path=/v1/**` to `gateway.platform-uri` (`http://localhost:8080` in development; `GATEWAY_PLATFORM_URI` overrides it). The request goes on unchanged, `Authorization` header included. The Gateway listens on `8083` in development.
+- **Tokens at the edge:** `SecurityConfig` makes it an OAuth2 resource server on the platform's `issuer-uri`. A request without a valid Keycloak token gets `401` Problem Details (RFC 9457) with `WWW-Authenticate: Bearer` from the Gateway and never reaches the platform. Open without a token: the Gateway's `/actuator/health/**` and `GET /v1/remittance-links/*`, whose link token the platform checks. The Gateway checks no roles: the platform stays the authority and keeps every check of its own, so a valid token without the role still gets the platform's `403`.
+- **Not yet:** the per-client rate limit with Redis (#115) and the cluster's deployment.
+- **Tests:** `GatewayTests` runs the Gateway between a real Keycloak (the repository's realm file, in Testcontainers) and a stub platform that records what reaches it: a valid token reaches the platform with the same `Authorization` header; no token and a token with its signature cut off get the Gateway's `401` Problem Details and reach nothing; the remittance link passes without a token; the `network` client's token, valid but with no platform role, reaches the platform and its `403` comes back unchanged; the Gateway's health is open.
+
 ## How the core path is proven
 
 - **The core path** (`CorePathTests`): real Keycloak tokens from the repository's realm file and real PostgreSQL, the worker on its schedule, only the Supplier's address stubbed and `authorization-service`'s card on file played by the test (no Kafka). Acme is set up, an Invoice above the threshold is approved twice and paid, Available Credit drops by its amount, and the link opens once, then answers `410`.
