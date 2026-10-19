@@ -57,7 +57,8 @@ abstract class EndToEndHarness {
 
   @Container
   static final KeycloakContainer keycloak =
-      // Same image as compose.yaml and the platform's TestKeycloak: change all three together.
+      // Same image as compose.yaml, the platform's TestKeycloak and the gateway's GatewayTests:
+      // change all four together.
       new KeycloakContainer("quay.io/keycloak/keycloak:26.8.1")
           .withRealmImportFile("/keycloak/payments-realm.json")
           .withEnv("SIMULATOR_ISSUER_ADMIN_SECRET", CLIENT_SECRET)

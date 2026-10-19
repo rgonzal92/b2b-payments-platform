@@ -91,7 +91,7 @@ Operators and highly available infrastructure; multi-node clusters and ReadWrite
 
 ## Risks
 
-- **Spring Cloud on Spring Boot 4.1.1 is unproven:** the first Gateway ticket proves a release before anything depends on it.
+- **Spring Cloud on Spring Boot 4.1.1 is unproven:** the first Gateway ticket proves a release before anything depends on it. Proven in #113: release train 2025.1.3 (Oakwood, Gateway 5.0.3). Spring Cloud's compatibility table gives 2025.1.x for Boot 4.0.x and, from 2025.1.2, 4.1.x; 2026.0.x is for Boot 4.2. The `gateway` module starts on Boot 4.1.1 and `GatewayTests` passes against a real Keycloak. Pinned in the root `pom.xml`.
 - **gatling-grpc may not take a `dns:///` target and a balancing policy:** the first Kubernetes ticket checks it; the fallback changes only the simulation's channel setup, not its load.
 - **Readiness without the database:** a pod whose database connection is broken stays in rotation and answers errors; acceptable, because every pod shares the one database and dropping them all would be worse.
 - **Self-Reversals lost in a redeploy during a database outage:** see Two copies of each app; the runbook finds them by the logged request IDs.
