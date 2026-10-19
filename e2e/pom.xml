@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>e2e</artifactId>
 	<name>e2e</name>
-	<description>The end-to-end test: the platform and the simulator in one JVM. No main code.</description>
+	<description>The end-to-end test: the platform and the simulator in one JVM, authorization-service beside them. No main code.</description>
 
 	<dependencies>
 		<dependency>
@@ -23,6 +23,21 @@
 			<artifactId>simulator</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
+		</dependency>
+		<!-- Runs as its own process from its executable jar (authorizationServiceJar below), so it adds nothing to this
+		     classpath: as a pom with none of its dependencies, it only makes the reactor build the service first, -am included. -->
+		<dependency>
+			<groupId>dev.rgonz.payments</groupId>
+			<artifactId>authorization-service</artifactId>
+			<version>${project.version}</version>
+			<type>pom</type>
+			<scope>test</scope>
+			<exclusions>
+				<exclusion>
+					<groupId>*</groupId>
+					<artifactId>*</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -40,6 +55,11 @@
 			<scope>test</scope>
 		</dependency>
 		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-kafka</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
 			<groupId>com.github.dasniko</groupId>
 			<artifactId>testcontainers-keycloak</artifactId>
 			<scope>test</scope>
@@ -54,6 +74,17 @@
 				<targetPath>keycloak</targetPath>
 			</testResource>
 		</testResources>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<authorizationServiceJar>${project.basedir}/../authorization-service/target/authorization-service-${project.version}-exec.jar</authorizationServiceJar>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
+		</plugins>
 	</build>
 
 </project>

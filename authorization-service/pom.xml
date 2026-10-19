@@ -130,6 +130,14 @@
 					</systemPropertyVariables>
 				</configuration>
 			</plugin>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<!-- An executable jar beside the plain one, as the platform and the simulator build: e2e runs it. -->
+					<classifier>exec</classifier>
+				</configuration>
+			</plugin>
 		</plugins>
 	</build>
 </project>

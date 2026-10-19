@@ -15,7 +15,7 @@ import tools.jackson.databind.json.JsonMapper;
  * group of its own and takes only {@code CardOnFile}: every module that needs the topic reads all
  * of it in its own group, so none waits on another's failures (docs/architecture.md). The offset is
  * committed only after the Payment is saved, so a crash redelivers the event, and the saga ignores
- * what it already applied. {@code KafkaConsumerErrorHandling} decides what a failure does.
+ * what it already applied. {@code KafkaConsumerConfiguration} decides what a failure does.
  */
 @Component
 class CardOnFileListener {
