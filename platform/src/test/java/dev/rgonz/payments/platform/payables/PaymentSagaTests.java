@@ -1,6 +1,5 @@
 package dev.rgonz.payments.platform.payables;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
@@ -22,6 +21,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
+import dev.rgonz.payments.platform.TestAuthorizationsTopic;
 import dev.rgonz.payments.platform.TestKafka;
 import dev.rgonz.payments.platform.TestcontainersConfiguration;
 import dev.rgonz.payments.platform.cards.CardExpired;
@@ -49,17 +49,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.StreamSupport;
-import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.OffsetSpec;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -931,64 +922,13 @@ class PaymentSagaTests {
   }
 
   private void send(String key, String eventType, String json) throws Exception {
-    var record = new ProducerRecord<>("authorizations", key, json);
-    if (eventType != null) {
-      record.headers().add("event-type", eventType.getBytes(UTF_8));
-    }
-    try (var producer =
-        new KafkaProducer<String, String>(
-            Map.of(
-                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG,
-                kafka.getBootstrapServers(),
-                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
-                StringSerializer.class,
-                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
-                StringSerializer.class))) {
-      producer.send(record).get(10, TimeUnit.SECONDS);
-    }
+    new TestAuthorizationsTopic(kafka).send(key, eventType, json);
   }
 
-  // Waits until the platform's consumer group has committed every message on the topic, so a test
-  // can check that one changed nothing.
+  // Waits until payables' consumer group has read every message on the topic, so a test can check
+  // that one changed nothing.
   private void awaitAuthorizationsTopicConsumed() {
-    try (var admin =
-        Admin.create(
-            Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers()))) {
-      await()
-          .atMost(Duration.ofSeconds(30))
-          .untilAsserted(
-              () -> {
-                var partitions =
-                    admin
-                        .describeTopics(List.of("authorizations"))
-                        .allTopicNames()
-                        .get()
-                        .get("authorizations")
-                        .partitions()
-                        .stream()
-                        .map(info -> new TopicPartition("authorizations", info.partition()))
-                        .toList();
-                var ends =
-                    admin
-                        .listOffsets(
-                            partitions.stream()
-                                .collect(
-                                    Collectors.toMap(
-                                        partition -> partition, partition -> OffsetSpec.latest())))
-                        .all()
-                        .get();
-                var committed =
-                    admin
-                        .listConsumerGroupOffsets(CardOnFileListener.GROUP_ID)
-                        .partitionsToOffsetAndMetadata()
-                        .get();
-                for (var partition : partitions) {
-                  var end = ends.get(partition).offset();
-                  var read = committed.get(partition);
-                  assertThat(read == null ? 0 : read.offset()).as("%s", partition).isEqualTo(end);
-                }
-              });
-    }
+    new TestAuthorizationsTopic(kafka).awaitConsumed(CardOnFileListener.GROUP_ID);
   }
 
   private double paymentsWaiting() {

@@ -31,7 +31,8 @@
 
 	<modules>
 		<module>contracts</module>
-		<!-- Before the platform: its consumer tests write the pacts the platform's provider test verifies. -->
+		<!-- Before the platform: its consumer tests write the pact the platform's provider test verifies. It verifies the
+		     platform's pact as committed, and CI checks that the platform's build leaves that file unchanged. -->
 		<module>authorization-service</module>
 		<module>platform</module>
 		<module>simulator</module>
@@ -47,8 +48,6 @@
 		<sonar.organization>rgonzal92</sonar.organization>
 		<sonar.projectKey>rgonzal92_b2b-payments-platform</sonar.projectKey>
 		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
-		<!-- shortcut: authorization-service ports the platform's answering code, which the cutover (#92) deletes; drop this then. -->
-		<sonar.cpd.exclusions>**/payments/platform/authorization/**</sonar.cpd.exclusions>
 	</properties>
 
 	<dependencyManagement>
@@ -65,8 +64,8 @@
 				<!-- Built for Testcontainers 2.0.5 and Keycloak 26.8, as used here. -->
 				<version>4.4.0</version>
 			</dependency>
-			<!-- Pact JVM's message pacts (M5): consumer tests in authorization-service, the provider test in
-			     the platform. 4.7.5 is tested up to Java 23; #88 proved it on Java 25
+			<!-- Pact JVM's message pacts (M5): each app has consumer tests for the topic it reads and a
+			     provider test for the topic it writes. 4.7.5 is tested up to Java 23; #88 proved it on Java 25
 			     (docs/learning/pact.md). Its Kotlin standard library is Spring Boot's, 2.3.21. -->
 			<dependency>
 				<groupId>au.com.dius.pact.consumer</groupId>

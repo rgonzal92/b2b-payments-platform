@@ -24,20 +24,11 @@ public interface Vault {
 
   /**
    * The Card Token of the card with this PAN, found through the PAN's keyed hash without decrypting
-   * anything; empty when no card has it. The PAN itself never comes back. For answering the
-   * Network's Authorization request, whose caller passes the PAN straight through and never stores
-   * or logs it.
+   * anything; empty when no card has it. The PAN itself never comes back. For matching a Clearing
+   * File record to its card, whose caller passes the PAN straight through and never stores or logs
+   * it.
    */
   Optional<String> cardFor(String pan);
-
-  /**
-   * Whether this is the security code of the card with this Card Token: the vault decrypts the
-   * stored code and compares the two in constant time, so neither the stored code nor how much of
-   * it matched ever leaves the vault. False when no card has the Card Token. For answering the
-   * Network's Authorization request, whose caller passes the code straight through and never stores
-   * or logs it.
-   */
-  boolean securityCodeMatches(String cardToken, String securityCode);
 
   /**
    * The PAN's and security code's keyed hashes for the card with this Card Token, both under {@code

@@ -35,6 +35,16 @@ jobs:
           cache: maven
       - name: Verify
         run: ./mvnw -B verify
+      # Each module's consumer tests rewrite its pacts in pacts/ during Verify. authorization-service builds before the
+      # platform, so it verifies the platform's pact as committed: a rewritten pact that differs means the committed one
+      # is stale, and the run fails until it is committed (docs/learning/pact.md).
+      - name: Check the committed pacts are current
+        run: |
+          if [ -n "$(git status --porcelain -- pacts)" ]; then
+            git status --porcelain -- pacts
+            git diff -- pacts
+            exit 1
+          fi
       - name: Analyze with SonarQube Cloud
         # Pull requests from forks and from Dependabot receive no secrets, so they skip the analysis.
         # Dependabot's changes are analysed once merged, on the push to main.

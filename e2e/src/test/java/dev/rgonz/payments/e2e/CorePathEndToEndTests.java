@@ -1,6 +1,7 @@
 package dev.rgonz.payments.e2e;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import com.jayway.jsonpath.JsonPath;
 import dasniko.testcontainers.keycloak.KeycloakContainer;
@@ -50,9 +51,10 @@ import org.testcontainers.utility.DockerImageName;
  * Advice. The simulator's demo endpoint has Acme's ERP submit an Invoice from Globex, two of Acme's
  * Approvers approve it, the platform's worker pays it with a Single-Use Card, Globex opens the card
  * through its Remittance Advice link, and Globex charges it: the simulator's Acquirer and Network
- * ask the platform over gRPC, signed in as the network client, and the platform approves the
- * Charge. Then the demo's second call has the Network write its Clearing File into the platform's
- * drop folder and Issuer staff import it, and its third has Issuer staff run today's
+ * ask authorization-service over gRPC, signed in as the network client, and the service approves
+ * the Charge and tells the platform on {@code authorizations}. Then, once the platform's copy has
+ * the approved Authorization, the demo's second call has the Network write its Clearing File into
+ * the platform's drop folder and Issuer staff import it, and its third has Issuer staff run today's
  * Reconciliation, which finds no Break. Last, the simulator seeds a few load-test cards through the
  * same path.
  */
@@ -110,12 +112,12 @@ class CorePathEndToEndTests {
   private static int platformPort;
   private static int simulatorPort;
   private static int servicePort;
+  // The Network link's gRPC server, off the fixed 9090 another build may be using.
+  private static int serviceGrpcPort;
 
   @BeforeAll
   static void startBothApps() {
     platformPort = TestSocketUtils.findAvailableTcpPort();
-    // The Network link's gRPC server, off the fixed 9090 another build may be using.
-    var platformGrpcPort = TestSocketUtils.findAvailableTcpPort();
     simulatorPort = TestSocketUtils.findAvailableTcpPort();
     var issuerUri = keycloak.getAuthServerUrl() + "/realms/payments";
     // Before the platform: either may start first, as each declares both topics.
@@ -125,7 +127,6 @@ class CorePathEndToEndTests {
         start(
             PlatformApplication.class,
             "server.port=" + platformPort,
-            "spring.grpc.server.port=" + platformGrpcPort,
             "platform.public-url=http://localhost:" + platformPort,
             "spring.datasource.url=" + postgres.getJdbcUrl(),
             "spring.datasource.username=" + postgres.getUsername(),
@@ -150,8 +151,8 @@ class CorePathEndToEndTests {
             // Globex's remittance address is built from this port.
             "server.port=" + simulatorPort,
             "simulator.platform-url=http://localhost:" + platformPort,
-            // The Network charges Globex's card through the platform's gRPC server.
-            "simulator.platform-grpc-address=localhost:" + platformGrpcPort,
+            // The Network charges Globex's card through the service's gRPC server.
+            "simulator.platform-grpc-address=localhost:" + serviceGrpcPort,
             "spring.security.oauth2.client.provider.keycloak.token-uri="
                 + issuerUri
                 + "/protocol/openid-connect/token",
@@ -207,6 +208,7 @@ class CorePathEndToEndTests {
   // platform's. Returns once its health answers; its log goes to target/authorization-service.log.
   private static Process startAuthorizationService(String issuerUri) {
     servicePort = TestSocketUtils.findAvailableTcpPort();
+    serviceGrpcPort = TestSocketUtils.findAvailableTcpPort();
     var jdbcUrl = authorizationPostgres.getJdbcUrl();
     var command =
         Stream.concat(
@@ -218,7 +220,7 @@ class CorePathEndToEndTests {
                         .toString()),
                 Stream.of(
                         "server.port=" + servicePort,
-                        "spring.grpc.server.port=" + TestSocketUtils.findAvailableTcpPort(),
+                        "spring.grpc.server.port=" + serviceGrpcPort,
                         "spring.r2dbc.url=" + jdbcUrl.replaceFirst("^jdbc:", "r2dbc:"),
                         "spring.r2dbc.username=" + authorizationPostgres.getUsername(),
                         "spring.r2dbc.password=" + authorizationPostgres.getPassword(),
@@ -321,6 +323,13 @@ class CorePathEndToEndTests {
     assertThat(json).extractingPath("$.globexReceived.invoiceNumber").isEqualTo(invoiceNumber);
     assertThat(json).extractingPath("$.globexReceived.lastFour").asString().matches("\\d{4}");
     assertThat(json).extractingPath("$.authorization.authorizationCode").asString().hasSize(6);
+    // The service's approved Authorization reaches the platform's copy through its outbox and
+    // Kafka a moment after the Network's answer; the Clearing File must not come before it (#94
+    // makes the import wait on its own).
+    String authorizationCode = JsonPath.read(summary, "$.authorization.authorizationCode");
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .until(() -> platformHasApprovedAuthorization(authorizationCode));
     // Until the Charge clears, its Hold reserves Acme's credit.
     assertThat(acmesCredit())
         .isLenientlyEqualTo(
@@ -436,6 +445,32 @@ class CorePathEndToEndTests {
             """);
     // The header, then one line per card.
     assertThat(Files.readAllLines(loadTestFolder.resolve("cards.csv"))).hasSize(6);
+  }
+
+  // The platform's Authorization Copy holds the service's approved Authorization with this code,
+  // and its card moved to AUTHORIZED in the same transaction. One module's schema per query
+  // (ADR-0009): the copy's, then cards'.
+  private static boolean platformHasApprovedAuthorization(String authorizationCode) {
+    var jdbc = platform.getBean(JdbcClient.class);
+    var cardToken =
+        jdbc.sql(
+                """
+                select card_token from "authorization".authorizations
+                 where authorization_code = :code and status = 'APPROVED'
+                """)
+            .param("code", authorizationCode)
+            .query(String.class)
+            .optional();
+    return cardToken
+        .map(
+            token ->
+                jdbc.sql("select status from cards.card where card_token = :cardToken")
+                    .param("cardToken", token)
+                    .query(String.class)
+                    .optional()
+                    .filter("AUTHORIZED"::equals)
+                    .isPresent())
+        .orElse(false);
   }
 
   // Each kind of Account's balance in the platform's journal, its debits less its credits.

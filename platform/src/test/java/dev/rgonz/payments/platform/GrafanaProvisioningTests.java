@@ -17,9 +17,9 @@ import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The dashboards and the alert rule that compose.yaml mounts into the otel-lgtm container parse,
- * and query only metrics the platform exports, under the names Prometheus gives them over OTLP (a
- * counter gains {@code _total}, a timer {@code _milliseconds_bucket}, {@code _count} and {@code
- * _sum}).
+ * and query only metrics the platform or authorization-service exports, under the names Prometheus
+ * gives them over OTLP (a counter gains {@code _total}, a timer {@code _milliseconds_bucket},
+ * {@code _count} and {@code _sum}).
  */
 class GrafanaProvisioningTests {
 
@@ -28,11 +28,13 @@ class GrafanaProvisioningTests {
 
   private static final Set<String> EXPORTED_METRICS =
       Set.of(
-          // Spring gRPC's grpc.server observation, as a histogram (application.properties).
+          // authorization-service's since the cutover, under the platform's old names: Spring
+          // gRPC's
+          // grpc.server observation, as a histogram, and its IssuerAuthorizationService's answers.
+          // The dashboard reads them once the service exports to Grafana (#96).
           "grpc_server_milliseconds_bucket",
           "grpc_server_milliseconds_count",
           "grpc_server_milliseconds_sum",
-          // authorization: IssuerAuthorizationService.
           "authorization_answers_total",
           // payables: Payments and PaymentSaga.
           "payments_state_changes_total",

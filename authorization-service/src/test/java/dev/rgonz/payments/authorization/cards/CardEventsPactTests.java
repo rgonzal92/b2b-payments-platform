@@ -10,11 +10,13 @@ import au.com.dius.pact.consumer.junit5.ProviderType;
 import au.com.dius.pact.core.model.V4Interaction;
 import au.com.dius.pact.core.model.V4Pact;
 import au.com.dius.pact.core.model.annotations.Pact;
+import dev.rgonz.payments.authorization.FreshPactFile;
 import java.time.Instant;
 import java.util.Currency;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
 /**
  * What the service needs from each card event on the {@code cards} topic, written as Pact message
@@ -25,6 +27,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @ExtendWith(PactConsumerTestExt.class)
 @PactTestFor(providerName = "platform", providerType = ProviderType.ASYNCH)
 class CardEventsPactTests {
+
+  @RegisterExtension
+  static final FreshPactFile FRESH_PACT = new FreshPactFile("authorization-service", "platform");
 
   private static final String CONSUMER = "authorization-service";
   private static final String CARD_TOKEN = "card-token-1";

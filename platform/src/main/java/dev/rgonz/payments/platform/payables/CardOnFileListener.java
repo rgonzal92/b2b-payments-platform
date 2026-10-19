@@ -46,7 +46,8 @@ class CardOnFileListener {
             JSON.readValue(record.value(), CardOnFile.class).cardToken(), Instant.now());
       }
     }
-    // Another event type is another module's (#92): not one payables uses.
+    // Another event type is another module's: authorization reads the approved and reversed
+    // Authorizations in its own group.
   }
 
   // Can never be read, so retrying would block the partition for good: logged by partition and
