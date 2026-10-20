@@ -15,8 +15,9 @@
 		<gatling.version>3.16.0</gatling.version>
 		<!-- What the simulator's POST /demo/load-test-cards writes; -DcardsFile=… charges another file. -->
 		<cardsFile>${project.basedir}/../var/load-test/cards.csv</cardsFile>
-		<!-- The simulation a run starts; -Dsimulation=dev.rgonz.payments.loadtest.InvoiceSimulation runs the other. -->
-		<simulation>dev.rgonz.payments.loadtest.AuthorizeSimulation</simulation>
+		<!-- The simulation a run starts, read by Gatling's plugin; -Dgatling.simulationClass=dev.rgonz.payments.loadtest.InvoiceSimulation
+		     runs the other. -->
+		<gatling.simulationClass>dev.rgonz.payments.loadtest.AuthorizeSimulation</gatling.simulationClass>
 		<!-- The versions Gatling 3.16.0 is built against: Spring Boot's dependency management would
 		     otherwise hand it older ones. Only this module; the contracts' generated code runs on newer
 		     protobuf and grpc-java runtimes. Update with Gatling. -->
@@ -59,8 +60,8 @@
 
 	<profiles>
 		<!-- The run itself, by hand against the Docker Compose stack (README): `./mvnw -B -pl load-test -am
-		     -Pload-test verify`. Without the profile, `verify` (and so CI) only compiles the simulation and runs
-		     its unit tests: CI's shared runners make a p99 meaningless. -->
+		     -Pload-test verify`. Without the profile, `verify` (and so CI) only compiles the simulations and runs
+		     their unit tests: CI's shared runners make a p99 meaningless. -->
 		<profile>
 			<id>load-test</id>
 			<build>
@@ -70,7 +71,6 @@
 						<artifactId>gatling-maven-plugin</artifactId>
 						<version>4.21.12</version>
 						<configuration>
-							<simulationClass>${simulation}</simulationClass>
 							<jvmArgs>
 								<jvmArg>-DcardsFile=${cardsFile}</jvmArg>
 							</jvmArgs>

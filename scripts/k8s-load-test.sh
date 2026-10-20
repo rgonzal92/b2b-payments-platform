@@ -28,7 +28,7 @@ job=load-test
 image=eclipse-temurin:25.0.4_7-jdk-noble
 log=var/load-test/k8s-load-test.log
 
-# The simulation wants about 91% of rate × duration fresh cards; one per Charge leaves a margin.
+# The Authorize simulation wants about 91% of rate × duration fresh cards; one per Charge leaves a margin.
 cards=$((rate * duration))
 echo "Seeding $cards cards through the simulator"
 curl -sSf --max-time 1200 -X POST "localhost:8081/demo/load-test-cards?count=$cards"
@@ -130,7 +130,7 @@ if $restart; then
     echo "The old $app pods are gone"
   done
   # Gatling ends each run with "Simulation <class> completed in <n> seconds".
-  if grep -q 'completed in' "$log" || finished; then
+  if grep -q '^\[authorize\] .*completed in' "$log" || grep -q '^\[invoices\] .*completed in' "$log" || finished; then
     cat "$log"
     echo "A simulation ended before the last old pods were gone: run it longer (DURATION)" >&2
     exit 1

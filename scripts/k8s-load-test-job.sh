@@ -6,7 +6,8 @@
 # so one build first installs contracts and compiles the simulations (and fetches Gatling's plugin), then each
 # simulation runs on its own, offline, from those classes. Their lines are prefixed with the simulation's name.
 #
-# Takes RATE, DURATION, AUTHORIZE_TARGET, INVOICE_BASE_URL, INVOICE_RATE and TOKEN_URI from the Job's environment.
+# Takes RATE, DURATION, AUTHORIZE_TARGET, INVOICE_BASE_URL, INVOICE_RATE and TOKEN_URI from the Job's environment, and
+# the simulations read NETWORK_CLIENT_SECRET and ACME_ERP_SECRET from it (never printed).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -15,7 +16,7 @@ cd "$(dirname "$0")/.."
 simulate() {
   local name=$1 simulation=$2
   shift 2
-  ./mvnw -B -o -pl load-test -Pload-test gatling:test "-Dsimulation=dev.rgonz.payments.loadtest.$simulation" \
+  ./mvnw -B -o -pl load-test -Pload-test gatling:test "-Dgatling.simulationClass=dev.rgonz.payments.loadtest.$simulation" \
     "-DtokenUri=$TOKEN_URI" "$@" 2>&1 | sed -u "s/^/[$name] /"
 }
 
