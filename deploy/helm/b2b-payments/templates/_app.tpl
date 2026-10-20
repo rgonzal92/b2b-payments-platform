@@ -50,7 +50,7 @@ spec:
             # run out of in a few requests (OutOfDirectMemoryError, cut-off answers); it keeps a size set here and
             # takes it out of the heap instead.
             - name: JAVA_TOOL_OPTIONS
-              value: -XX:MaxDirectMemorySize=64M
+              value: -XX:MaxDirectMemorySize=64M{{ with .Values.javaToolOptions }} {{ . }}{{ end }}
             {{- /* Values may name others, such as {{ .Values.global.repoRoot }}. */}}
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}

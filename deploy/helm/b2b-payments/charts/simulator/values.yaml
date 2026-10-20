@@ -14,6 +14,11 @@ service:
     - name: http
       port: 8081
       targetPort: http
+# The Network's channel learns the service's pods from DNS when a connection closes; grpc-java skips a lookup within
+# 30 s of the last, and the JDK caches each answer as long, so after a rollout's first pod went the second's going left
+# it only the old addresses and every Charge failed UNAVAILABLE for 25 s. 0 looks the name up each time a connection
+# closes.
+javaToolOptions: -Dnetworkaddress.cache.ttl=0 -Dsun.net.inetaddr.ttl=0
 # Every address the simulator connects to (docs/architecture.md, Runtime).
 env:
   # The platform's REST API through the Gateway, as every client outside the platform reaches it.
