@@ -22,7 +22,7 @@ class TransitTests {
   @Test
   void anOpenBaoThatDoesNotAnswerIsUnavailable() {
     // Port 1 on this machine: nothing listens there, so the connection is refused at once.
-    var transit = new Transit(RestClient.builder(), "http://127.0.0.1:1", TOKEN, "card-kek");
+    var transit = new Transit(RestClient.builder(), "http://127.0.0.1:1", TOKEN);
 
     assertThatExceptionOfType(OpenBaoUnavailableException.class).isThrownBy(transit::newDataKey);
   }
@@ -34,7 +34,7 @@ class TransitTests {
     openBao
         .expect(requestTo("http://openbao/v1/transit/decrypt/card-kek"))
         .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
-    var transit = new Transit(builder, "http://openbao", TOKEN, "card-kek");
+    var transit = new Transit(builder, "http://openbao", TOKEN);
 
     assertThatExceptionOfType(OpenBaoUnavailableException.class)
         .isThrownBy(() -> transit.unwrap("vault:v1:test"));
@@ -42,7 +42,7 @@ class TransitTests {
 
   @Test
   void aMissingTokenStopsTheService() {
-    assertThatThrownBy(() -> new Transit(RestClient.builder(), "http://openbao", "", "card-kek"))
+    assertThatThrownBy(() -> new Transit(RestClient.builder(), "http://openbao", ""))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("OPENBAO_TOKEN");
   }

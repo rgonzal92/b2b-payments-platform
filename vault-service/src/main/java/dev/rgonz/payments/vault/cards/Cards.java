@@ -59,8 +59,9 @@ class Cards {
       var securityCode = Pans.newSecurityCode(random);
       for (var draw = 1; draw <= MAX_PAN_DRAWS; draw++) {
         var pan = Pans.newPan(random);
-        if (insert(cardToken, pan, securityCode, dataKey, expiresAt)) {
-          return issued(pan, securityCode);
+        var card = lastFourAndHashes(pan, securityCode);
+        if (insert(cardToken, pan, card.panHash(), securityCode, dataKey, expiresAt)) {
+          return card;
         }
         // Either another card has this PAN, and a new one is drawn, or a concurrent call with the
         // same Card Token got in first, and its card is the one.
@@ -76,18 +77,9 @@ class Cards {
         "Drew " + MAX_PAN_DRAWS + " PANs that were all taken for card " + cardToken + ".");
   }
 
-  // A class, not a record: a record's equals would compare its arrays by identity.
-  private static final class StoredCard {
-    private final byte[] panCiphertext;
-    private final byte[] securityCodeCiphertext;
-    private final String wrappedDataKey;
-
-    StoredCard(byte[] panCiphertext, byte[] securityCodeCiphertext, String wrappedDataKey) {
-      this.panCiphertext = panCiphertext;
-      this.securityCodeCiphertext = securityCodeCiphertext;
-      this.wrappedDataKey = wrappedDataKey;
-    }
-  }
+  // Never compared, so a record's equals comparing its arrays by identity doesn't matter.
+  private record StoredCard(
+      byte[] panCiphertext, byte[] securityCodeCiphertext, String wrappedDataKey) {}
 
   // Read first, unwrapped after: the Transit call holds no database connection.
   private Optional<IssuedCard> find(String cardToken) {
@@ -105,21 +97,21 @@ class Cards {
                     row.getBytes("security_code_ciphertext"),
                     row.getString("wrapped_data_key")))
         .optional()
-        .map(stored -> decrypted(stored, cardToken));
+        .map(stored -> lastFourAndHashes(stored, cardToken));
   }
 
-  private IssuedCard decrypted(StoredCard stored, String cardToken) {
-    var dataKey = transit.unwrap(stored.wrappedDataKey);
+  private IssuedCard lastFourAndHashes(StoredCard stored, String cardToken) {
+    var dataKey = transit.unwrap(stored.wrappedDataKey());
     try {
-      return issued(
-          CardCrypto.decrypt(stored.panCiphertext, dataKey, cardToken),
-          CardCrypto.decrypt(stored.securityCodeCiphertext, dataKey, cardToken));
+      return lastFourAndHashes(
+          CardCrypto.decrypt(stored.panCiphertext(), dataKey, cardToken),
+          CardCrypto.decrypt(stored.securityCodeCiphertext(), dataKey, cardToken));
     } finally {
       Arrays.fill(dataKey, (byte) 0);
     }
   }
 
-  private IssuedCard issued(String pan, String securityCode) {
+  private IssuedCard lastFourAndHashes(String pan, String securityCode) {
     return new IssuedCard(
         pan.substring(pan.length() - 4), hashing.hash(pan), hashing.hash(securityCode));
   }
@@ -129,6 +121,7 @@ class Cards {
   private boolean insert(
       String cardToken,
       String pan,
+      String panHash,
       String securityCode,
       Transit.DataKey dataKey,
       Instant expiresAt) {
@@ -142,7 +135,7 @@ class Cards {
                 on conflict do nothing
                 """)
             .param("cardToken", cardToken)
-            .param("panHash", Base64.getDecoder().decode(hashing.hash(pan)))
+            .param("panHash", Base64.getDecoder().decode(panHash))
             .param("panCiphertext", CardCrypto.encrypt(pan, dataKey.plaintext(), cardToken))
             .param(
                 "securityCodeCiphertext",
