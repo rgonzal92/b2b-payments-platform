@@ -14,4 +14,13 @@ done
 for name in VAULT_ENCRYPTION_KEY VAULT_HASH_KEY REMITTANCE_LINK_KEY; do
   grep -q "^${name}=" .env || echo "${name}=$(openssl rand -base64 32)" >> .env
 done
+# vault-service's hash key (M7, design Q9): for now the same value as VAULT_HASH_KEY, so its keyed hashes equal the
+# platform's and authorization-service's. Copied, never printed; an existing value is kept.
+grep -q "^CARD_HASH_KEY=" .env || echo "CARD_HASH_KEY=$(grep "^VAULT_HASH_KEY=" .env | cut -d= -f2-)" >> .env
+# Dev-mode OpenBao (compose.yaml): its root token, and vault-service's token, which OpenBao creates at start under a
+# policy allowing only datakey, decrypt and rewrap on card-kek (openbao/dev-init.hcl). Fixed per .env, so they survive
+# OpenBao's restarts, which recreate both.
+for name in OPENBAO_DEV_ROOT_TOKEN OPENBAO_TOKEN; do
+  grep -q "^${name}=" .env || echo "${name}=$(openssl rand -hex 32)" >> .env
+done
 echo ".env has: $(cut -d= -f1 .env | paste -sd' ')"

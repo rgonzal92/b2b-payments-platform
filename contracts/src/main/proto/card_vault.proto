@@ -1,0 +1,36 @@
+// The Card Vault (ADR-0004, ADR-0018): vault-service holds every card's PAN and security code, encrypted, and is the
+// only app that ever sees them. Other apps know a card by its Card Token and get back only its last four digits and the
+// keyed hashes of its PAN and security code.
+syntax = "proto3";
+
+package payments.vault.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_package = "dev.rgonz.payments.contracts.vault";
+option java_outer_classname = "CardVaultProto";
+
+// Served by vault-service (M7), the platform its only caller (#135). Plaintext and unauthenticated until mutual TLS
+// (#142), so in Compose it listens on 127.0.0.1 only.
+service CardVault {
+  // Draws a new card's PAN and security code and stores them, encrypted, under the Card Token. Idempotent by Card
+  // Token: a repeat returns the same card, whatever its expires_at.
+  rpc IssueCard(IssueCardRequest) returns (IssueCardResponse);
+}
+
+message IssueCardRequest {
+  // The caller's fresh Card Token for the card.
+  string card_token = 1;
+  // When the card expires; part of its Card Details.
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message IssueCardResponse {
+  // The PAN's last four digits, which the Issuer may show.
+  string last_four = 1;
+  // The PAN's and security code's keyed hashes: HMAC-SHA-256 under CARD_HASH_KEY, base64-encoded, as CardIssued
+  // carries them to authorization-service.
+  string pan_hash = 2;
+  string security_code_hash = 3;
+}

@@ -26,6 +26,38 @@ services:
     ports:
       - "127.0.0.1:5433:5432"
 
+  # vault-service's own database (M7): the Card Vault's cards, outside the platform's PCI scope. Ignored by the
+  # platform's Docker Compose support, as authorization-postgres is.
+  vault-postgres:
+    # Same tag as vault-service's TestcontainersConfiguration: change both together.
+    image: postgres:18.6
+    environment:
+      POSTGRES_DB: vault
+      POSTGRES_USER: vault
+      POSTGRES_HOST_AUTH_METHOD: trust
+    labels:
+      org.springframework.boot.ignore: "true"
+    ports:
+      - "127.0.0.1:5434:5432"
+
+  # OpenBao (M7) in dev mode, for vault-service's key-encryption key: everything lives in memory, so restarting the
+  # container loses the key and every card issued into vault-service with it (docs/learning/openbao.md). On every start
+  # it runs openbao/dev-init.hcl: Transit with the key card-kek, and vault-service's token under its own policy.
+  openbao:
+    # Same image as vault-service's TestcontainersConfiguration: change both together.
+    image: openbao/openbao:2.7.1
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: ${OPENBAO_DEV_ROOT_TOKEN:?run scripts/init-env.sh first}
+      OPENBAO_TOKEN: ${OPENBAO_TOKEN:?run scripts/init-env.sh first}
+      # The config folder is mounted read-only, so the entrypoint mustn't chown it.
+      SKIP_CHOWN: "true"
+    volumes:
+      - ./openbao:/openbao/config:ro
+    labels:
+      org.springframework.boot.ignore: "true"
+    ports:
+      - "127.0.0.1:8200:8200"
+
   kafka:
     # Same image as the platform's TestKafka: change both together. One broker, KRaft, with the
     # listeners Testcontainers' KafkaContainer uses; the platform reaches PLAINTEXT on 9092.

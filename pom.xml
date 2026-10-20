@@ -34,6 +34,7 @@
 		<!-- Before the platform: its consumer tests write the pact the platform's provider test verifies. It verifies the
 		     platform's pact as committed, and CI checks that the platform's build leaves that file unchanged. -->
 		<module>authorization-service</module>
+		<module>vault-service</module>
 		<module>platform</module>
 		<module>simulator</module>
 		<module>gateway</module>
@@ -54,6 +55,8 @@
 		<sonar.organization>rgonzal92</sonar.organization>
 		<sonar.projectKey>rgonzal92_b2b-payments-platform</sonar.projectKey>
 		<sonar.host.url>https://sonarcloud.io</sonar.host.url>
+		<!-- shortcut: vault-service ports the platform's vault (Pans), which M7's last ticket deletes with the vault schema; drop this then. -->
+		<sonar.cpd.exclusions>**/payments/platform/vault/**</sonar.cpd.exclusions>
 	</properties>
 
 	<dependencyManagement>
