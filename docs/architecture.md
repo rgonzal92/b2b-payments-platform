@@ -4,7 +4,7 @@
 
 ## System context
 
-The `platform` is the Issuer's system. Everything it talks to, apart from Keycloak and M5's `authorization-service`, is played by the `simulator` app (ADR-0002). The diagram shows the development loop; on the cluster every REST call reaches the platform through M6's Gateway ([The Gateway](#the-gateway), [Deployment](#deployment)).
+The `platform` is the Issuer's system. Everything it talks to, apart from Keycloak and M5's `authorization-service`, is played by the `simulator` app (ADR-0002). M7's `vault-service`, the Card Vault as its own app, and the OpenBao that wraps its data keys stand beside them, called by nothing yet (#135). The diagram shows the development loop; on the cluster every REST call reaches the platform through M6's Gateway ([The Gateway](#the-gateway), [Deployment](#deployment)).
 
 ```mermaid
 flowchart LR
@@ -20,6 +20,8 @@ flowchart LR
   platform["platform<br/>(the Issuer's system)"]
   authz["authorization-service<br/>(M5: copy of the cards; answers the Network)"]
   keycloak["Keycloak"]
+  vault["vault-service<br/>(M7: the Card Vault; not called yet, #135)"]
+  openbao["OpenBao<br/>(Transit: wraps each card's data key)"]
 
   simIssuer -- "create Buyers, set Credit Lines (REST)" --> platform
   erp -- "Invoices (REST)" --> platform
@@ -35,6 +37,7 @@ flowchart LR
   authz -. "validates tokens" .-> keycloak
   platform -- "card events (Kafka cards topic)" --> authz
   authz -- "approved and reversed Authorizations, card on file (Kafka authorizations topic)" --> platform
+  vault -- "new and stored data keys (Transit, HTTP)" --> openbao
 ```
 
 ## Runtime
