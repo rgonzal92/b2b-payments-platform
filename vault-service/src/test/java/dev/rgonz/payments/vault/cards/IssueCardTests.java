@@ -76,7 +76,7 @@ class IssueCardTests {
 
     var card = decryptStoredCard(cardToken);
     assertThat(card.pan()).hasSize(16).startsWith("990000").endsWith(issued.getLastFour());
-    assertThat(luhnValid(card.pan())).isTrue();
+    assertThat(Pans.isLuhnValid(card.pan())).isTrue();
     assertThat(card.securityCode()).matches("\\d{3}");
     assertThat(issued.getPanHash()).isEqualTo(hmac(card.pan()));
     assertThat(issued.getSecurityCodeHash()).isEqualTo(hmac(card.securityCode()));
@@ -243,18 +243,6 @@ class IssueCardTests {
     var mac = Mac.getInstance("HmacSHA256");
     mac.init(new SecretKeySpec(TEST_HASH_KEY, "HmacSHA256"));
     return Base64.getEncoder().encodeToString(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
-  }
-
-  private static boolean luhnValid(String digits) {
-    var sum = 0;
-    for (var i = 0; i < digits.length(); i++) {
-      var digit = digits.charAt(digits.length() - 1 - i) - '0';
-      if (i % 2 == 1) {
-        digit = digit * 2 > 9 ? digit * 2 - 9 : digit * 2;
-      }
-      sum += digit;
-    }
-    return sum % 10 == 0;
   }
 
   private static byte[] concat(byte[]... parts) {
