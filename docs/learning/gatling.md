@@ -2,7 +2,7 @@
 
 ## The problem it solves here
 
-ADR-0010 promises that the Issuer answers 99% of the Network's Authorizations within 100 ms; since the cutover (#92) `authorization-service` answers them, not the platform. A promise about a p99 needs load to check it: thousands of Charges at a steady rate, the latency of each recorded, and a report that says whether anything failed. Gatling generates that load from a simulation written in Java (`load-test/src/test/java/.../AuthorizeSimulation.java`), calls `Authorize` over gRPC on `localhost:9090` as the Network (the platform until #92, `authorization-service` since), and writes an HTML report of every call's response time.
+ADR-0010 promises that the Issuer answers 99% of the Network's Authorizations within 100 ms; since the cutover (#92) `authorization-service` answers them, not the platform. A promise about a p99 needs load to check it: thousands of Charges at a steady rate, the latency of each recorded, and a report that says whether anything failed. Gatling generates that load from a simulation written in Java (`load-test/src/test/java/.../AuthorizeSimulation.java`), calls `Authorize` over gRPC on `localhost:9090` as the Network (the platform until #92, `authorization-service` since; in the k3d cluster `dns:///authorization-service:9090` with `round_robin`, from the `target` and `loadBalancingPolicy` properties, #116), and writes an HTML report of every call's response time.
 
 ## Mental model
 
