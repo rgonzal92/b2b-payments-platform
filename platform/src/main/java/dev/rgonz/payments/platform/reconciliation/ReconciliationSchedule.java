@@ -9,9 +9,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Reconciles the day before, every day at 00:05 UTC: the Business Date is the Network's calendar
- * day in UTC. Tests that run Reconciliations by hand turn this off with {@code
- * reconciliation.daily-run.enabled=false}.
+ * Reconciles the day before, every day at 00:05 UTC ({@code reconciliation.daily-run.cron}): the
+ * Business Date is the Network's calendar day in UTC. Tests that run Reconciliations by hand turn
+ * this off with {@code reconciliation.daily-run.enabled=false}.
  */
 @Component
 @ConditionalOnBooleanProperty(name = "reconciliation.daily-run.enabled", matchIfMissing = true)
@@ -26,7 +26,7 @@ class ReconciliationSchedule {
   }
 
   // Every instance tries: the one that takes the lock runs it, the others skip it.
-  @Scheduled(cron = "0 5 0 * * *", zone = "UTC")
+  @Scheduled(cron = "${reconciliation.daily-run.cron}", zone = "UTC")
   void reconcileYesterday() {
     var yesterday = LocalDate.now(ZoneOffset.UTC).minusDays(1);
     try {

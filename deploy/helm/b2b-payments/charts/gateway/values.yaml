@@ -1,3 +1,5 @@
+# Two, so one can always be replaced while the other answers (M6 design, Two copies of each app).
+replicas: 2
 httpPort: 8083
 # The way in: on 127.0.0.1:8080 of the host (scripts/k3d-cluster.sh), the address clients use in development, and on
 # gateway:8080 inside the cluster.
