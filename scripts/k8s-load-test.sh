@@ -14,13 +14,16 @@
 # Secret. Maven's downloads stay in var/maven for the next run; target/ and var/ are gitignored.
 #
 # Usage: scripts/k8s-load-test.sh [--no-restart]. RATE (50) Authorizations and INVOICE_RATE (5) Invoices a second for
-# DURATION (180) seconds, no warm-up: three rollouts take about a minute on a workstation and over two on CI's runner,
-# and a run can't pass 240 s (the simulations' tokens). --no-restart runs them without the redeploys. Prints how many
-# Charges each service pod answered.
+# DURATION (180) seconds, after WARM_UP (0) seconds of warm-up, which the Authorize report lists apart and the
+# rollouts wait out: three rollouts take about a minute on a workstation and over two on CI's runner, and a run,
+# warm-up included, can't pass 240 s (the simulations' tokens). M4's profile, the measured run (M6 design, Measured):
+# RATE=200 WARM_UP=30 DURATION=120. --no-restart runs them without the redeploys. Prints how many Charges each service
+# pod answered.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 rate=${RATE:-50}
 duration=${DURATION:-180}
+warm_up=${WARM_UP:-0}
 invoice_rate=${INVOICE_RATE:-5}
 restart=true
 [[ ${1:-} == --no-restart ]] && restart=false
@@ -28,11 +31,18 @@ job=load-test
 image=eclipse-temurin:25.0.4_7-jdk-noble
 log=var/load-test/k8s-load-test.log
 
-# The Authorize simulation wants about 91% of rate × duration fresh cards; one per Charge leaves a margin.
-cards=$((rate * duration))
+# The Authorize simulation wants about 91% of its Charges' worth of fresh cards; one per Charge leaves a margin. They
+# go in calls of at most 10,000 cards, each after the first appending: k3d's load balancer drops a connection idle for
+# 600 s, and the simulator seeds about 25 cards a second.
+per_call=10000
+cards=$((rate * (warm_up + duration)))
 echo "Seeding $cards cards through the simulator"
-curl -sSf --max-time 1200 -X POST "localhost:8081/demo/load-test-cards?count=$cards"
-echo
+append=false
+for ((left = cards; left > 0; left -= per_call)); do
+  curl -sSf --max-time 600 -X POST "localhost:8081/demo/load-test-cards?count=$((left < per_call ? left : per_call))&append=$append"
+  echo
+  append=true
+done
 
 kubectl delete job "$job" --ignore-not-found --wait
 mkdir -p var/maven
@@ -45,7 +55,7 @@ metadata:
   name: $job
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: $((duration + 600))
+  activeDeadlineSeconds: $((warm_up + duration + 600))
   template:
     spec:
       restartPolicy: Never
@@ -64,6 +74,8 @@ spec:
               value: "$rate"
             - name: DURATION
               value: "$duration"
+            - name: WARM_UP
+              value: "$warm_up"
             - name: INVOICE_RATE
               value: "$invoice_rate"
             # Every service pod, through the headless Service; the Gateway's Service, as ERPs reach the platform; and
@@ -119,6 +131,11 @@ done
 echo "Both simulations started"
 
 if $restart; then
+  # The rollouts land in the measured time, after the warm-up.
+  for ((i = 0; i < warm_up; i++)); do
+    finished && break
+    sleep 1
+  done
   for app in authorization-service platform gateway; do
     old=$(kubectl get pods -l "app.kubernetes.io/name=$app" -o name)
     kubectl rollout restart "deployment/$app"
