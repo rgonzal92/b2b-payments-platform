@@ -77,9 +77,19 @@ class Cards {
         "Drew " + MAX_PAN_DRAWS + " PANs that were all taken for card " + cardToken + ".");
   }
 
-  // Never compared, so a record's equals comparing its arrays by identity doesn't matter.
-  private record StoredCard(
-      byte[] panCiphertext, byte[] securityCodeCiphertext, String wrappedDataKey) {}
+  // A class, not a record: a record's equals, hashCode and toString would use its arrays' identity
+  // (Sonar's S6218).
+  private static final class StoredCard {
+    private final byte[] panCiphertext;
+    private final byte[] securityCodeCiphertext;
+    private final String wrappedDataKey;
+
+    StoredCard(byte[] panCiphertext, byte[] securityCodeCiphertext, String wrappedDataKey) {
+      this.panCiphertext = panCiphertext;
+      this.securityCodeCiphertext = securityCodeCiphertext;
+      this.wrappedDataKey = wrappedDataKey;
+    }
+  }
 
   // Read first, unwrapped after: the Transit call holds no database connection.
   private Optional<IssuedCard> find(String cardToken) {
@@ -101,11 +111,11 @@ class Cards {
   }
 
   private IssuedCard lastFourAndHashes(StoredCard stored, String cardToken) {
-    var dataKey = transit.unwrap(stored.wrappedDataKey());
+    var dataKey = transit.unwrap(stored.wrappedDataKey);
     try {
       return lastFourAndHashes(
-          CardCrypto.decrypt(stored.panCiphertext(), dataKey, cardToken),
-          CardCrypto.decrypt(stored.securityCodeCiphertext(), dataKey, cardToken));
+          CardCrypto.decrypt(stored.panCiphertext, dataKey, cardToken),
+          CardCrypto.decrypt(stored.securityCodeCiphertext, dataKey, cardToken));
     } finally {
       Arrays.fill(dataKey, (byte) 0);
     }

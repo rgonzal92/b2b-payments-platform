@@ -20,10 +20,26 @@ public class Transit {
   /**
    * A data key: its 32 bytes, to encrypt with and then forget, and the same key wrapped by the
    * key-encryption key, to store. The wrapped key starts {@code vault:v<n>:}, n the version of the
-   * key-encryption key that wrapped it. Never compared, so a record's equals comparing the key's
-   * array by identity doesn't matter.
+   * key-encryption key that wrapped it. A class, not a record: a record's equals, hashCode and
+   * toString would use the key's array's identity (Sonar's S6218).
    */
-  public record DataKey(byte[] plaintext, String wrapped) {}
+  public static final class DataKey {
+    private final byte[] plaintext;
+    private final String wrapped;
+
+    DataKey(byte[] plaintext, String wrapped) {
+      this.plaintext = plaintext;
+      this.wrapped = wrapped;
+    }
+
+    public byte[] plaintext() {
+      return plaintext;
+    }
+
+    public String wrapped() {
+      return wrapped;
+    }
+  }
 
   private record Response(Data data) {}
 
