@@ -7,6 +7,7 @@ import com.google.protobuf.Timestamp;
 import dev.rgonz.payments.contracts.vault.CardVaultGrpc;
 import dev.rgonz.payments.contracts.vault.CardVaultGrpc.CardVaultBlockingStub;
 import dev.rgonz.payments.contracts.vault.IssueCardRequest;
+import dev.rgonz.payments.contracts.vault.IssueCardResponse;
 import dev.rgonz.payments.vault.TestcontainersConfiguration;
 import io.grpc.ManagedChannel;
 import io.grpc.Status;
@@ -23,6 +24,9 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
@@ -105,6 +109,31 @@ class IssueCardTests {
                 .single()
                 .toInstant())
         .isEqualTo(expiresAt);
+  }
+
+  @Test
+  void twoConcurrentCallsForOneCardTokenStoreOneRowAndGetTheSameCard() throws Exception {
+    var cardToken = newCardToken();
+    var start = new CountDownLatch(1);
+    Callable<IssueCardResponse> issue =
+        () -> {
+          start.await();
+          return cardVault.issueCard(request(cardToken, Instant.now()));
+        };
+
+    try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+      var first = threads.submit(issue);
+      var second = threads.submit(issue);
+      start.countDown();
+
+      assertThat(second.get()).isEqualTo(first.get());
+    }
+    assertThat(
+            jdbc.sql("select count(*) from card where card_token = :cardToken")
+                .param("cardToken", cardToken)
+                .query(Long.class)
+                .single())
+        .isEqualTo(1);
   }
 
   @Test
