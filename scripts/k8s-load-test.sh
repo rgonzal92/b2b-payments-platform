@@ -14,7 +14,7 @@
 # Secret. Maven's downloads stay in var/maven for the next run; target/ and var/ are gitignored.
 #
 # Usage: scripts/k8s-load-test.sh [--no-restart]. RATE (50) Authorizations and INVOICE_RATE (5) Invoices a second for
-# DURATION (180) seconds, after a WARM_UP (0) of as many seconds that the Authorize report names apart and the
+# DURATION (180) seconds, after WARM_UP (0) seconds of warm-up, which the Authorize report lists apart and the
 # rollouts wait out: three rollouts take about a minute on a workstation and over two on CI's runner, and a run,
 # warm-up included, can't pass 240 s (the simulations' tokens). M4's profile, the measured run (M6 design, Measured):
 # RATE=200 WARM_UP=30 DURATION=120. --no-restart runs them without the redeploys. Prints how many Charges each service
@@ -34,11 +34,12 @@ log=var/load-test/k8s-load-test.log
 # The Authorize simulation wants about 91% of its Charges' worth of fresh cards; one per Charge leaves a margin. They
 # go in calls of at most 10,000 cards, each after the first appending: k3d's load balancer drops a connection idle for
 # 600 s, and the simulator seeds about 25 cards a second.
+per_call=10000
 cards=$((rate * (warm_up + duration)))
 echo "Seeding $cards cards through the simulator"
 append=false
-for ((left = cards; left > 0; left -= 10000)); do
-  curl -sSf --max-time 1200 -X POST "localhost:8081/demo/load-test-cards?count=$((left < 10000 ? left : 10000))&append=$append"
+for ((left = cards; left > 0; left -= per_call)); do
+  curl -sSf --max-time 600 -X POST "localhost:8081/demo/load-test-cards?count=$((left < per_call ? left : per_call))&append=$append"
   echo
   append=true
 done

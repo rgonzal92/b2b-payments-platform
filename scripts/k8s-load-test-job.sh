@@ -24,7 +24,7 @@ simulate authorize AuthorizeSimulation -Drate="$RATE" -DwarmUpSeconds="$WARM_UP"
   -Dtarget="$AUTHORIZE_TARGET" -DloadBalancingPolicy=round_robin &
 authorize=$!
 # The Invoices run through the Authorizations' warm-up too.
-simulate invoices InvoiceSimulation -Drate="$INVOICE_RATE" -DdurationSeconds=$((WARM_UP + DURATION)) \
+simulate invoices InvoiceSimulation -Drate="$INVOICE_RATE" -DdurationSeconds="$((WARM_UP + DURATION))" \
   -DbaseUrl="$INVOICE_BASE_URL" &
 invoices=$!
 
