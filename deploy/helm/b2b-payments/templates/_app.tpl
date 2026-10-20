@@ -57,6 +57,16 @@ spec:
             # Boot's default is 30 s per phase; see terminationGracePeriodSeconds.
             - name: SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE
               value: 10s
+            # The pod's name as its OTLP resource's service.instance.id, which Spring Boot reads from this standard
+            # variable for metrics, traces and logs alike; otel-lgtm's Prometheus turns it into the instance label,
+            # so Grafana tells the pods apart (M6 design, Observability). POD_NAME comes first: Kubernetes expands
+            # $(POD_NAME) only from variables listed before it.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: service.instance.id=$(POD_NAME)
             {{- /* Values may name others, such as {{ .Values.global.repoRoot }}. */}}
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
