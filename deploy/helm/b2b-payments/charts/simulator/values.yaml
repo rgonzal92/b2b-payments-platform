@@ -14,11 +14,19 @@ service:
     - name: http
       port: 8081
       targetPort: http
+# The Network's channel learns the service's pods from DNS when a connection closes; grpc-java skips a lookup within
+# 30 s of the last, and the JDK caches each answer as long, so after a rollout's first pod went the second's going left
+# it only the old addresses and every Charge failed UNAVAILABLE for 25 s. 0 looks the name up each time a connection
+# closes.
+javaToolOptions: -Dnetworkaddress.cache.ttl=0 -Dsun.net.inetaddr.ttl=0
 # Every address the simulator connects to (docs/architecture.md, Runtime).
 env:
   # The platform's REST API through the Gateway, as every client outside the platform reaches it.
   SIMULATOR_PLATFORM_URL: http://gateway:8080
-  SIMULATOR_PLATFORM_GRPC_ADDRESS: authorization-service:9090
+  # The Network's channel: grpc-java resolves every pod behind the service's headless Service and spreads the Charges
+  # over them with round_robin, moving to the others when one goes. Development keeps static://localhost:9090.
+  SPRING_GRPC_CLIENT_CHANNEL_PLATFORM_TARGET: dns:///authorization-service:9090
+  SPRING_GRPC_CLIENT_CHANNEL_PLATFORM_DEFAULT_LOADBALANCINGPOLICY: round_robin
   SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_KEYCLOAK_TOKEN_URI: http://keycloak:8180/realms/payments/protocol/openid-connect/token
   SIMULATOR_GLOBEX_URL: http://simulator:8081
   SIMULATOR_NETWORK_DROP_FOLDER: "{{ .Values.global.repoRoot }}/var/clearing"

@@ -49,17 +49,26 @@ import java.util.regex.Pattern;
  * holds; a slower one delays its user's next Charge, so the run's achieved rate shows any slowdown
  * the measured latency doesn't.
  *
- * <p>Runs by hand against the Docker Compose stack: see the README. {@code NETWORK_CLIENT_SECRET}
- * in the environment signs it in as the Network. System properties override the defaults: {@code
- * cardsFile} (the pom passes the repository's {@code var/load-test/cards.csv}), {@code rate} (200),
- * {@code warmUpSeconds} (30) and {@code measuredSeconds} (120).
+ * <p>Runs by hand against the Docker Compose stack (see the README), or inside the k3d cluster as a
+ * Job ({@code scripts/k8s-load-test.sh}). {@code NETWORK_CLIENT_SECRET} in the environment signs it
+ * in as the Network. System properties override the defaults: {@code cardsFile} (the pom passes the
+ * repository's {@code var/load-test/cards.csv}), {@code rate} (200), {@code warmUpSeconds} (30) and
+ * {@code measuredSeconds} (120); and its addresses, which only the cluster changes: {@code target}
+ * ({@code localhost:9090}), grpc-java's {@code loadBalancingPolicy} ({@code pick_first}, its
+ * default) and Keycloak's {@code tokenUri}.
  */
 public class AuthorizeSimulation extends Simulation {
 
   private static final String APPROVED = "00";
   private static final String CARD = "card";
   private static final String TOKEN_URI =
-      "http://localhost:8180/realms/payments/protocol/openid-connect/token";
+      System.getProperty(
+          "tokenUri", "http://localhost:8180/realms/payments/protocol/openid-connect/token");
+  // In the cluster: dns:/// and round_robin on the service's headless Service, so the Charges
+  // spread over its pods and move to the others when one goes (M6 design, Traffic).
+  private static final String TARGET = System.getProperty("target", "localhost:9090");
+  private static final String LOAD_BALANCING_POLICY =
+      System.getProperty("loadBalancingPolicy", "pick_first");
   private static final Pattern ACCESS_TOKEN =
       Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"");
   // Keycloak's tokens last 5 minutes, and the run uses the one it starts with.
@@ -111,7 +120,8 @@ public class AuthorizeSimulation extends Simulation {
     var protocol =
         grpc.serverConfigurations(
             grpc.serverConfiguration("platform")
-                .forAddress("localhost", 9090)
+                .forTarget(TARGET)
+                .useCustomLoadBalancingPolicy(LOAD_BALANCING_POLICY)
                 .usePlaintext()
                 // One channel for every user, as the Network keeps one connection to the Issuer:
                 // Gatling's default, a channel per user, would time each user's connection set-up.

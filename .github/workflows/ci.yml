@@ -57,6 +57,62 @@ jobs:
         # Fails the job when the quality gate fails.
         run: ./mvnw -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.qualitygate.wait=true
 
+  # The whole stack on a k3d cluster, as the README's "Run it on Kubernetes": the Network's Charges at 50 a second for
+  # 60 seconds while authorization-service rolls; any failed call fails the job (M6 design, Proving it). When it is
+  # red: docs/runbooks/k3d-check-red.md.
+  k3d:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Update each pair together, from the release's checksums.
+      K3D_VERSION: 5.8.3
+      K3D_SHA256: dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e
+      HELM_VERSION: 4.3.0
+      HELM_SHA256: 86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: corretto
+          java-version: '25'
+          cache: maven
+      # kubectl comes with the runner.
+      - name: Install k3d and Helm
+        run: |
+          # HTTPS only, redirects too (the checksums check the files either way).
+          curl --proto '=https' --proto-redir '=https' -sSfL -o "$RUNNER_TEMP/k3d" \
+            "https://github.com/k3d-io/k3d/releases/download/v${K3D_VERSION}/k3d-linux-amd64"
+          echo "${K3D_SHA256}  $RUNNER_TEMP/k3d" | sha256sum -c -
+          tarball="$RUNNER_TEMP/helm.tar.gz"
+          curl --proto '=https' --proto-redir '=https' -sSfL -o "$tarball" "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $tarball" | sha256sum -c -
+          tar -xzf "$tarball" -C "$RUNNER_TEMP" --strip-components=1 linux-amd64/helm
+          chmod +x "$RUNNER_TEMP/k3d"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # package first: on a clean checkout, build-image alone leaves contracts unpackaged for the apps that need it.
+      - name: Build the images
+        run: ./mvnw -B -pl platform,authorization-service,simulator,gateway -am -DskipTests package spring-boot:build-image
+      - name: Create the cluster
+        id: cluster
+        run: ./scripts/k3d-cluster.sh
+      # Throwaway secrets, generated on the runner and never printed.
+      - name: Create the Secrets
+        run: |
+          ./scripts/init-env.sh
+          ./scripts/k8s-secrets.sh
+      - name: Install the chart
+        run: |
+          helm upgrade --install b2b-payments deploy/helm/b2b-payments -f deploy/helm/b2b-payments/load-test-values.yaml \
+            --set global.hostUser.uid="$(id -u)" --set global.hostUser.gid="$(id -g)"
+          kubectl wait --for=condition=Available deployment --all --timeout=600s
+      - name: Load test through a redeploy
+        run: ./scripts/k8s-load-test.sh
+      - name: Show the pods
+        if: failure() && steps.cluster.outcome == 'success'
+        run: |
+          kubectl get pods -o wide
+          kubectl get events --sort-by=.lastTimestamp | tail -50
+
   secrets:
     runs-on: ubuntu-latest
     env:

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Creates the single-node k3d cluster the Helm chart runs on (M6), unless it exists, and imports the apps' images into
-# it, so no registry is needed. Build the images first: ./mvnw -pl platform,authorization-service,simulator,gateway -am
-# -DskipTests spring-boot:build-image. Run it again after rebuilding them. Delete the cluster with
-# k3d cluster delete b2b-payments.
+# it, so no registry is needed. Build the images first (README, "Run it on Kubernetes", step 2). Run it again after
+# rebuilding them. Delete the cluster with k3d cluster delete b2b-payments.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cluster=b2b-payments

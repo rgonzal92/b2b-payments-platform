@@ -14,6 +14,12 @@ The log says `UNAVAILABLE`, and the service logs nothing for the request ID: its
 2. **Is port 9090 someone else's?** `ss -ltnp | grep 9090` (or `lsof -i :9090`) shows what holds it: a platform from before the cutover (#92), still running, would be one. Stop that process, or move the service's `spring.grpc.server.port` and the simulator's `simulator.platform-grpc-address` together.
 3. **Do the two settings agree?** The simulator's `simulator.platform-grpc-address` must name the service's `spring.grpc.server.address` and `.port`. `localhost` reaches a server on `127.0.0.1`, as the tests show.
 
+On Kubernetes (M6), where the Network spreads its Charges over the service's pods (`dns:///authorization-service:9090`, `round_robin`):
+
+1. **Is any pod ready?** `kubectl get pods -l app.kubernetes.io/name=authorization-service`. With none `1/1`, see [`pod-not-ready.md`](pod-not-ready.md).
+2. **Does the name resolve to them?** `kubectl get endpointslices -l kubernetes.io/service-name=authorization-service` lists each ready pod's address. The Service must be headless (`kubectl get service authorization-service` shows `CLUSTER-IP None`): through a virtual IP, the Network's one connection sticks to one pod and breaks when that pod is replaced.
+3. **Only during or just after a rollout?** The simulator's JVM must not cache DNS answers: `kubectl get deployment simulator -o yaml | grep -A1 JAVA_TOOL_OPTIONS` shows `-Dnetworkaddress.cache.ttl=0 -Dsun.net.inetaddr.ttl=0`. Without them the Network keeps the replaced pods' addresses for up to 30 s and every Charge in that window fails ([`learning/kubernetes.md`](../learning/kubernetes.md#gotchas-we-hit)). A Charge that failed `UNAVAILABLE` was declined `91` by the Network itself, and the service has no row for it, so there is nothing to reverse.
+
 ## The service answers too slowly
 
 The log says `DEADLINE_EXCEEDED`: the service accepted the call but didn't answer within the deadline. Its Authorization may still be running, and may approve after the Network has declined; the Reversal cancels it either way (see [The Network link](../architecture.md#the-network-link)). Every query below runs against the service's development database: `docker compose exec authorization-postgres psql -U authorization authorization`.

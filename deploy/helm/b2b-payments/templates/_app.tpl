@@ -13,6 +13,7 @@ metadata:
   labels:
     {{- include "b2b-payments.labels" $labels | nindent 4 }}
 spec:
+  replicas: {{ .Values.replicas | default 1 }}
   selector:
     matchLabels:
       {{- include "b2b-payments.selectorLabels" $labels | nindent 6 }}
@@ -23,6 +24,13 @@ spec:
     spec:
       # Kubernetes would add PLATFORM_PORT and the like for every Service, which Spring would bind to properties.
       enableServiceLinks: false
+      # Kubernetes kills whatever is left after this: the 5-second preStop pause, then Spring Boot's shutdown. Its
+      # lifecycle phases stop one after another; the web server's graceful phase waits up to
+      # spring.lifecycle.timeout-per-shutdown-phase (10 s below) for requests in flight. authorization-service's gRPC
+      # server stops in a phase of its own before that, synchronously, for up to spring.grpc.server.shutdown.grace-period
+      # (10 s, its values), which the phase timeout doesn't bound. 5 + 10 + 10 = 25 s, with a margin; requests finish
+      # in milliseconds.
+      terminationGracePeriodSeconds: 40
       {{- if .Values.hostFolders }}
       # It writes under var/ in the mounted repository, so it runs as you (global.hostUser).
       securityContext:
@@ -45,7 +53,10 @@ spec:
             # run out of in a few requests (OutOfDirectMemoryError, cut-off answers); it keeps a size set here and
             # takes it out of the heap instead.
             - name: JAVA_TOOL_OPTIONS
-              value: -XX:MaxDirectMemorySize=64M
+              value: -XX:MaxDirectMemorySize=64M{{ with .Values.javaToolOptions }} {{ . }}{{ end }}
+            # Boot's default is 30 s per phase; see terminationGracePeriodSeconds.
+            - name: SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE
+              value: 10s
             {{- /* Values may name others, such as {{ .Values.global.repoRoot }}. */}}
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
@@ -57,12 +68,33 @@ spec:
             - secretRef:
                 name: {{ . }}
           {{- end }}
-          # Basic readiness from Spring Boot's probe group, so the Service sends nothing before the app has started.
+          # Spring Boot's probe groups (M6 design, Two copies of each app). Readiness, whether the Service sends the
+          # pod traffic, leaves the database out: during a database outage every pod keeps answering, with fast errors,
+          # rather than the Service emptying. Liveness, whether Kubernetes restarts the container, is the process alone. The
+          # startup probe holds liveness off until the app first answers, so a slow start isn't killed for it.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
               port: http
             periodSeconds: 5
+          # Kubernetes takes a stopping pod out of its Services while it sends SIGTERM, and the two race: the pause
+          # lets every client stop sending here before Spring Boot's graceful shutdown starts refusing new requests.
+          # (The buildpack image has no shell, so Kubernetes sleeps, not the container.)
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           resources:
             limits:
               # Paketo's memory calculator sizes the JVM's heap to fit this.
@@ -94,6 +126,11 @@ metadata:
     {{- include "b2b-payments.labels" $labels | nindent 4 }}
 spec:
   type: {{ .Values.service.type | default "ClusterIP" }}
+  {{- if .Values.service.headless }}
+  # Headless: the name resolves to each ready pod's address rather than one virtual IP, so a client that balances
+  # (grpc-java's round_robin over dns:///) connects to every pod.
+  clusterIP: None
+  {{- end }}
   selector:
     {{- include "b2b-payments.selectorLabels" $labels | nindent 4 }}
   ports:

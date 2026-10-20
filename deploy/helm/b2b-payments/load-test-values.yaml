@@ -1,0 +1,12 @@
+# Values for a cluster that runs the load test (scripts/k8s-load-test.sh): helm upgrade --install … -f this file.
+# Seeding the cards file sends thousands of Invoices from Initech, polls each Payment twice a second, and has Globex
+# open every card link from the simulator's one pod. Through the Gateway, Initech's clients get 20 requests a second
+# and the remittance link 10 a minute per address (M6 design, Rate limiting), which would stretch a 3,000-card seeding
+# over hours. So here the simulator calls the platform past the Gateway, and the links it receives point there too.
+# The Network's Charges, which the load test sends, skip the Gateway either way (M6 design, Traffic).
+simulator:
+  env:
+    SIMULATOR_PLATFORM_URL: http://platform:8080
+platform:
+  env:
+    PLATFORM_PUBLIC_URL: http://platform:8080

@@ -19,7 +19,7 @@ From #96, Grafana shows the same: `authorization_answers_total{response_code="91
 
 1. `docker compose ps`. If `authorization-postgres` isn't running, `docker compose up -d authorization-postgres`. If it starts and stops again, `docker compose logs authorization-postgres` says why (a full disk, port `5433` taken).
 2. If it's running but slow, look for what holds it up, as in [`network-cant-reach-platform.md`](network-cant-reach-platform.md#the-service-answers-too-slowly), step 2.
-3. Don't restart the service: a restart would lose its pending self-Reversals (see below). After its wait, the breaker lets a few trial Authorizations through; once they succeed the log says `State transition from HALF_OPEN to CLOSED` and Charges are answered as usual. The connection pool reconnects by itself. While the database is still down, the trial calls fail and the breaker opens again.
+3. Don't restart the service, or roll its pods on Kubernetes: a restart would lose its pending self-Reversals (see below). After its wait, the breaker lets a few trial Authorizations through; once they succeed the log says `State transition from HALF_OPEN to CLOSED` and Charges are answered as usual. The connection pool reconnects by itself. While the database is still down, the trial calls fail and the breaker opens again.
 
 If the service itself was down, start it: `./mvnw -pl authorization-service -am spring-boot:run`. Its breaker starts closed.
 
@@ -36,6 +36,7 @@ The service retries its own Reversal only for a while, and only in memory. Two c
 
 - **The database stayed down past the retry limit:** the service logs `Authorization <request ID> answered 91 and couldn't be reversed (…): it may still be approved` at ERROR.
 - **The service stopped or crashed** while the Reversal was still pending: nothing is logged, so take the request IDs from the `answered 91 and is being reversed` lines before the stop.
+- **The pod was replaced** while the Reversal was still pending: on Kubernetes (M6) a redeploy (`kubectl rollout restart`, a new image) or a failed liveness probe stops a service pod like any other stop, and its pending self-Reversals go with it. A redeploy is safe while the database answers, because a self-Reversal then finishes in milliseconds; during an outage it isn't, so don't roll the service until the breaker has closed. M5 accepted losing them on a stop, and that accepted risk now covers a redeploy during a database outage (M6 design, Two copies of each app). Take the request IDs from the stopped pod's `answered 91 and is being reversed` lines: `kubectl logs <pod>` while it still exists, otherwise Grafana's Loki, which keeps every pod's logs while `lgtm` runs.
 
 For each of those request IDs, once the database answers, check in the service's database (`docker compose exec authorization-postgres psql -U authorization authorization`):
 
