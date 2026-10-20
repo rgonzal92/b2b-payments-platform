@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.random.RandomGenerator;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -28,12 +29,19 @@ class Cards {
   private final JdbcClient jdbc;
   private final Transit transit;
   private final CardHashing hashing;
-  private final RandomGenerator random = new SecureRandom();
+  private final RandomGenerator random;
 
+  @Autowired
   Cards(JdbcClient jdbc, Transit transit, CardHashing hashing) {
+    this(jdbc, transit, hashing, new SecureRandom());
+  }
+
+  // Tests pass their own draws, to force a PAN another card already has.
+  Cards(JdbcClient jdbc, Transit transit, CardHashing hashing, RandomGenerator random) {
     this.jdbc = jdbc;
     this.transit = transit;
     this.hashing = hashing;
+    this.random = random;
   }
 
   /**
