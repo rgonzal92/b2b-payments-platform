@@ -6,8 +6,8 @@
 # so one build first installs contracts and compiles the simulations (and fetches Gatling's plugin), then each
 # simulation runs on its own, offline, from those classes. Their lines are prefixed with the simulation's name.
 #
-# Takes RATE, DURATION, AUTHORIZE_TARGET, INVOICE_BASE_URL, INVOICE_RATE and TOKEN_URI from the Job's environment, and
-# the simulations read NETWORK_CLIENT_SECRET and ACME_ERP_SECRET from it (never printed).
+# Takes RATE, DURATION, WARM_UP, AUTHORIZE_TARGET, INVOICE_BASE_URL, INVOICE_RATE and TOKEN_URI from the Job's
+# environment, and the simulations read NETWORK_CLIENT_SECRET and ACME_ERP_SECRET from it (never printed).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,10 +20,11 @@ simulate() {
     "-DtokenUri=$TOKEN_URI" "$@" 2>&1 | sed -u "s/^/[$name] /"
 }
 
-simulate authorize AuthorizeSimulation -Drate="$RATE" -DwarmUpSeconds=0 -DmeasuredSeconds="$DURATION" \
+simulate authorize AuthorizeSimulation -Drate="$RATE" -DwarmUpSeconds="$WARM_UP" -DmeasuredSeconds="$DURATION" \
   -Dtarget="$AUTHORIZE_TARGET" -DloadBalancingPolicy=round_robin &
 authorize=$!
-simulate invoices InvoiceSimulation -Drate="$INVOICE_RATE" -DdurationSeconds="$DURATION" \
+# The Invoices run through the Authorizations' warm-up too.
+simulate invoices InvoiceSimulation -Drate="$INVOICE_RATE" -DdurationSeconds=$((WARM_UP + DURATION)) \
   -DbaseUrl="$INVOICE_BASE_URL" &
 invoices=$!
 
