@@ -20,6 +20,9 @@ service:
 env:
   # Every interface, so the simulator's pod reaches it; development stays on loopback.
   SPRING_GRPC_SERVER_ADDRESS: 0.0.0.0
+  # A stopping pod's gRPC server waits this long for calls in flight, which take milliseconds; 30 s by default would
+  # overrun the pod's terminationGracePeriodSeconds (templates/_app.tpl).
+  SPRING_GRPC_SERVER_SHUTDOWN_GRACE_PERIOD: 10s
   SPRING_R2DBC_URL: r2dbc:postgresql://authorization-postgres:5432/authorization
   SPRING_FLYWAY_URL: jdbc:postgresql://authorization-postgres:5432/authorization
   SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092

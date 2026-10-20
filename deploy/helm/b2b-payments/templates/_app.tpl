@@ -24,9 +24,12 @@ spec:
     spec:
       # Kubernetes would add PLATFORM_PORT and the like for every Service, which Spring would bind to properties.
       enableServiceLinks: false
-      # The 5-second preStop pause, then Spring Boot's graceful shutdown, which waits up to 30 s for requests in
-      # flight (spring.lifecycle.timeout-per-shutdown-phase; the service's gRPC server likewise, with
-      # spring.grpc.server.shutdown.grace-period), plus a margin; Kubernetes kills whatever is left after it.
+      # Kubernetes kills whatever is left after this: the 5-second preStop pause, then Spring Boot's shutdown. Its
+      # lifecycle phases stop one after another; the web server's graceful phase waits up to
+      # spring.lifecycle.timeout-per-shutdown-phase (10 s below) for requests in flight. authorization-service's gRPC
+      # server stops in a phase of its own before that, synchronously, for up to spring.grpc.server.shutdown.grace-period
+      # (10 s, its values), which the phase timeout doesn't bound. 5 + 10 + 10 = 25 s, with a margin; requests finish
+      # in milliseconds.
       terminationGracePeriodSeconds: 40
       {{- if .Values.hostFolders }}
       # It writes under var/ in the mounted repository, so it runs as you (global.hostUser).
@@ -51,6 +54,9 @@ spec:
             # takes it out of the heap instead.
             - name: JAVA_TOOL_OPTIONS
               value: -XX:MaxDirectMemorySize=64M{{ with .Values.javaToolOptions }} {{ . }}{{ end }}
+            # Boot's default is 30 s per phase; see terminationGracePeriodSeconds.
+            - name: SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE
+              value: 10s
             {{- /* Values may name others, such as {{ .Values.global.repoRoot }}. */}}
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
@@ -63,8 +69,8 @@ spec:
                 name: {{ . }}
           {{- end }}
           # Spring Boot's probe groups (M6 design, Two copies of each app). Readiness, whether the Service sends the
-          # pod traffic, leaves the database out: a database outage answers fast errors and 91 from every pod rather
-          # than emptying the Service. Liveness, whether Kubernetes restarts the container, is the process alone. The
+          # pod traffic, leaves the database out: during a database outage every pod keeps answering, with fast errors,
+          # rather than the Service emptying. Liveness, whether Kubernetes restarts the container, is the process alone. The
           # startup probe holds liveness off until the app first answers, so a slow start isn't killed for it.
           startupProbe:
             httpGet:

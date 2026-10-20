@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs M4's Gatling simulation inside the k3d cluster while it rolls authorization-service, one pod at a time (M6
 # design, Proving it): the Network's Charges must all be answered through the redeploy. Exits non-zero on any failed
-# call (a gRPC error or an unexpected answer fails Gatling's assertion; a missing answer keeps the run from ending,
-# which the Job's deadline turns into a failure) or if the rollout didn't finish while the simulation ran.
+# call (a gRPC error or an unexpected answer fails Gatling's assertion; a missing answer keeps the run from ending
+# until gatling-grpc's trial limit exits with an error 5 minutes after the first user, docs/learning/gatling.md, and
+# the Job's deadline backs that up) or if an old pod was still there when the simulation ended.
 #
 # Needs the chart installed with load-test-values.yaml (README, "Run it on Kubernetes"). It seeds the cards the run
 # charges through the simulator's demo on localhost:8081, then runs ./mvnw -pl load-test -Pload-test verify from this
@@ -29,7 +30,8 @@ echo
 
 kubectl delete job "$job" --ignore-not-found --wait
 mkdir -p var/maven
-# A hung call keeps Gatling from ending: the deadline, Maven's start plus the run plus a margin, fails the Job then.
+# A hung call keeps Gatling from ending until its 5-minute trial limit exits; the deadline, Maven's start plus the run
+# plus a margin, fails the Job should that ever not happen.
 kubectl apply -f - << EOF
 apiVersion: batch/v1
 kind: Job
@@ -90,6 +92,8 @@ spec:
             type: Directory
 EOF
 
+# kubectl wait -l fails at once while no pod matches, so wait for the Job's pod to exist first.
+until [[ -n $(kubectl get pods -l "job-name=$job" -o name) ]]; do sleep 1; done
 kubectl wait --for=condition=Ready "pod" -l "job-name=$job" --timeout=300s
 kubectl logs -f "job/$job" > "$log" &
 logs=$!
@@ -105,14 +109,19 @@ done
 echo "The simulation started"
 
 if $restart; then
+  old=$(kubectl get pods -l app.kubernetes.io/name=authorization-service -o name)
   kubectl rollout restart deployment/authorization-service
   kubectl rollout status deployment/authorization-service --timeout=300s
+  # rollout status returns once the last old pod is marked for termination, before its preStop pause and its gRPC
+  # server's GOAWAY: the redeploy is proven only once the old pods are gone, with the simulation still running.
+  # shellcheck disable=SC2086 # one argument per pod
+  kubectl wait --for=delete $old --timeout=120s
   if finished; then
     cat "$log"
-    echo "The simulation ended before the rollout finished: run it longer (DURATION)" >&2
+    echo "The simulation ended before the old pods were gone: run it longer (DURATION)" >&2
     exit 1
   fi
-  echo "The rollout finished while the simulation ran"
+  echo "The old pods were gone while the simulation ran"
 fi
 
 until finished; do sleep 2; done
