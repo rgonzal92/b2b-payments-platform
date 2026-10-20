@@ -63,6 +63,18 @@ class GrafanaProvisioningTests {
   // A metric name in PromQL is followed by its label matchers or its range: name{…} or name[…].
   private static final Pattern METRIC = Pattern.compile("([a-zA-Z_:][a-zA-Z0-9_:]*)\\s*[{\\[]");
 
+  // The per-pod panels' titles end with this; every other query sums across pods.
+  private static final String PER_POD = ", per pod";
+
+  // An aggregation (sum or max, possibly by labels) around the query, after an optional factor
+  // and histogram_quantile.
+  private static final Pattern AGGREGATED =
+      Pattern.compile("^(?:\\d+ \\* )?(?:histogram_quantile\\([0-9.]+, )?(?:sum|max)\\b.*");
+
+  // A grouping that keeps each pod's series apart.
+  private static final Pattern BY_INSTANCE =
+      Pattern.compile("by \\([^)]*\\b(?:instance|service_instance_id)\\b");
+
   private final JsonMapper json = JsonMapper.builder().build();
 
   @Test
@@ -129,6 +141,78 @@ class GrafanaProvisioningTests {
         .contains("payments_waiting_card_on_file", "payments_waiting_card_on_file_oldest_seconds");
   }
 
+  // M6 design, Observability: in the cluster each pod exports under its own instance label (its
+  // service.instance.id, the pod name), so a query that keeps the series apart shows one line per
+  // pod. Every query sums them, or takes their max, outside the per-pod panel.
+  @Test
+  void everyQueryAggregatesAcrossPods() throws IOException {
+    var queries = new ArrayList<String>();
+    for (var name : List.of("authorization", "payments", "clearing", "breaks")) {
+      for (var panel : dashboard(name).path("panels")) {
+        if (!panel.path("title").asString().endsWith(PER_POD)) {
+          panel.path("targets").forEach(target -> queries.add(target.path("expr").asString()));
+        }
+      }
+    }
+    for (var uid :
+        List.of("authorization-p99", "payment-waiting-card-on-file", "rate-limiter-redis-down")) {
+      queries.add(queryOf(rule(uid)));
+    }
+
+    assertThat(queries)
+        .isNotEmpty()
+        .allSatisfy(
+            expr -> {
+              assertThat(expr).as("aggregates").matches(AGGREGATED);
+              assertThat(expr).as("keeps pods apart").doesNotContainPattern(BY_INSTANCE);
+            });
+  }
+
+  // Every platform pod reads the same rows into these gauges, so their sum would count each Payment
+  // or Break once per pod: the panels and the alert take the max across pods.
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "payments_waiting_card_on_file",
+        "payments_waiting_card_on_file_oldest_seconds",
+        "reconciliation_breaks_open"
+      })
+  void aGaugeReadFromTheDatabaseCountsOnceHoweverManyPodsReportIt(String gauge) throws IOException {
+    var queries = new ArrayList<String>();
+    for (var name : List.of("payments", "breaks")) {
+      queries.addAll(expressions(name));
+    }
+    queries.add(queryOf(rule("payment-waiting-card-on-file")));
+    var reading = Pattern.compile("\\b" + gauge + "\\{");
+    var inMax = Pattern.compile("max(?: by \\([^)]*\\))? ?\\(" + gauge + "\\{");
+
+    assertThat(queries.stream().filter(expr -> reading.matcher(expr).find()))
+        .isNotEmpty()
+        .allSatisfy(expr -> assertThat(expr).containsPattern(inMax));
+  }
+
+  // M6 design, Observability: the Authorization p99, one line per authorization-service pod, next
+  // to the summed one, to see one pod slower than the other.
+  @Test
+  void theAuthorizationDashboardBreaksAuthorizesP99DownByPod() throws IOException {
+    var perPod =
+        dashboard("authorization")
+            .path("panels")
+            .valueStream()
+            .filter(panel -> panel.path("title").asString().endsWith(PER_POD))
+            .toList();
+
+    assertThat(perPod).hasSize(1);
+    var targets = perPod.getFirst().path("targets").valueStream().toList();
+    assertThat(targets).hasSize(1);
+    assertThat(targets.getFirst().path("expr").asString())
+        .isEqualTo(
+            "histogram_quantile(0.99, sum by (instance, le)"
+                + " (rate(grpc_server_milliseconds_bucket{job=\"authorization-service\","
+                + " rpc_method=\"Authorize\"}[$__rate_interval])))");
+    assertThat(targets.getFirst().path("legendFormat").asString()).isEqualTo("{{instance}}");
+  }
+
   @Test
   void theDashboardProviderReadsEveryDashboardFromTheFolderComposeMounts() throws IOException {
     Map<String, Object> provider = yaml(GRAFANA.resolve("provisioning/dashboards.yaml"));
@@ -168,6 +252,8 @@ class GrafanaProvisioningTests {
 
   // The p99 rule sees no data when the service is down, as when the Network is idle: a rule per app
   // fires once it has exported nothing for 5 minutes. Each export refreshes the app's target_info.
+  // The rule is per job, not per pod: absent_over_time is empty while any of the app's pods
+  // exports, so one pod of two going away doesn't fire it (M6 design, Observability).
   @ParameterizedTest
   @ValueSource(strings = {"authorization-service", "platform"})
   void theAlertRuleFiresWhenAnAppHasExportedNothingFor5Minutes(String app) throws IOException {

@@ -243,12 +243,12 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(payments_waiting_card_on_file{job=\"platform\"})",
+          "expr": "max(payments_waiting_card_on_file{job=\"platform\"})",
           "legendFormat": "waiting",
           "range": true
         }
       ],
-      "description": "Payments whose Single-Use Card is issued (CARD_ISSUED), waiting for authorization-service to confirm it has the card on file before the Remittance Advice goes out (M5 design, \"The gaps\"). Read from the platform's database every 30 seconds."
+      "description": "Payments whose Single-Use Card is issued (CARD_ISSUED), waiting for authorization-service to confirm it has the card on file before the Remittance Advice goes out (M5 design, \"The gaps\"). Read from the platform's database every 30 seconds; every platform pod reads the same count, so the panel takes the largest rather than adding them up."
     },
     {
       "id": 6,

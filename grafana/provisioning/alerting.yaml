@@ -114,7 +114,9 @@ groups:
 
   # Every metrics export (once a minute) refreshes the app's target_info series, its OTLP resource, so 5 minutes
   # without one means the app is down or can't reach otel-lgtm. otel-lgtm's Prometheus receives pushes and scrapes no
-  # app, so there is no up series to read.
+  # app, so there is no up series to read. Each rule is per job, not per pod: in the cluster every pod has its own
+# target_info series (its instance label is the pod name), and absent_over_time is empty while any of them is fresh,
+# so one pod of two going away doesn't fire it.
   - orgId: 1
     name: apps
     folder: B2B Payments
