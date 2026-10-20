@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
-# Runs M4's Gatling simulation inside the k3d cluster while it rolls authorization-service, one pod at a time (M6
-# design, Proving it): the Network's Charges must all be answered through the redeploy. Exits non-zero on any failed
-# call (a gRPC error or an unexpected answer fails Gatling's assertion; a missing answer keeps the run from ending
-# until gatling-grpc's trial limit exits with an error 5 minutes after the first user, docs/learning/gatling.md, and
-# the Job's deadline backs that up) or if an old pod was still there when the simulation ended.
+# Runs both Gatling simulations inside the k3d cluster, M4's Authorizations straight to authorization-service and Acme's
+# ERP's Invoices through the Gateway, while it rolls authorization-service, then the platform, then the Gateway, two
+# pods each, one pod at a time, each app once the last one's old pods are gone (M6 design, Proving it): every Charge
+# and every Invoice must be answered through the redeploys. Exits non-zero on any failed call (a gRPC error, an
+# unexpected answer or a non-2xx response fails a simulation's assertion; a missing gRPC answer keeps the run from
+# ending until gatling-grpc's trial limit exits with an error 5 minutes after the first user, docs/learning/gatling.md,
+# and an HTTP one fails at Gatling's 60-second request timeout; the Job's deadline backs both up) or if an old pod was
+# still there when a simulation ended.
 #
 # Needs the chart installed with load-test-values.yaml (README, "Run it on Kubernetes"). It seeds the cards the run
-# charges through the simulator's demo on localhost:8081, then runs ./mvnw -pl load-test -Pload-test verify from this
-# repository, mounted into the cluster, as a Job on a JDK image, signed in as the Network with the simulator's Secret.
-# Maven's downloads stay in var/maven for the next run; target/ and var/ are gitignored.
+# charges through the simulator's demo on localhost:8081, then runs scripts/k8s-load-test-job.sh from this repository,
+# mounted into the cluster, as a Job on a JDK image, signed in as the Network and as Acme's ERP with the simulator's
+# Secret. Maven's downloads stay in var/maven for the next run; target/ and var/ are gitignored.
 #
-# Usage: scripts/k8s-load-test.sh [--no-restart]. RATE (50) Authorizations a second for DURATION (60) seconds, no
-# warm-up; --no-restart runs it without the redeploy. Prints how many Charges each service pod answered.
+# Usage: scripts/k8s-load-test.sh [--no-restart]. RATE (50) Authorizations and INVOICE_RATE (5) Invoices a second for
+# DURATION (180) seconds, no warm-up: three rollouts take about a minute on a workstation and over two on CI's runner,
+# and a run can't pass 240 s (the simulations' tokens). --no-restart runs them without the redeploys. Prints how many
+# Charges each service pod answered.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 rate=${RATE:-50}
-duration=${DURATION:-60}
+duration=${DURATION:-180}
+invoice_rate=${INVOICE_RATE:-5}
 restart=true
 [[ ${1:-} == --no-restart ]] && restart=false
 job=load-test
@@ -52,23 +58,22 @@ spec:
         - name: gatling
           image: $image
           workingDir: /b2b-payments
-          command:
-            - ./mvnw
-            - -B
-            - -pl
-            - load-test
-            - -am
-            - -Pload-test
-            - -DskipTests
-            - verify
-            - -Drate=$rate
-            - -DwarmUpSeconds=0
-            - -DmeasuredSeconds=$duration
-            # Every service pod, through the headless Service, and Keycloak's Service for the token.
-            - -Dtarget=dns:///authorization-service:9090
-            - -DloadBalancingPolicy=round_robin
-            - -DtokenUri=http://keycloak:8180/realms/payments/protocol/openid-connect/token
+          command: [scripts/k8s-load-test-job.sh]
           env:
+            - name: RATE
+              value: "$rate"
+            - name: DURATION
+              value: "$duration"
+            - name: INVOICE_RATE
+              value: "$invoice_rate"
+            # Every service pod, through the headless Service; the Gateway's Service, as ERPs reach the platform; and
+            # Keycloak's Service for the tokens.
+            - name: AUTHORIZE_TARGET
+              value: dns:///authorization-service:9090
+            - name: INVOICE_BASE_URL
+              value: http://gateway:8080
+            - name: TOKEN_URI
+              value: http://keycloak:8180/realms/payments/protocol/openid-connect/token
             # Maven's wrapper (from \$HOME) and repository (from Java's user.home, which the image's passwd would set
             # otherwise) under var/maven, kept between runs.
             - name: HOME
@@ -82,6 +87,11 @@ spec:
                 secretKeyRef:
                   name: simulator-secrets
                   key: NETWORK_CLIENT_SECRET
+            - name: ACME_ERP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: simulator-secrets
+                  key: ACME_ERP_SECRET
           volumeMounts:
             - name: repository
               mountPath: /b2b-payments
@@ -101,27 +111,31 @@ trap 'kill $logs 2> /dev/null || true' EXIT
 
 finished() { [[ -n $(kubectl get job "$job" -o jsonpath='{.status.completionTime}{.status.failed}') ]]; }
 
-# Gatling's first progress report, 5 s into the run, so the first Charges have spread over both pods.
-until grep -q 's elapsed' "$log"; do
-  finished && { cat "$log"; echo "The Job ended before the simulation started" >&2; exit 1; }
+# Each simulation's first progress report, 5 s into its run, so the first calls have spread over the pods.
+until grep -q '^\[authorize\] .*s elapsed' "$log" && grep -q '^\[invoices\] .*s elapsed' "$log"; do
+  finished && { cat "$log"; echo "The Job ended before both simulations started" >&2; exit 1; }
   sleep 2
 done
-echo "The simulation started"
+echo "Both simulations started"
 
 if $restart; then
-  old=$(kubectl get pods -l app.kubernetes.io/name=authorization-service -o name)
-  kubectl rollout restart deployment/authorization-service
-  kubectl rollout status deployment/authorization-service --timeout=300s
-  # rollout status returns once the last old pod is marked for termination, before its preStop pause and its gRPC
-  # server's GOAWAY: the redeploy is proven only once the old pods are gone, with the simulation still running.
-  # shellcheck disable=SC2086 # one argument per pod
-  kubectl wait --for=delete $old --timeout=120s
-  if finished; then
+  for app in authorization-service platform gateway; do
+    old=$(kubectl get pods -l "app.kubernetes.io/name=$app" -o name)
+    kubectl rollout restart "deployment/$app"
+    kubectl rollout status "deployment/$app" --timeout=300s
+    # rollout status returns once the last old pod is marked for termination, before its preStop pause and its
+    # graceful shutdown: an app's redeploy is over only once its old pods are gone, and only then does the next start.
+    # shellcheck disable=SC2086 # one argument per pod
+    kubectl wait --for=delete $old --timeout=120s
+    echo "The old $app pods are gone"
+  done
+  # Gatling ends each run with "Simulation <class> completed in <n> seconds".
+  if grep -q 'completed in' "$log" || finished; then
     cat "$log"
-    echo "The simulation ended before the old pods were gone: run it longer (DURATION)" >&2
+    echo "A simulation ended before the last old pods were gone: run it longer (DURATION)" >&2
     exit 1
   fi
-  echo "The old pods were gone while the simulation ran"
+  echo "The old pods were gone while both simulations ran"
 fi
 
 until finished; do sleep 2; done
