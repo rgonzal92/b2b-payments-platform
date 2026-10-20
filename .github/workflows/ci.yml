@@ -78,11 +78,12 @@ jobs:
       # kubectl comes with the runner.
       - name: Install k3d and Helm
         run: |
-          curl -sSfL -o "$RUNNER_TEMP/k3d" \
+          # HTTPS only, redirects too (the checksums check the files either way).
+          curl --proto '=https' --proto-redir '=https' -sSfL -o "$RUNNER_TEMP/k3d" \
             "https://github.com/k3d-io/k3d/releases/download/v${K3D_VERSION}/k3d-linux-amd64"
           echo "${K3D_SHA256}  $RUNNER_TEMP/k3d" | sha256sum -c -
           tarball="$RUNNER_TEMP/helm.tar.gz"
-          curl -sSfL -o "$tarball" "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+          curl --proto '=https' --proto-redir '=https' -sSfL -o "$tarball" "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
           echo "${HELM_SHA256}  $tarball" | sha256sum -c -
           tar -xzf "$tarball" -C "$RUNNER_TEMP" --strip-components=1 linux-amd64/helm
           chmod +x "$RUNNER_TEMP/k3d"
