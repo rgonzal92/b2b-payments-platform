@@ -87,9 +87,11 @@ jobs:
           tar -xzf "$tarball" -C "$RUNNER_TEMP" --strip-components=1 linux-amd64/helm
           chmod +x "$RUNNER_TEMP/k3d"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # package first: on a clean checkout, build-image alone leaves contracts unpackaged for the apps that need it.
       - name: Build the images
-        run: ./mvnw -B -pl platform,authorization-service,simulator,gateway -am -DskipTests spring-boot:build-image
+        run: ./mvnw -B -pl platform,authorization-service,simulator,gateway -am -DskipTests package spring-boot:build-image
       - name: Create the cluster
+        id: cluster
         run: ./scripts/k3d-cluster.sh
       # Throwaway secrets, generated on the runner and never printed.
       - name: Create the Secrets
@@ -104,7 +106,7 @@ jobs:
       - name: Load test through a redeploy
         run: ./scripts/k8s-load-test.sh
       - name: Show the pods
-        if: failure()
+        if: failure() && steps.cluster.outcome == 'success'
         run: |
           kubectl get pods -o wide
           kubectl get events --sort-by=.lastTimestamp | tail -50
