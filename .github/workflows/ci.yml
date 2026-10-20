@@ -58,7 +58,8 @@ jobs:
         run: ./mvnw -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.qualitygate.wait=true
 
   # The whole stack on a k3d cluster, as the README's "Run it on Kubernetes": the Network's Charges at 50 a second for
-  # 60 seconds while authorization-service rolls; any failed call fails the job (M6 design, Proving it).
+  # 60 seconds while authorization-service rolls; any failed call fails the job (M6 design, Proving it). When it is
+  # red: docs/runbooks/k3d-check-red.md.
   k3d:
     runs-on: ubuntu-latest
     timeout-minutes: 45
