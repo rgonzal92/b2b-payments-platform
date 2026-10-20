@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.Random;
 import org.junit.jupiter.api.Test;
 
-/** The Card Vault's PANs: 16 digits from the made-up 990000 range, with a valid Luhn check digit. */
+/**
+ * The Card Vault's PANs: 16 digits from the made-up 990000 range, with a valid Luhn check digit.
+ */
 class PansTests {
 
   @Test

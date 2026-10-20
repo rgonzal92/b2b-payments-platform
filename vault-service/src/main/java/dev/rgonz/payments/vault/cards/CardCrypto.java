@@ -39,7 +39,7 @@ final class CardCrypto {
           .put(ciphertext)
           .array();
     } catch (GeneralSecurityException e) {
-      throw new IllegalStateException("Encrypting card data failed.", e);
+      throw new IllegalStateException("Encrypting the PAN or security code failed.", e);
     }
   }
 
@@ -58,7 +58,8 @@ final class CardCrypto {
       var plaintext = cipher.doFinal(sealed, NONCE_BYTES, sealed.length - NONCE_BYTES);
       return new String(plaintext, StandardCharsets.UTF_8);
     } catch (GeneralSecurityException e) {
-      throw new IllegalStateException("Card data failed to decrypt or was tampered with.", e);
+      throw new IllegalStateException(
+          "The PAN or security code failed to decrypt or was tampered with.", e);
     }
   }
 }
