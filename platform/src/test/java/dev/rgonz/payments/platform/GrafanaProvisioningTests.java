@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,9 @@ class GrafanaProvisioningTests {
   // A metric name in PromQL is followed by its label matchers or its range: name{…} or name[…].
   private static final Pattern METRIC = Pattern.compile("([a-zA-Z_:][a-zA-Z0-9_:]*)\\s*[{\\[]");
 
+  private static final List<String> DASHBOARDS =
+      List.of("authorization", "payments", "clearing", "breaks");
+
   // The per-pod panels' titles end with this; every other query sums across pods.
   private static final String PER_POD = ", per pod";
 
@@ -79,7 +83,7 @@ class GrafanaProvisioningTests {
 
   @Test
   void everyDashboardQueriesOnlyExportedMetrics() throws IOException {
-    for (var name : List.of("authorization", "payments", "clearing", "breaks")) {
+    for (var name : DASHBOARDS) {
       var dashboard = dashboard(name);
 
       assertThat(dashboard.path("uid").asString()).as(name).isEqualTo(name);
@@ -147,16 +151,14 @@ class GrafanaProvisioningTests {
   @Test
   void everyQueryAggregatesAcrossPods() throws IOException {
     var queries = new ArrayList<String>();
-    for (var name : List.of("authorization", "payments", "clearing", "breaks")) {
-      for (var panel : dashboard(name).path("panels")) {
-        if (!panel.path("title").asString().endsWith(PER_POD)) {
-          panel.path("targets").forEach(target -> queries.add(target.path("expr").asString()));
-        }
-      }
+    for (var name : DASHBOARDS) {
+      queries.addAll(expressions(name, title -> !title.endsWith(PER_POD)));
     }
-    for (var uid :
-        List.of("authorization-p99", "payment-waiting-card-on-file", "rate-limiter-redis-down")) {
-      queries.add(queryOf(rule(uid)));
+    // The app-down rules are per job by design, checked on their own below.
+    for (var rule : rules()) {
+      if (!((String) rule.get("uid")).endsWith("-not-exporting")) {
+        queries.add(queryOf(rule));
+      }
     }
 
     assertThat(queries)
@@ -194,7 +196,7 @@ class GrafanaProvisioningTests {
   // M6 design, Observability: the Authorization p99, one line per authorization-service pod, next
   // to the summed one, to see one pod slower than the other.
   @Test
-  void theAuthorizationDashboardBreaksAuthorizesP99DownByPod() throws IOException {
+  void theAuthorizationDashboardBreaksAuthorizationsP99DownByPod() throws IOException {
     var perPod =
         dashboard("authorization")
             .path("panels")
@@ -280,12 +282,18 @@ class GrafanaProvisioningTests {
         .contains("docs/runbooks/rate-limiter-redis-down.md");
   }
 
-  // The provisioned rule with this uid, from any group.
-  private static Map<String, Object> rule(String uid) throws IOException {
+  // Every provisioned rule, from every group.
+  private static List<Map<String, Object>> rules() throws IOException {
     Map<String, Object> alerting = yaml(GRAFANA.resolve("provisioning/alerting.yaml"));
     return list(alerting.get("groups")).stream()
         .flatMap(group -> list(map(group).get("rules")).stream())
         .map(GrafanaProvisioningTests::map)
+        .toList();
+  }
+
+  // The provisioned rule with this uid, from any group.
+  private static Map<String, Object> rule(String uid) throws IOException {
+    return rules().stream()
         .filter(rule -> uid.equals(rule.get("uid")))
         .findFirst()
         .orElseThrow(() -> new AssertionError("No alert rule " + uid));
@@ -318,8 +326,16 @@ class GrafanaProvisioningTests {
 
   // Every query of the dashboard's panels.
   private List<String> expressions(String dashboard) throws IOException {
+    return expressions(dashboard, title -> true);
+  }
+
+  // Every query of the dashboard's panels whose title passes the filter.
+  private List<String> expressions(String dashboard, Predicate<String> title) throws IOException {
     var expressions = new ArrayList<String>();
     for (var panel : dashboard(dashboard).path("panels")) {
+      if (!title.test(panel.path("title").asString())) {
+        continue;
+      }
       for (var target : panel.path("targets")) {
         expressions.add(target.path("expr").asString());
       }
