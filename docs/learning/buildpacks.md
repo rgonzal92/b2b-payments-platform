@@ -2,7 +2,7 @@
 
 ## The problem it solves here
 
-M6 runs the four apps on Kubernetes, which runs container images, not jars (ADR-0017). Writing a Dockerfile per app means choosing a base image and a JDK, then layering the jar and sizing the JVM's memory for a container, four times over. Most of that is easy to get subtly wrong: a heap sized for the host gets OOMKilled at the pod's limit, and an image runs as root. Buildpacks build the image straight from the app's executable jar with none of that written by hand. `./mvnw -pl platform,authorization-service,simulator,gateway -am -DskipTests spring-boot:build-image` builds `b2b-payments/<module>:local` for each app (README, "Run it on Kubernetes").
+M6 runs the four apps on Kubernetes, which runs container images, not jars (ADR-0017). Writing a Dockerfile per app means choosing a base image and a JDK, then layering the jar and sizing the JVM's memory for a container, four times over. Most of that is easy to get subtly wrong: a heap sized for the host gets OOMKilled at the pod's limit, and an image runs as root. Buildpacks build the image straight from the app's executable jar with none of that written by hand. The README's "Run it on Kubernetes" step 2 builds `b2b-payments/<module>:local` for each app, with `package` before `build-image`: on a clean checkout, `build-image` alone leaves `contracts` unpackaged and the apps can't resolve it.
 
 ## Mental model
 
