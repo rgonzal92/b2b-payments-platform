@@ -12,9 +12,12 @@ import java.util.regex.Pattern;
 
 /**
  * A Keycloak client's access token, by client credentials, for a simulation to send with every
- * call. Keycloak's tokens last 5 minutes, so a run uses the one it starts with.
+ * call.
  */
 final class KeycloakTokens {
+
+  // Keycloak's tokens last 5 minutes, and a run uses the one it starts with.
+  private static final int LONGEST_RUN_SECONDS = 240;
 
   // On the host by default; inside the cluster, Keycloak's Service. Either way the token names
   // http://localhost:8180 as its issuer, which the apps check.
@@ -25,6 +28,14 @@ final class KeycloakTokens {
       Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"");
 
   private KeycloakTokens() {}
+
+  /** Refuses a run of {@code runSeconds} that would outlive the token it starts with. */
+  static void requireRunWithinTokenLife(int runSeconds) {
+    if (runSeconds > LONGEST_RUN_SECONDS) {
+      throw new IllegalStateException(
+          "A run longer than %d s would outlive its token.".formatted(LONGEST_RUN_SECONDS));
+    }
+  }
 
   /**
    * The client's token; its secret comes from the environment variable {@code secretVariable}, as

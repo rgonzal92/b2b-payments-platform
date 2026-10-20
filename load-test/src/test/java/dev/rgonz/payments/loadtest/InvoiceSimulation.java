@@ -24,7 +24,7 @@ import java.util.UUID;
  * a connection to a pod that is stopping, which is what can go wrong.
  *
  * <p>Each Invoice is $10.00 to the load test's own Supplier, Hooli, and stays {@code RECEIVED}: no
- * one approves it, so it holds no credit and issues no card. Acme's threshold is $10,000.
+ * one approves it, so it places no Hold and issues no card. Acme's Approval Threshold is $10,000.
  *
  * <p>Runs inside the k3d cluster beside {@link AuthorizeSimulation} ({@code
  * scripts/k8s-load-test.sh}), or from the host against the Gateway on {@code localhost:8080} or the
@@ -37,8 +37,6 @@ public class InvoiceSimulation extends Simulation {
   private static final String BASE_URL = System.getProperty("baseUrl", "http://localhost:8080");
   private static final int RATE = Integer.getInteger("rate", 5);
   private static final int DURATION_SECONDS = Integer.getInteger("durationSeconds", 60);
-  // Keycloak's tokens last 5 minutes, and the run uses the one it starts with.
-  private static final int LONGEST_RUN_SECONDS = 240;
 
   // A Supplier no demo uses, so the run leaves the demo's Globex as it was.
   private static final String INVOICE =
@@ -51,10 +49,7 @@ public class InvoiceSimulation extends Simulation {
       """;
 
   public InvoiceSimulation() throws IOException, InterruptedException {
-    if (DURATION_SECONDS > LONGEST_RUN_SECONDS) {
-      throw new IllegalStateException(
-          "A run longer than %d s would outlive its token.".formatted(LONGEST_RUN_SECONDS));
-    }
+    KeycloakTokens.requireRunWithinTokenLife(DURATION_SECONDS);
     var protocol =
         http.baseUrl(BASE_URL)
             .shareConnections()

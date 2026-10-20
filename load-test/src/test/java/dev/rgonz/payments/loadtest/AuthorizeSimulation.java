@@ -59,8 +59,6 @@ public class AuthorizeSimulation extends Simulation {
   private static final String TARGET = System.getProperty("target", "localhost:9090");
   private static final String LOAD_BALANCING_POLICY =
       System.getProperty("loadBalancingPolicy", "pick_first");
-  // Keycloak's tokens last 5 minutes, and the run uses the one it starts with.
-  private static final int LONGEST_RUN_SECONDS = 240;
   // gatling-grpc's open-source limit: a sixth virtual user ends the run.
   private static final int USERS = 5;
 
@@ -92,10 +90,7 @@ public class AuthorizeSimulation extends Simulation {
   private final Queue<Card> chargedCards = new ConcurrentLinkedQueue<>();
 
   public AuthorizeSimulation() throws IOException, InterruptedException {
-    if (WARM_UP_SECONDS + MEASURED_SECONDS > LONGEST_RUN_SECONDS) {
-      throw new IllegalStateException(
-          "A run longer than %d s would outlive its Network token.".formatted(LONGEST_RUN_SECONDS));
-    }
+    KeycloakTokens.requireRunWithinTokenLife(WARM_UP_SECONDS + MEASURED_SECONDS);
     freshCards = CardsFile.read(CARDS_FILE);
     // About 90% of Charges take a fresh card, plus a margin for the random mix and for the first
     // declines, which take a fresh card while none is charged yet.
