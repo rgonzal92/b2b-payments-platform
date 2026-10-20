@@ -34,6 +34,7 @@
 		<!-- Before the platform: its consumer tests write the pact the platform's provider test verifies. It verifies the
 		     platform's pact as committed, and CI checks that the platform's build leaves that file unchanged. -->
 		<module>authorization-service</module>
+		<module>vault-service</module>
 		<module>platform</module>
 		<module>simulator</module>
 		<module>gateway</module>
