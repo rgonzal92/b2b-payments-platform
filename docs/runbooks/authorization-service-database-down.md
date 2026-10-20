@@ -32,7 +32,7 @@ If the service itself was down, start it: `./mvnw -pl authorization-service -am 
 
 ## A self-Reversal that gave up
 
-The service retries its own Reversal only for a while, and only in memory. Two cases leave a `91`'d Authorization unreversed:
+The service retries its own Reversal only for a while, and only in memory. Three cases leave a `91`'d Authorization unreversed:
 
 - **The database stayed down past the retry limit:** the service logs `Authorization <request ID> answered 91 and couldn't be reversed (…): it may still be approved` at ERROR.
 - **The service stopped or crashed** while the Reversal was still pending: nothing is logged, so take the request IDs from the `answered 91 and is being reversed` lines before the stop.
