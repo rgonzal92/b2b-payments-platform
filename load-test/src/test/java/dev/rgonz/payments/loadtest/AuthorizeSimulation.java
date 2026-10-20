@@ -22,18 +22,11 @@ import io.gatling.javaapi.core.Session;
 import io.gatling.javaapi.core.Simulation;
 import io.grpc.Status;
 import java.io.IOException;
-import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
 
 /**
  * The platform's {@code Authorize} under load (M4 design, "The load test"; ADR-0010): 200
@@ -61,16 +54,11 @@ public class AuthorizeSimulation extends Simulation {
 
   private static final String APPROVED = "00";
   private static final String CARD = "card";
-  private static final String TOKEN_URI =
-      System.getProperty(
-          "tokenUri", "http://localhost:8180/realms/payments/protocol/openid-connect/token");
   // In the cluster: dns:/// and round_robin on the service's headless Service, so the Charges
   // spread over its pods and move to the others when one goes (M6 design, Traffic).
   private static final String TARGET = System.getProperty("target", "localhost:9090");
   private static final String LOAD_BALANCING_POLICY =
       System.getProperty("loadBalancingPolicy", "pick_first");
-  private static final Pattern ACCESS_TOKEN =
-      Pattern.compile("\"access_token\"\\s*:\\s*\"([^\"]+)\"");
   // Keycloak's tokens last 5 minutes, and the run uses the one it starts with.
   private static final int LONGEST_RUN_SECONDS = 240;
   // gatling-grpc's open-source limit: a sixth virtual user ends the run.
@@ -127,7 +115,9 @@ public class AuthorizeSimulation extends Simulation {
                 // Gatling's default, a channel per user, would time each user's connection set-up.
                 .shareChannel()
                 .asciiHeader("authorization")
-                .value("Bearer " + networkToken()));
+                .value(
+                    "Bearer "
+                        + KeycloakTokens.clientCredentials("network", "NETWORK_CLIENT_SECRET")));
 
     // Each user starts a Charge every pace; they start spread over a second, so their Charges
     // interleave. (Gatling injects no one over a ramp shorter than a second.)
@@ -213,34 +203,5 @@ public class AuthorizeSimulation extends Simulation {
 
   private static Card card(Session session) {
     return session.get(CARD);
-  }
-
-  // The Network's token, by client credentials; the secret comes from the environment and is never
-  // printed.
-  private static String networkToken() throws IOException, InterruptedException {
-    var secret = System.getenv("NETWORK_CLIENT_SECRET");
-    if (secret == null || secret.isBlank()) {
-      throw new IllegalStateException(
-          "Set NETWORK_CLIENT_SECRET, from .env, to sign in as the Network.");
-    }
-    var form =
-        "grant_type=client_credentials&client_id=network&client_secret="
-            + URLEncoder.encode(secret, StandardCharsets.UTF_8);
-    try (var http = HttpClient.newHttpClient()) {
-      var response =
-          http.send(
-              HttpRequest.newBuilder(URI.create(TOKEN_URI))
-                  .timeout(Duration.ofSeconds(10))
-                  .header("Content-Type", "application/x-www-form-urlencoded")
-                  .POST(HttpRequest.BodyPublishers.ofString(form))
-                  .build(),
-              HttpResponse.BodyHandlers.ofString());
-      var token = ACCESS_TOKEN.matcher(response.body());
-      if (response.statusCode() != 200 || !token.find()) {
-        throw new IOException(
-            "Keycloak answered " + response.statusCode() + " for the Network's token.");
-      }
-      return token.group(1);
-    }
   }
 }
