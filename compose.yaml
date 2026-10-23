@@ -61,7 +61,7 @@ services:
   kafka:
     # Same image as the platform's TestKafka: change both together. One broker, KRaft, with the
     # listeners Testcontainers' KafkaContainer uses; the platform reaches PLAINTEXT on 9092.
-    image: apache/kafka:4.2.1
+    image: apache/kafka:4.3.1
     environment:
       CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
       KAFKA_NODE_ID: 1
@@ -80,7 +80,7 @@ services:
       - "127.0.0.1:9092:9092"
 
   lgtm:
-    image: grafana/otel-lgtm:0.36.0
+    image: grafana/otel-lgtm:0.37.0
     ports:
       - "127.0.0.1:3000:3000" # Grafana
       - "127.0.0.1:4317:4317" # OTLP over gRPC
