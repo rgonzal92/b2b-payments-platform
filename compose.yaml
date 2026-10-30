@@ -45,7 +45,7 @@ services:
   # it runs openbao/dev-init.hcl: Transit with the key card-kek, and vault-service's token under its own policy.
   openbao:
     # Same image as vault-service's TestcontainersConfiguration: change both together.
-    image: openbao/openbao:2.7.1
+    image: openbao/openbao:2.7.2
     environment:
       BAO_DEV_ROOT_TOKEN_ID: ${OPENBAO_DEV_ROOT_TOKEN:?run scripts/init-env.sh first}
       OPENBAO_TOKEN: ${OPENBAO_TOKEN:?run scripts/init-env.sh first}
@@ -61,7 +61,7 @@ services:
   kafka:
     # Same image as the platform's TestKafka: change both together. One broker, KRaft, with the
     # listeners Testcontainers' KafkaContainer uses; the platform reaches PLAINTEXT on 9092.
-    image: apache/kafka:4.2.1
+    image: apache/kafka:4.3.1
     environment:
       CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
       KAFKA_NODE_ID: 1
@@ -80,7 +80,7 @@ services:
       - "127.0.0.1:9092:9092"
 
   lgtm:
-    image: grafana/otel-lgtm:0.36.0
+    image: grafana/otel-lgtm:0.38.1
     ports:
       - "127.0.0.1:3000:3000" # Grafana
       - "127.0.0.1:4317:4317" # OTLP over gRPC
