@@ -54,7 +54,7 @@
 			<plugin>
 				<groupId>org.openapitools</groupId>
 				<artifactId>openapi-generator-maven-plugin</artifactId>
-				<version>7.26.0</version>
+				<version>7.27.0</version>
 				<!-- Settings both executions share; each execution adds its own. -->
 				<configuration>
 					<inputSpec>${project.basedir}/src/main/resources/openapi/platform-api.yaml</inputSpec>
