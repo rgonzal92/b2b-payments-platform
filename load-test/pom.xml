@@ -12,7 +12,7 @@
 	<description>The Gatling simulations: the Network's Authorize over gRPC, and an ERP's Invoices over HTTP. No main code.</description>
 
 	<properties>
-		<gatling.version>3.16.0</gatling.version>
+		<gatling.version>3.16.1</gatling.version>
 		<!-- What the simulator's POST /demo/load-test-cards writes; -DcardsFile=… charges another file. -->
 		<cardsFile>${project.basedir}/../var/load-test/cards.csv</cardsFile>
 		<!-- The simulation a run starts, read by Gatling's plugin; -Dgatling.simulationClass=dev.rgonz.payments.loadtest.InvoiceSimulation
@@ -69,7 +69,7 @@
 					<plugin>
 						<groupId>io.gatling</groupId>
 						<artifactId>gatling-maven-plugin</artifactId>
-						<version>4.21.12</version>
+						<version>4.22.3</version>
 						<configuration>
 							<jvmArgs>
 								<jvmArg>-DcardsFile=${cardsFile}</jvmArg>
